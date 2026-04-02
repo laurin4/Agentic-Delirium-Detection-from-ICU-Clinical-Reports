@@ -1,0 +1,22 @@
+# Data (CRITICAL - do not upload)
+data/
+
+# Outputs / results
+outputs/
+
+# Virtual environment
+Ba_venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# System
+.DS_Store
+
+# Logs / temp
+*.log
