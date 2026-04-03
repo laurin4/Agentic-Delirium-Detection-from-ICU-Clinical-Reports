@@ -1,5 +1,5 @@
 import requests
-from src.pipeline.config import OLLAMA_URL, MODEL_NAME
+from src.models.model_config import OLLAMA_URL, MODEL_NAME
 
 def call_llm(system_prompt: str, user_prompt: str) -> str:
     try:
