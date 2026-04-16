@@ -4,6 +4,7 @@ from src.pipeline.paths import (
     REPORT_VS_BASELINE_PATH,
     PREDICTIONS_DIR,
 )
+from src.pipeline.prepare_structured_data import add_reference_class
 
 REPORT_PREDICTIONS_PATH = PREDICTIONS_DIR / "agent1_agent2_agent3_results_prompt.csv"
 
@@ -30,10 +31,7 @@ def main():
 
     merged = reports.merge(baseline, on="PatientenID", how="left")
 
-    merged["baseline_delir_reference"] = (
-        (merged["has_delir_icd10"] == 1) &
-        (merged["any_delir_flag"] == 1)
-    ).astype(int)
+    merged = add_reference_class(merged)
 
     merged["agreement_report_vs_icdsc"] = merged.apply(
         lambda row: True if (
@@ -53,8 +51,7 @@ def main():
 
     merged["agreement_report_vs_combined_baseline"] = merged.apply(
         lambda row: True if (
-            (row["klasse"] == 2 and row["baseline_delir_reference"] == 1) or
-            (row["klasse"] == 0 and row["baseline_delir_reference"] == 0)
+            (row["klasse"] == row["baseline_reference_class"])
         ) else (None if row["klasse"] == 1 else False),
         axis=1
     )
