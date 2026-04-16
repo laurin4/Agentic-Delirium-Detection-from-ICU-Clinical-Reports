@@ -2,7 +2,8 @@ import pandas as pd
 
 from src.agents.classification import classify_delirium
 from src.agents.interpretation import interpret_signals
-from src.pipeline.prepare_structured_data import prepare_icd10, prepare_icdsc
+from src.pipeline.prepare_structured_data import prepare_icd10, prepare_icdsc, add_reference_class
+from src.preprocessing.diagnosis_mapper import build_patient_level_reports
 
 
 def test_classify_delirium_high_returns_class_2():
@@ -116,12 +117,12 @@ def test_prepare_icd10_detects_delir_code_and_main_diagnosis():
     result = prepare_icd10(df)
     result = result.sort_values("PatientenID").reset_index(drop=True)
 
-    assert result.loc[0, "PatientenID"] == 1001
+    assert result.loc[0, "PatientenID"] == "1001"
     assert result.loc[0, "has_delir_icd10"] == 1
     assert result.loc[0, "has_main_delir_icd10"] == 1
     assert "F05" in result.loc[0, "delir_codes"]
 
-    assert result.loc[1, "PatientenID"] == 1002
+    assert result.loc[1, "PatientenID"] == "1002"
     assert result.loc[1, "has_delir_icd10"] == 0
 
 
@@ -143,11 +144,49 @@ def test_prepare_icdsc_aggregates_per_patient():
     result = prepare_icdsc(df)
     result = result.sort_values("PatientenID").reset_index(drop=True)
 
-    assert result.loc[0, "PatientenID"] == 1001
+    assert result.loc[0, "PatientenID"] == "1001"
     assert result.loc[0, "max_icdsc"] == 5
     assert result.loc[0, "any_delir_flag"] == 1
     assert result.loc[0, "n_icdsc_measurements"] == 2
 
-    assert result.loc[1, "PatientenID"] == 1002
+    assert result.loc[1, "PatientenID"] == "1002"
     assert result.loc[1, "max_icdsc"] == 3
     assert result.loc[1, "any_delir_flag"] == 0
+
+
+def test_add_reference_class_uses_three_class_logic():
+    df = pd.DataFrame(
+        {
+            "PatientenID": [1001, 1002, 1003],
+            "has_delir_icd10": [1, 1, 0],
+            "any_delir_flag": [1, 0, 0],
+            "max_icdsc": [5, 2, 1],
+        }
+    )
+
+    result = add_reference_class(df).sort_values("PatientenID").reset_index(drop=True)
+    assert result.loc[0, "baseline_reference_class"] == 2
+    assert result.loc[1, "baseline_reference_class"] == 1
+    assert result.loc[2, "baseline_reference_class"] == 0
+    assert result.loc[0, "baseline_delir_reference"] == 1
+    assert result.loc[1, "baseline_delir_reference"] == 0
+
+
+def test_build_patient_level_reports_groups_and_sorts(tmp_path):
+    raw = pd.DataFrame(
+        {
+            "PatientID": [1001, 1001, 1002],
+            "ParameterID": [1, 1, 2],
+            "Time": ["2026-01-01 09:00:00", "2026-01-01 08:00:00", "2026-01-02 12:00:00"],
+            "Value": ["later entry", "earlier entry", "single entry"],
+        }
+    )
+    input_file = tmp_path / "diagnose.csv"
+    raw.to_csv(input_file, index=False)
+
+    reports = build_patient_level_reports(tmp_path).sort_values("PatientenID").reset_index(drop=True)
+
+    assert list(reports["PatientenID"]) == ["1001", "1002"]
+    assert reports.loc[0, "bericht"] == "diagnosis_1001.txt"
+    assert reports.loc[0, "report_text"] == "earlier entry\nlater entry"
+    assert reports.loc[1, "report_text"] == "single entry"

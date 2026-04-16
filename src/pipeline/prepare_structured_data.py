@@ -1,42 +1,71 @@
+import logging
 import pandas as pd
 from src.pipeline.paths import ICD10_PATH, ICDSC_PATH, STRUCTURED_BASELINE_PATH
+from src.pipeline.tabular_io import read_tabular
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _normalize_patient_column(df: pd.DataFrame) -> pd.DataFrame:
+    if "PatientenID" not in df.columns and "PatientID" in df.columns:
+        return df.rename(columns={"PatientID": "PatientenID"})
+    return df
 
 
 def load_data():
-    icd10 = pd.read_csv(ICD10_PATH)
-    icdsc = pd.read_csv(ICDSC_PATH)
+    if not ICD10_PATH.exists():
+        raise FileNotFoundError(f"ICD10 input not found: {ICD10_PATH}")
+    if not ICDSC_PATH.exists():
+        raise FileNotFoundError(f"ICDSC input not found: {ICDSC_PATH}")
+    icd10 = _normalize_patient_column(read_tabular(ICD10_PATH))
+    icdsc = _normalize_patient_column(read_tabular(ICDSC_PATH))
     return icd10, icdsc
+
+
+def _ensure_column(df: pd.DataFrame, column: str, default_value):
+    if column not in df.columns:
+        LOGGER.warning("Missing column '%s'. Filling default values.", column)
+        df[column] = default_value
+    return df
+
+
+def _is_valid_delir_code(code: str) -> bool:
+    normalized = str(code).strip().upper()
+    return normalized.startswith("F05") and normalized != "F05.1"
 
 
 def prepare_icd10(icd10: pd.DataFrame) -> pd.DataFrame:
     icd10 = icd10.copy()
+    icd10 = _ensure_column(icd10, "PatientenID", "")
+    icd10 = _ensure_column(icd10, "Code", "")
+    icd10 = _ensure_column(icd10, "IsHauptDiagn", 0)
 
+    icd10["PatientenID"] = icd10["PatientenID"].astype(str).str.strip()
     icd10["Code"] = icd10["Code"].astype(str)
     icd10["IsHauptDiagn"] = icd10["IsHauptDiagn"].astype(str)
-
-    # Delir-relevante ICD-10 Codes, kann später erweitert werden
-    delir_prefixes = ("F05",)
-
-    icd10["is_delir_icd10"] = icd10["Code"].str.startswith(delir_prefixes)
+    icd10["is_delir_icd10"] = icd10["Code"].apply(_is_valid_delir_code)
 
     grouped = (
         icd10.groupby("PatientenID")
         .agg(
             has_delir_icd10=("is_delir_icd10", "max"),
-            delir_codes=("Code", lambda x: " | ".join(sorted(set(x[x.astype(str).str.startswith(delir_prefixes)])))),
+            delir_codes=("Code", lambda x: " | ".join(sorted(set(code for code in x if _is_valid_delir_code(code))))),
             has_main_delir_icd10=("IsHauptDiagn", lambda x: 0),  # Platzhalter, wird unten sauber gesetzt
         )
         .reset_index()
     )
 
-    main_delir = (
-        icd10[icd10["is_delir_icd10"]]
-        .assign(is_main=lambda df: df["IsHauptDiagn"].astype(str).isin(["1", "True", "true", "JA", "Ja", "ja"]))
-        .groupby("PatientenID")["is_main"]
-        .max()
-        .reset_index()
-        .rename(columns={"is_main": "has_main_delir_icd10"})
-    )
+    delir_subset = icd10.loc[icd10["is_delir_icd10"]].copy()
+    if delir_subset.empty:
+        main_delir = pd.DataFrame(columns=["PatientenID", "has_main_delir_icd10"])
+    else:
+        delir_subset["is_main"] = delir_subset["IsHauptDiagn"].astype(str).isin(["1", "True", "true", "JA", "Ja", "ja"])
+        main_delir = (
+            delir_subset.groupby("PatientenID")["is_main"]
+            .max()
+            .reset_index()
+            .rename(columns={"is_main": "has_main_delir_icd10"})
+        )
 
     grouped = grouped.drop(columns=["has_main_delir_icd10"]).merge(main_delir, on="PatientenID", how="left")
     grouped["has_main_delir_icd10"] = grouped["has_main_delir_icd10"].fillna(False).astype(int)
@@ -48,7 +77,12 @@ def prepare_icd10(icd10: pd.DataFrame) -> pd.DataFrame:
 
 def prepare_icdsc(icdsc: pd.DataFrame) -> pd.DataFrame:
     icdsc = icdsc.copy()
+    icdsc = _ensure_column(icdsc, "PatientenID", "")
+    icdsc = _ensure_column(icdsc, "ICDSC_Time", None)
+    icdsc = _ensure_column(icdsc, "ICDSC_Value", 0)
+    icdsc = _ensure_column(icdsc, "ICDSC_DelirFlag", 0)
 
+    icdsc["PatientenID"] = icdsc["PatientenID"].astype(str).str.strip()
     icdsc["ICDSC_Value"] = pd.to_numeric(icdsc["ICDSC_Value"], errors="coerce")
     icdsc["ICDSC_DelirFlag"] = pd.to_numeric(icdsc["ICDSC_DelirFlag"], errors="coerce").fillna(0).astype(int)
     icdsc["ICDSC_Time"] = pd.to_datetime(icdsc["ICDSC_Time"], errors="coerce")
@@ -70,6 +104,35 @@ def prepare_icdsc(icdsc: pd.DataFrame) -> pd.DataFrame:
     return grouped
 
 
+def add_reference_class(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    for col, default in [
+        ("has_delir_icd10", 0),
+        ("any_delir_flag", 0),
+        ("max_icdsc", 0),
+    ]:
+        if col not in df.columns:
+            LOGGER.warning("Missing baseline column '%s'. Using default fallback.", col)
+            df[col] = default
+
+    df["has_delir_icd10"] = pd.to_numeric(df["has_delir_icd10"], errors="coerce").fillna(0).astype(int)
+    df["any_delir_flag"] = pd.to_numeric(df["any_delir_flag"], errors="coerce").fillna(0).astype(int)
+    df["max_icdsc"] = pd.to_numeric(df["max_icdsc"], errors="coerce").fillna(0)
+
+    class_2 = (df["has_delir_icd10"] == 1) & (df["any_delir_flag"] == 1)
+    class_1 = (~class_2) & (
+        (df["has_delir_icd10"] == 1) |
+        (df["any_delir_flag"] == 1) |
+        (df["max_icdsc"] >= 4)
+    )
+
+    df["baseline_reference_class"] = 0
+    df.loc[class_1, "baseline_reference_class"] = 1
+    df.loc[class_2, "baseline_reference_class"] = 2
+    df["baseline_delir_reference"] = (df["baseline_reference_class"] == 2).astype(int)
+    return df
+
+
 def main():
     STRUCTURED_BASELINE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -79,6 +142,7 @@ def main():
     icdsc_prepared = prepare_icdsc(icdsc)
 
     merged = icd10_prepared.merge(icdsc_prepared, on="PatientenID", how="outer")
+    merged = add_reference_class(merged)
 
     merged.to_csv(STRUCTURED_BASELINE_PATH, index=False)
     print(f"Gespeichert: {STRUCTURED_BASELINE_PATH}")

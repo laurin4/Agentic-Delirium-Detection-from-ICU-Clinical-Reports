@@ -1,0 +1,12 @@
+.git
+.pytest_cache
+Ba_venv
+.venv
+__pycache__
+*.pyc
+notebooks
+outputs
+wheelhouse
+wheelhouse_linux
+wheelhouse_linux.zip
+.DS_Store

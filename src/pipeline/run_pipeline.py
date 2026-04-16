@@ -1,11 +1,10 @@
-from pathlib import Path
-import re
 import csv
 from src.agents.extraction import extract_passages
 from src.agents.interpretation import interpret_signals
 from src.agents.interpretation_llm import interpret_signals_llm
 from src.agents.classification import classify_delirium
-from src.pipeline.paths import DATA_DIR, PREDICTIONS_DIR
+from src.pipeline.paths import ANONYMIZED_DIR, PREDICTIONS_DIR
+from src.preprocessing.diagnosis_mapper import build_patient_level_report_records
 
 SIGNAL_KEYS = [
     "desorientierung",
@@ -17,58 +16,45 @@ SIGNAL_KEYS = [
 ]
 
 INTERPRETATION_MODE = "prompt"  # "rule" oder "prompt"
+INPUT_MODE = "diagnosis"  # "diagnosis" oder "txt"
 
 
 def load_report(path: str) -> str:
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
-
-
-
-
-def extract_patient_id_from_text(text: str) -> str:
-    """
-    Extrahiert die PatientenID direkt aus dem Berichtstext.
-
-    Erwartete Formate im Text, z. B.:
-    - PatientenID: 123456
-    - Patienten-ID: 123456
-    - PatientID: 123456
-    - PID: 123456
-    - Fallnummer: 123456
-
-    Falls keine ID gefunden wird, wird ein Fehler ausgelöst.
-    """
-    patterns = [
-        r"PatientenID\s*[:=]\s*([A-Za-z0-9\-_/]+)",
-        r"Patienten-ID\s*[:=]\s*([A-Za-z0-9\-_/]+)",
-        r"PatientID\s*[:=]\s*([A-Za-z0-9\-_/]+)",
-        r"PID\s*[:=]\s*([A-Za-z0-9\-_/]+)",
-        r"Fallnummer\s*[:=]\s*([A-Za-z0-9\-_/]+)",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-
-    raise ValueError("Keine PatientenID im Bericht gefunden.")
+def _load_txt_reports():
+    reports_dir = ANONYMIZED_DIR / "generische Arztberichte"
+    txt_files = sorted(reports_dir.glob("*.txt"))
+    rows = []
+    for report_path in txt_files:
+        rows.append(
+            {
+                "PatientenID": report_path.stem,
+                "bericht": report_path.name,
+                "report_text": load_report(str(report_path)),
+            }
+        )
+    return rows
 
 
 if __name__ == "__main__":
-    reports_dir = DATA_DIR / "anonymized" / "generische Arztberichte"
     PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
     output_csv = PREDICTIONS_DIR / f"agent1_agent2_agent3_results_{INTERPRETATION_MODE}.csv"
-
-    txt_files = sorted(reports_dir.glob("*.txt"))
+    if INPUT_MODE == "diagnosis":
+        report_records = build_patient_level_report_records()
+    elif INPUT_MODE == "txt":
+        report_records = _load_txt_reports()
+    else:
+        raise ValueError(f"Ungültiger INPUT_MODE: {INPUT_MODE}")
     rows = []
 
     print(f"\n=== Agent 1 + Agent 2 + Agent 3: Delir-Pipeline ({INTERPRETATION_MODE}) ===")
-    print(f"Anzahl Berichte: {len(txt_files)}\n")
+    print(f"Anzahl Berichte: {len(report_records)}\n")
 
-    for report_path in txt_files:
-        text = load_report(str(report_path))
-        patient_id = extract_patient_id_from_text(text)
+    for report in report_records:
+        text = report.get("report_text", "")
+        patient_id = str(report.get("PatientenID", "")).strip()
+        report_name = str(report.get("bericht", f"diagnosis_{patient_id}.txt"))
         result = extract_passages(text)
         if INTERPRETATION_MODE == "rule":
             interpretation = interpret_signals(text, result)
@@ -83,7 +69,7 @@ if __name__ == "__main__":
             if isinstance(values, list):
                 hits.extend(values)
 
-        print(f"[{report_path.name}] PatientenID={patient_id} | Treffer gesamt: {len(hits)}")
+        print(f"[{report_name}] PatientenID={patient_id} | Treffer gesamt: {len(hits)}")
         if hits:
             for key in SIGNAL_KEYS:
                 values = result.get(key, [])
@@ -117,7 +103,7 @@ if __name__ == "__main__":
 
         rows.append({
             "PatientenID": patient_id,
-            "bericht": report_path.name,
+            "bericht": report_name,
             "anzahl_treffer": len(hits),
             "delir_signale": " | ".join(hits),
             "signalstaerke": interpretation["signalstaerke"],

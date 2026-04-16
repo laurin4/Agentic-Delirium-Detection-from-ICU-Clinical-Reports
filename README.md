@@ -1,137 +1,129 @@
-#Ongoing project!!!
-
 # Delirium Detection Pipeline
 
-Pipeline zur Extraktion und Klassifikation von Delir aus klinischen Berichten und Vergleich mit strukturierten Daten (ICD10, ICDSC).
+Pipeline zur Extraktion und Klassifikation von Delir aus Diagnose-Einträgen (Text) und Vergleich mit strukturierten Daten (ICD10, ICDSC).
 
 ---
 
-## Projektstruktur
+## Daten (Standard: `Data/Raw/` CSV)
+
+Lege die drei Dateien **exakt mit diesen Namen** unter `Data/Raw/` ab:
+
+| Datei | Pfad |
+|--------|------|
+| `Diagnosenliste.csv` | `Data/Raw/` |
+| `ICD.csv` | `Data/Raw/` |
+| `ICDSC.csv` | `Data/Raw/` |
+
+Die aktiven Pfade und der Modus (`real` vs. `synthetic`) stehen zentral in `src/pipeline/paths.py` (`DATA_MODE`, `ICD10_PATH`, `ICDSC_PATH`, `DIAGNOSIS_INPUT_PATH`).
+
+Unterstützte Formate pro Datei: **`.csv`** sowie optional **`.xlsx` / `.xls`** (über `src/pipeline/tabular_io.read_tabular`).
+
+---
+
+## Projektstruktur (Auszug)
 
 ```
-data/
-  structured/
-    icd10.csv
-    icdsc.csv
-  anonymized/
-    generische Arztberichte/
-
+Data/
+  Raw/                # ICD.csv, ICDSC.csv, Diagnosenliste.csv
+data/                 # optional synthetic/test data
 outputs/
   baseline/
   predictions/
   comparisons/
   evaluation/
-
+  validation/
 src/
   agents/
   pipeline/
+  preprocessing/
+  validation/
 ```
 
 ---
 
-## Pipeline Schritte
+## Pipeline (Ubuntu / lokal identisch)
 
-### 1. Strukturierte Daten vorbereiten
 ```bash
 python -m src.pipeline.prepare_structured_data
-```
-
-→ erzeugt:
-```
-outputs/baseline/structured_baseline.csv
-```
-
----
-
-### 2. Reports verarbeiten (Agent 1–3)
-```bash
 python -m src.pipeline.run_pipeline
-```
-
-→ erzeugt:
-```
-outputs/predictions/agent1_agent2_agent3_results_*.csv
-```
-
----
-
-### 3. Vergleich mit Baseline
-```bash
 python -m src.pipeline.compare_reports_vs_baseline
-```
-
-→ erzeugt:
-```
-outputs/comparisons/report_vs_baseline_comparison.csv
-```
-
----
-
-### 4. Evaluation
-```bash
 python -m src.pipeline.evaluate_predictions
+python -m src.validation.validate_inputs
+python -m src.analysis.run_exploration
+python -m src.analysis.run_analysis
 ```
 
-→ erzeugt:
-```
-outputs/evaluation/
-  evaluation_summary.csv
-  confusion_matrix_combined_baseline.csv
-  false_positives.csv
-  false_negatives.csv
-```
+- **Diagnose-Input:** `INPUT_MODE = "diagnosis"` in `src/pipeline/run_pipeline.py` (Standard); Quelle = `DIAGNOSIS_INPUT_PATH` aus `paths.py`.
+- **Optional:** `INPUT_MODE = "txt"` für `data/anonymized/generische Arztberichte/*.txt`.
+
+### Outputs (Auszug)
+
+- `outputs/baseline/structured_baseline.csv`
+- `outputs/predictions/agent1_agent2_agent3_results_*.csv`
+- `outputs/comparisons/report_vs_baseline_comparison.csv`
+- `outputs/evaluation/` — Multiclass-Metriken, CSVs, `plots/`; binäre Hilfsmetriken als `*_binary_secondary*`
+- `outputs/validation/` — `validation_results.csv`, `validation_summary.txt`
+- `outputs/analysis/`
+  - `exploration/` (raw-input EDA: top diagnosis terms, ICD frequencies, missingness, temporal patterns, patient activity)
+  - `tables/` (input quality, distributions, patient-level deep tables, confusion/error tables)
+  - `plots/` (class distribution, signal composition, confusion heatmap, error-vs-hits, report-length histogram)
+  - `reports/analysis_summary.txt`
 
 ---
 
-## Klassifikation
+## Klassifikation (Agent 3)
 
 | Klasse | Bedeutung |
-|------|----------|
+|--------|-----------|
 | 0 | kein Delir |
 | 1 | mögliches Delir |
 | 2 | dokumentiertes Delir |
 
 ---
 
-## Baseline Definition
+## Baseline (3 Klassen, Referenz aus ICD10 + ICDSC)
 
-Delir = 1 wenn:
-- ICD10 enthält **F05**
-- UND ICDSC_DelirFlag = 1
+- Klasse 2: gültiger F05-Delircode (ohne F05.1) **und** `ICDSC_DelirFlag == 1`
+- Klasse 1: nicht 2, aber F05* (ohne F05.1) **oder** Flag **oder** `max(ICDSC_Value) >= 4`
+- Klasse 0: sonst
 
-sonst:
-- Delir = 0
-
----
-
-## Evaluation
-
-Vergleich basiert auf:
-
-- Prediction: `klasse == 2`
-- Baseline: `baseline_delir_reference == 1`
-
-Metriken:
-- Accuracy
-- Precision
-- Recall
-- F1
-
----
-
-## Wichtige Annahmen
-
-- PatientenID ist im Berichtstext enthalten
-- CSV-Strukturen:
-  - ICD10: `PatientenID, Code, IsHauptDiagn`
-  - ICDSC: `PatientenID, ICDSC_Time, ICDSC_Value, ICDSC_DelirFlag`
+Details: `PROJECT_STATUS.md`.
 
 ---
 
 ## Deployment (Ubuntu / Server)
 
-Vorbereitung:
-- nur Pfade in `src/pipeline/paths.py` anpassen
-- Daten in `data/` ablegen
+1. Projektordner kopieren, virtuelle Umgebung mit `requirements.txt` installieren.
+2. Die drei CSV-Dateien nach `Data/Raw/` legen (`ICD.csv`, `ICDSC.csv`, `Diagnosenliste.csv`).
+3. Befehlskette wie oben ausführen.
 
-Dann Pipeline identisch ausführen.
+**Hinweise:** Sensible Daten nicht ins Repo legen (`data/` ist in `.gitignore`). Unter Linux ggf. Locale/Fontconfig-Meldungen von Matplotlib — Evaluation setzt `MPLCONFIGDIR` unter `outputs/.mplconfig`.
+
+### Optional: Docker (Ubuntu)
+
+```bash
+docker build -f docker/Dockerfile -t delirium-pipeline .
+docker run --rm -it \
+  -v "$(pwd)/Data/Raw:/app/Data/Raw" \
+  -v "$(pwd)/outputs:/app/outputs" \
+  delirium-pipeline \
+  python -m src.pipeline.prepare_structured_data
+```
+
+Danach analog im Container ausführen:
+- `python -m src.pipeline.run_pipeline`
+- `python -m src.pipeline.compare_reports_vs_baseline`
+- `python -m src.pipeline.evaluate_predictions`
+- `python -m src.validation.validate_inputs`
+- `python -m src.analysis.run_exploration`
+- `python -m src.analysis.run_analysis`
+
+---
+
+## Synthetische Testdaten (optional)
+
+```bash
+python scripts/generate_synthetic_data.py
+```
+
+In `paths.py` `DATA_MODE = "synthetic"` setzen, um die generierten CSVs zu nutzen (Standard bleibt `real`).
