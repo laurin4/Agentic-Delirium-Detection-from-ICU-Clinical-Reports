@@ -28,9 +28,9 @@ The prototype pipeline is implemented and working on synthetic/anonymized exampl
 
 ## New Data Situation
 Real project data now uses a single shared raw folder:
-1. diagnosis list under `Data/Raw/Diagnosenliste.csv`
-2. ICD10 under `Data/Raw/ICD.csv`
-3. ICDSC under `Data/Raw/ICDSC.csv`
+1. diagnosis list under `data/raw/Diagnosenliste.csv`
+2. ICD10 under `data/raw/ICD.csv`
+3. ICDSC under `data/raw/ICDSC.csv`
 
 ## Confirmed Design Decisions
 - The diagnosis source will become the model input
@@ -108,25 +108,25 @@ Use the synthetic data to validate:
 
 ## Real File Switch (default inputs)
 
-The repository now defaults to **`Data/Raw/` CSV** inputs for ICU delirium work (`DATA_MODE = "real"` in `paths.py`):
+The repository now defaults to **`data/raw/` CSV** inputs for ICU delirium work (`DATA_MODE = "real"` in `paths.py`):
 
-- `Data/Raw/Diagnosenliste.csv`
-- `Data/Raw/ICD.csv`
-- `Data/Raw/ICDSC.csv`
+- `data/raw/Diagnosenliste.csv`
+- `data/raw/ICD.csv`
+- `data/raw/ICDSC.csv`
 
 After copying the project to Ubuntu, place these three files at the paths above, install dependencies from `requirements.txt`, and run the same `python -m src.pipeline.*` commands as in the README. No pipeline rewrites are required when switching back to synthetic: set `DATA_MODE = "synthetic"` only.
 
 ---
 
-## Data inputs (default: real CSV in `Data/Raw`)
+## Data inputs (default: real CSV in `data/raw`)
 
 Production defaults are defined in `src/pipeline/paths.py` (`DATA_MODE = "real"`):
 
 | Role | Path |
 |------|------|
-| Diagnosis | `Data/Raw/Diagnosenliste.csv` |
-| ICD10 | `Data/Raw/ICD.csv` |
-| ICDSC | `Data/Raw/ICDSC.csv` |
+| Diagnosis | `data/raw/Diagnosenliste.csv` |
+| ICD10 | `data/raw/ICD.csv` |
+| ICDSC | `data/raw/ICDSC.csv` |
 
 Tabular loading (CSV or Excel) is centralized in `src/pipeline/tabular_io.py` (`read_tabular`). ICD tables still support `PatientID` → `PatientenID` normalization in `prepare_structured_data`.
 
@@ -164,21 +164,19 @@ Synthetic vs real: change only `DATA_MODE` (and place files under the paths defi
 A dedicated analysis/exploration layer now exists separate from core evaluation:
 
 - Entry point: `python -m src.analysis.run_analysis`
-- Output root: `outputs/analysis/`
+- Output root: `outputs/analysis/evaluation/`
   - `tables/`:
-    - `input_quality_checks.csv`
-    - source snapshots (`diagnosis_raw_snapshot.csv`, `icd10_raw_snapshot.csv`, `icdsc_raw_snapshot.csv`)
-    - class distributions
-    - patient-level analysis table
-    - confusion/error detail tables
+    - `classification_report.csv` (precision/recall/f1 per class)
+    - `confusion_matrix_3x3.csv`
+    - `class_distribution_comparison.csv`
+    - `ordinal_error_statistics.csv`
+    - `error_distribution_counts.csv`
   - `plots/`:
-    - predicted vs reference class distribution
-    - signal strength composition by predicted class
-    - 3-class confusion heatmap
-    - error vs extracted hits scatter
-    - report length histogram
-  - `reports/analysis_summary.txt`:
-    - concise narrative summary for quick interpretation
+    - confusion matrix heatmap
+    - predicted vs baseline class distribution
+    - error distribution (over/under/exact)
+  - `report.txt`:
+    - key statistics, main findings, and behavior risks
 
 ## Advanced Data Exploration (New)
 
@@ -186,6 +184,6 @@ Dedicated raw-input EDA is now available:
 
 - Entry point: `python -m src.analysis.run_exploration`
 - Output root: `outputs/analysis/exploration/`
-  - `tables/`: dataset overview, missingness, patient-set overlaps, top diagnosis entries/terms, ICD10 code frequencies, ICDSC summaries, temporal distributions, per-patient activity
-  - `plots/`: top diagnosis terms, top ICD10 codes, ICDSC histogram, patient-activity boxplot
-  - `reports/exploration_summary.txt`: compact human-readable EDA narrative
+  - `tables/`: dataset overview, missingness, patient-set overlaps, report-length distribution, keyword frequencies, signal-category frequencies, ICD/ICDSC summaries
+  - `plots/`: report-length histogram, top keywords, signal-category frequencies, class distribution (if available), plus detailed ICD/ICDSC charts
+  - `report.txt`: compact thesis-ready EDA narrative
