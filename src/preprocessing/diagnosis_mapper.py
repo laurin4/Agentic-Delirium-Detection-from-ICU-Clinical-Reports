@@ -9,6 +9,7 @@ from src.pipeline.tabular_io import read_tabular
 
 LOGGER = logging.getLogger(__name__)
 EXPECTED_COLUMNS = ["PatientID", "ParameterID", "Time", "Value"]
+_CSV_ENCODINGS = ["utf-8-sig", "utf-16", "cp1252", "latin-1"]
 
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -56,7 +57,97 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _read_diagnosis_file(file_path: Path) -> pd.DataFrame:
+    suffix = file_path.suffix.lower()
+    if suffix == ".csv":
+        return _read_diagnosis_csv_manual(file_path)
     return read_tabular(file_path)
+
+
+def _read_diagnosis_csv_manual(file_path: Path) -> pd.DataFrame:
+    """
+    Robuster CSV-Parser für Diagnose-Dateien mit Semikolon-Separator.
+    Erwartet 4 Felder; alles nach dem dritten Semikolon bleibt in Value.
+    """
+    raw_text = None
+    used_encoding = None
+    for enc in _CSV_ENCODINGS:
+        try:
+            raw_text = file_path.read_text(encoding=enc)
+            used_encoding = enc
+            break
+        except UnicodeDecodeError:
+            continue
+        except Exception as exc:
+            raise ValueError(f"Diagnose-CSV konnte nicht gelesen werden: {file_path} ({exc})") from exc
+
+    if raw_text is None:
+        raise ValueError(
+            f"Diagnose-CSV konnte mit keiner unterstützten Kodierung gelesen werden: {file_path} "
+            f"(versucht: {', '.join(_CSV_ENCODINGS)})"
+        )
+
+    lines = raw_text.splitlines()
+    if not lines:
+        raise ValueError(f"Diagnose-CSV ist leer: {file_path}")
+
+    header = lines[0].strip().lstrip("\ufeff")
+    expected_header = "PatientID;ParameterID;Time;Value"
+    comma_header = "PatientID,ParameterID,Time,Value"
+    if ";" not in header and "," in header:
+        LOGGER.warning(
+            "Diagnose-CSV %s scheint komma-separiert zu sein. Fallback auf pandas-Parser wird verwendet.",
+            file_path.name,
+        )
+        return read_tabular(file_path)
+
+    if header.replace(" ", "") != expected_header:
+        LOGGER.warning(
+            "Unerwarteter Header in Diagnose-CSV (%s): '%s' (erwartet: '%s')",
+            file_path.name,
+            header,
+            expected_header,
+        )
+
+    parsed_rows = []
+    malformed_count = 0
+    for line_number, raw_line in enumerate(lines[1:], start=2):
+        line = raw_line.strip("\n\r")
+        if not line.strip():
+            continue
+        parts = line.split(";", 3)
+        if len(parts) != 4:
+            malformed_count += 1
+            LOGGER.warning(
+                "Zeile %d in %s konnte nicht korrekt geparst werden und wird übersprungen.",
+                line_number,
+                file_path.name,
+            )
+            continue
+        patient_id, parameter_id, time_value, value = [p.strip() for p in parts]
+        parsed_rows.append(
+            {
+                "PatientID": patient_id,
+                "ParameterID": parameter_id,
+                "Time": time_value,
+                "Value": value,
+            }
+        )
+
+    if not parsed_rows:
+        raise ValueError(
+            f"Diagnose-CSV konnte nicht geparst werden: {file_path}. "
+            f"Keine gültigen Datenzeilen gefunden (Kodierung: {used_encoding})."
+        )
+
+    if malformed_count > 0:
+        LOGGER.warning(
+            "Diagnose-CSV %s: %d fehlerhafte Zeile(n) wurden übersprungen (Kodierung: %s).",
+            file_path.name,
+            malformed_count,
+            used_encoding,
+        )
+
+    return pd.DataFrame(parsed_rows, columns=EXPECTED_COLUMNS)
 
 
 def _load_diagnosis_rows(input_path: Path) -> pd.DataFrame:

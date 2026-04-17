@@ -2,6 +2,7 @@ import json
 from typing import Dict, Any
 
 from src.models.llm_interface import call_llm
+from src.models.json_parsing import parse_llm_json_output
 
 
 def load_prompt() -> str:
@@ -43,12 +44,8 @@ Extrahierte Signale (JSON):
 
     raw_output = call_llm(system_prompt, user_prompt)
 
-    print("=== RAW INTERPRETATION LLM START ===")
-    print(raw_output)
-    print("=== RAW INTERPRETATION LLM END ===")
-
     try:
-        result = json.loads(raw_output)
+        result = parse_llm_json_output(raw_output, "Agent 2 / Interpretation")
 
         if "signalstaerke" not in result or result["signalstaerke"] not in ["hoch", "mittel", "niedrig"]:
             result["signalstaerke"] = "niedrig"
@@ -67,6 +64,6 @@ Extrahierte Signale (JSON):
 
         return result
 
-    except Exception:
-        print("Fehler beim JSON parsing in interpretation_llm.py")
+    except Exception as exc:
+        print(f"Fehler beim JSON-Parsing in Agent 2: {exc}")
         return empty_result()

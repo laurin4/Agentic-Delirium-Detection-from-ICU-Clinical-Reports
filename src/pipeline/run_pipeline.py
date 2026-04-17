@@ -3,7 +3,7 @@ from src.agents.extraction import extract_passages
 from src.agents.interpretation import interpret_signals
 from src.agents.interpretation_llm import interpret_signals_llm
 from src.agents.classification import classify_delirium
-from src.pipeline.paths import ANONYMIZED_DIR, PREDICTIONS_DIR
+from src.pipeline.paths import ANONYMIZED_DIR, PREDICTIONS_DIR, MAX_REPORTS
 from src.preprocessing.diagnosis_mapper import build_patient_level_report_records
 
 SIGNAL_KEYS = [
@@ -46,6 +46,14 @@ if __name__ == "__main__":
         report_records = _load_txt_reports()
     else:
         raise ValueError(f"Ungültiger INPUT_MODE: {INPUT_MODE}")
+
+    if MAX_REPORTS is not None:
+        if isinstance(MAX_REPORTS, int) and MAX_REPORTS > 0:
+            report_records = report_records[:MAX_REPORTS]
+            print(f"Hinweis: MAX_REPORTS aktiv ({MAX_REPORTS}) - es werden nur die ersten Berichte verarbeitet.")
+        else:
+            raise ValueError("MAX_REPORTS muss None oder eine positive Ganzzahl sein.")
+
     rows = []
 
     print(f"\n=== Agent 1 + Agent 2 + Agent 3: Delir-Pipeline ({INTERPRETATION_MODE}) ===")

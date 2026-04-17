@@ -1,13 +1,22 @@
 import requests
-from src.models.model_config import OLLAMA_URL, MODEL_NAME
+
+from src.models.model_config import OLLAMA_URL, MODEL_NAME, TIMEOUT
+
+
+def _build_chat_url(base_url: str) -> str:
+    clean = base_url.rstrip("/")
+    if clean.endswith("/api/chat"):
+        return clean
+    if clean.endswith("/api/generate"):
+        return f"{clean[:-len('/api/generate')]}/api/chat"
+    if clean.endswith("/api"):
+        return f"{clean}/chat"
+    return f"{clean}/api/chat"
+
 
 def call_llm(system_prompt: str, user_prompt: str) -> str:
     try:
-        # Wichtig: Falls deine OLLAMA_URL auf ".../api/generate" endet, 
-        # biegen wir das hier sicherheitshalber auf die Chat-API um.
-        chat_url = OLLAMA_URL.replace("/api/generate", "/api/chat")
-        if not chat_url.endswith("/api/chat"):
-            chat_url = "http://localhost:11434/api/chat" # Fallback
+        chat_url = _build_chat_url(OLLAMA_URL)
 
         response = requests.post(
             chat_url,
@@ -15,19 +24,22 @@ def call_llm(system_prompt: str, user_prompt: str) -> str:
                 "model": MODEL_NAME,
                 "messages": [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt},
                 ],
                 "stream": False,
-                "format": "json",
-                "options": {"temperature": 0}
+                "options": {"temperature": 0},
             },
-            timeout=120
+            timeout=TIMEOUT,
         )
         response.raise_for_status()
-        
-        # Bei der Chat-API liegt die Antwort verschachtelt in 'message' -> 'content'
-        return response.json()["message"]["content"]
-        
+
+        payload = response.json()
+        message = payload.get("message", {})
+        content = message.get("content")
+        if not isinstance(content, str):
+            raise ValueError("Antwort von Ollama enthält keinen gültigen Text unter 'message.content'.")
+        return content
+
     except Exception as e:
-        print(f"LLM Fehler: {e}")
+        print(f"LLM-Fehler: {e}")
         return ""

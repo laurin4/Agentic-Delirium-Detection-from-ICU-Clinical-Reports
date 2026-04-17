@@ -1,5 +1,5 @@
-import json
 from src.models.llm_interface import call_llm
+from src.models.json_parsing import parse_llm_json_output
 
 EXPECTED_KEY = "desorientierung"
 
@@ -17,20 +17,15 @@ def extract_passages(text: str):
 """
 
     raw_output = call_llm(system_prompt, user_prompt)
-    print("=== RAW OUTPUT START ===")
-    print(raw_output)
-    print("=== RAW OUTPUT END ===")
-    
 
     try:
-        result = json.loads(raw_output)
+        result = parse_llm_json_output(raw_output, "Agent 1 / Extraction")
 
         if EXPECTED_KEY not in result or not isinstance(result[EXPECTED_KEY], list):
             result = empty_result()
 
-    except Exception:
-        print("Fehler beim JSON parsing")
-        print(raw_output)
+    except Exception as exc:
+        print(f"Fehler beim JSON-Parsing in Agent 1: {exc}")
         result = empty_result()
 
     return result
