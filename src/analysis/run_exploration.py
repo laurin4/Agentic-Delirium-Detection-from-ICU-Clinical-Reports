@@ -43,6 +43,16 @@ SIGNAL_CATEGORY_PATTERNS = {
     "delirium_prophylaxis": [r"prophyl", r"melatonin", r"reorient"],
 }
 
+DELIR_KEYWORDS = ["delir", "desorient", "verwirr", "agitation", "vigilanz"]
+AGENT1_SIGNAL_KEYS = [
+    "desorientierung",
+    "delir_explizit",
+    "vigilanz",
+    "hyperaktivitaet_agitation",
+    "delir_therapie",
+    "delir_prophylaxe",
+]
+
 PREDICTIONS_PROMPT_PATH = PREDICTIONS_DIR / "agent1_agent2_agent3_results_prompt.csv"
 EXPLORATION_REPORT_PATH = ANALYSIS_DIR / "exploration" / "report.txt"
 
@@ -87,6 +97,71 @@ def _load_predictions() -> pd.DataFrame:
         if candidate.exists():
             return _normalize_pid(pd.read_csv(candidate))
     return pd.DataFrame()
+
+
+def _get_report_text_series(reports: pd.DataFrame) -> pd.Series:
+    if "report_text" in reports.columns:
+        return reports["report_text"].fillna("").astype(str)
+    if "bericht" in reports.columns:
+        return reports["bericht"].fillna("").astype(str)
+    return pd.Series(dtype=str)
+
+
+def _plot_top_diagnoses(reports: pd.DataFrame, output_dir: Path) -> pd.DataFrame:
+    texts = _get_report_text_series(reports)
+    if texts.empty:
+        return pd.DataFrame(columns=["diagnosis", "count"])
+
+    counter: Counter = Counter()
+    for text in texts:
+        tokens = text.lower().split()
+        counter.update(tokens)
+
+    top_df = pd.DataFrame(counter.most_common(20), columns=["diagnosis", "count"])
+    top_df.to_csv(output_dir / "top_diagnoses.csv", index=False)
+
+    plot_df = top_df.sort_values("count", ascending=True)
+    fig, ax = plt.subplots(figsize=(9, 6))
+    if not plot_df.empty:
+        ax.barh(plot_df["diagnosis"], plot_df["count"], color="#355C7D")
+    ax.set_title("Top Diagnoses (All Reports)")
+    ax.set_xlabel("Count")
+    ax.set_ylabel("Diagnosis")
+    ax.grid(axis="x", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(EXPLORATION_PLOTS_DIR / "top_diagnoses.png", dpi=300)
+    plt.close(fig)
+    return top_df
+
+
+def _plot_delir_diagnoses(reports: pd.DataFrame, output_dir: Path) -> pd.DataFrame:
+    texts = _get_report_text_series(reports)
+    if texts.empty:
+        return pd.DataFrame(columns=["keyword", "count"])
+
+    counter: Counter = Counter()
+    for text in texts:
+        lower = text.lower()
+        for keyword in DELIR_KEYWORDS:
+            count = lower.count(keyword)
+            if count > 0:
+                counter[keyword] += count
+
+    delir_df = pd.DataFrame(counter.most_common(), columns=["keyword", "count"])
+    delir_df.to_csv(output_dir / "top_delir_diagnoses.csv", index=False)
+
+    plot_df = delir_df.sort_values("count", ascending=True)
+    fig, ax = plt.subplots(figsize=(8.5, 5))
+    if not plot_df.empty:
+        ax.barh(plot_df["keyword"], plot_df["count"], color="#6C5B7B")
+    ax.set_title("Delir-Related Diagnoses (Keyword Frequency)")
+    ax.set_xlabel("Count")
+    ax.set_ylabel("Keyword")
+    ax.grid(axis="x", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(EXPLORATION_PLOTS_DIR / "top_delir_diagnoses.png", dpi=300)
+    plt.close(fig)
+    return delir_df
 
 
 def _write_overview_tables(diag: pd.DataFrame, icd10: pd.DataFrame, icdsc: pd.DataFrame) -> None:
@@ -174,43 +249,55 @@ def _plot_keyword_frequency_from_reports(reports: pd.DataFrame) -> pd.DataFrame:
     return top_terms
 
 
-def _plot_signal_category_frequencies(predictions: pd.DataFrame) -> pd.DataFrame:
-    if predictions.empty or "delir_signale" not in predictions.columns:
+def _plot_signal_category_frequencies(predictions: pd.DataFrame, output_dir: Path) -> pd.DataFrame:
+    if predictions.empty:
         return pd.DataFrame(columns=["signal_category", "count"])
 
-    counts = {name: 0 for name in SIGNAL_CATEGORY_PATTERNS}
-    counts["other_signal_mentions"] = 0
-    signal_text = predictions["delir_signale"].fillna("").astype(str)
+    counts = {key: 0 for key in AGENT1_SIGNAL_KEYS}
+    if all(key in predictions.columns for key in AGENT1_SIGNAL_KEYS):
+        for key in AGENT1_SIGNAL_KEYS:
+            series = predictions[key]
+            if series.dtype == bool:
+                counts[key] = int(series.fillna(False).sum())
+            else:
+                parsed = series.fillna("").astype(str)
+                counts[key] = int(parsed.apply(lambda v: 0 if v.strip() == "" else len([x for x in v.split(" | ") if x.strip()])).sum())
+    elif "delir_signale" in predictions.columns:
+        # Fallback for current combined extraction text format.
+        signal_text = predictions["delir_signale"].fillna("").astype(str)
+        for row in signal_text:
+            parts = [p.strip().lower() for p in row.split("|") if p.strip()]
+            for part in parts:
+                for category, patterns in SIGNAL_CATEGORY_PATTERNS.items():
+                    if any(re.search(pattern, part) for pattern in patterns):
+                        if category == "disorientation":
+                            counts["desorientierung"] += 1
+                        elif category == "explicit_delirium":
+                            counts["delir_explizit"] += 1
+                        elif category == "vigilance":
+                            counts["vigilanz"] += 1
+                        elif category == "agitation_hyperactivity":
+                            counts["hyperaktivitaet_agitation"] += 1
+                        elif category == "delirium_therapy":
+                            counts["delir_therapie"] += 1
+                        elif category == "delirium_prophylaxis":
+                            counts["delir_prophylaxe"] += 1
 
-    for row in signal_text:
-        parts = [p.strip().lower() for p in row.split("|") if p.strip()]
-        for part in parts:
-            matched = False
-            for category, patterns in SIGNAL_CATEGORY_PATTERNS.items():
-                if any(re.search(pattern, part) for pattern in patterns):
-                    counts[category] += 1
-                    matched = True
-            if not matched:
-                counts["other_signal_mentions"] += 1
+    out = pd.DataFrame(
+        [{"signal_category": key, "count": int(value)} for key, value in counts.items()]
+    ).sort_values("count", ascending=False)
+    out.to_csv(output_dir / "signal_category_frequencies.csv", index=False)
 
-    out = (
-        pd.DataFrame(
-            [{"signal_category": key, "count": value} for key, value in counts.items()]
-        )
-        .sort_values("count", ascending=False)
-        .reset_index(drop=True)
-    )
-    out.to_csv(EXPLORATION_TABLES_DIR / "signal_category_frequency.csv", index=False)
-
+    plot_df = out.sort_values("count", ascending=True)
     fig, ax = plt.subplots(figsize=(9, 5))
-    ax.bar(out["signal_category"], out["count"], color="#6C5B7B")
-    ax.set_title("Signal Category Frequencies from Agent Extraction")
-    ax.set_xlabel("Signal category")
-    ax.set_ylabel("Frequency")
-    ax.tick_params(axis="x", rotation=30)
-    ax.grid(axis="y", alpha=0.25)
+    if not plot_df.empty:
+        ax.barh(plot_df["signal_category"], plot_df["count"], color="#5D6D7E")
+    ax.set_title("Delir Signal Category Frequency")
+    ax.set_xlabel("Count")
+    ax.set_ylabel("Signal category")
+    ax.grid(axis="x", alpha=0.25)
     fig.tight_layout()
-    fig.savefig(EXPLORATION_PLOTS_DIR / "03_signal_category_frequency.png", dpi=300)
+    fig.savefig(EXPLORATION_PLOTS_DIR / "signal_category_frequencies.png", dpi=300)
     plt.close(fig)
     return out
 
@@ -396,6 +483,8 @@ def _write_exploration_summary(
     reports: pd.DataFrame,
     predictions: pd.DataFrame,
     top_terms: pd.DataFrame,
+    top_diagnoses: pd.DataFrame,
+    top_delir_diagnoses: pd.DataFrame,
     signal_freq: pd.DataFrame,
 ) -> None:
     lines = []
@@ -420,6 +509,18 @@ def _write_exploration_summary(
         lines.append("Top keywords in patient-level reports:")
         for _, row in top_terms.head(5).iterrows():
             lines.append(f"- {row['term']}: {int(row['count'])}")
+
+    if not top_diagnoses.empty:
+        lines.append("")
+        lines.append("Top diagnoses (all reports):")
+        for _, row in top_diagnoses.head(5).iterrows():
+            lines.append(f"- {row['diagnosis']}: {int(row['count'])}")
+
+    if not top_delir_diagnoses.empty:
+        lines.append("")
+        lines.append("Top delir-related diagnosis keywords:")
+        for _, row in top_delir_diagnoses.head(5).iterrows():
+            lines.append(f"- {row['keyword']}: {int(row['count'])}")
 
     if not signal_freq.empty:
         lines.append("")
@@ -452,10 +553,22 @@ def main() -> None:
     _patient_activity_tables(diagnosis, icd10, icdsc)
     _plot_report_length_distribution(reports)
     top_terms = _plot_keyword_frequency_from_reports(reports)
-    signal_freq = _plot_signal_category_frequencies(predictions)
+    top_diagnoses = _plot_top_diagnoses(reports, EXPLORATION_TABLES_DIR)
+    top_delir_diagnoses = _plot_delir_diagnoses(reports, EXPLORATION_TABLES_DIR)
+    signal_freq = _plot_signal_category_frequencies(predictions, EXPLORATION_TABLES_DIR)
     _plot_class_distribution_if_available(predictions)
     _write_optional_token_frequency(reports)
-    _write_exploration_summary(diagnosis, icd10, icdsc, reports, predictions, top_terms, signal_freq)
+    _write_exploration_summary(
+        diagnosis,
+        icd10,
+        icdsc,
+        reports,
+        predictions,
+        top_terms,
+        top_diagnoses,
+        top_delir_diagnoses,
+        signal_freq,
+    )
 
     print(f"Exploration tables: {EXPLORATION_TABLES_DIR}")
     print(f"Exploration plots:  {EXPLORATION_PLOTS_DIR}")
