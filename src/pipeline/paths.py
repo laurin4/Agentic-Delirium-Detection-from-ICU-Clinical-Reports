@@ -5,16 +5,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # Daten
 DATA_DIR = PROJECT_ROOT / "data"
-REAL_DATA_DIR = PROJECT_ROOT / "Data"
-REAL_RAW_DIR = REAL_DATA_DIR / "Raw"
+REAL_DATA_DIR = DATA_DIR
+REAL_RAW_DIR = REAL_DATA_DIR / "raw"
 ANONYMIZED_DIR = DATA_DIR / "anonymized"
 DIAGNOSIS_EXAMPLES_DIR = ANONYMIZED_DIR / "beispiele"
 STRUCTURED_DIR = DATA_DIR / "structured"
 STRUCTURED_RAW_DIR = STRUCTURED_DIR / "raw"
 
-# Default production inputs (CSV under Data/Raw for Ubuntu/local parity).
+# Default production inputs (CSV unter data/raw fuer Ubuntu/local parity).
 # Set DATA_MODE = "synthetic" only for offline regression tests (CSV generator outputs).
 DATA_MODE = "real"  # allowed: "real", "synthetic"
+MAX_REPORTS = None  # None = alle Berichte; int = nur erste N Berichte
 
 # Outputs
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
