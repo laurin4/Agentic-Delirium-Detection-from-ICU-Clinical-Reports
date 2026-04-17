@@ -14,18 +14,14 @@ import numpy as np
 import pandas as pd
 
 from src.pipeline.paths import (
-    ANALYSIS_PLOTS_DIR,
-    ANALYSIS_REPORTS_DIR,
-    ANALYSIS_TABLES_DIR,
-    DIAGNOSIS_INPUT_PATH,
-    ICD10_PATH,
-    ICDSC_PATH,
+    ANALYSIS_DIR,
+    ANALYSIS_EVALUATION_PLOTS_DIR,
+    ANALYSIS_EVALUATION_TABLES_DIR,
     REPORT_VS_BASELINE_PATH,
 )
-from src.pipeline.tabular_io import read_tabular
-from src.preprocessing.diagnosis_mapper import build_patient_level_reports
 
 CLASS_LABELS = [0, 1, 2]
+REPORT_PATH = ANALYSIS_DIR / "evaluation" / "report.txt"
 
 
 def _load_main_df() -> pd.DataFrame:
@@ -36,152 +32,71 @@ def _load_main_df() -> pd.DataFrame:
     return df
 
 
-def _safe_load_tabular(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        return pd.DataFrame()
-    return read_tabular(path)
+def _safe_div(numerator: float, denominator: float) -> float:
+    return numerator / denominator if denominator else 0.0
 
 
-def _normalize_pid(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    if "PatientenID" not in out.columns and "PatientID" in out.columns:
-        out = out.rename(columns={"PatientID": "PatientenID"})
-    if "PatientenID" in out.columns:
-        out["PatientenID"] = out["PatientenID"].astype(str).str.strip()
-    return out
-
-
-def _write_input_quality_tables(main_df: pd.DataFrame, diagnosis_rows: pd.DataFrame, icd10: pd.DataFrame, icdsc: pd.DataFrame) -> None:
-    checks: List[Dict[str, str]] = []
-
-    def add(check: str, value: str, detail: str = ""):
-        checks.append({"check": check, "value": value, "detail": detail})
-
-    add("comparison_rows", str(len(main_df)))
-    add("comparison_unique_patientenid", str(main_df["PatientenID"].nunique() if "PatientenID" in main_df.columns else 0))
-
-    for name, df in [
-        ("diagnosis_raw", diagnosis_rows),
-        ("icd10_raw", icd10),
-        ("icdsc_raw", icdsc),
-    ]:
-        add(f"{name}_rows", str(len(df)))
-        if "PatientenID" in df.columns:
-            add(f"{name}_unique_patientenid", str(df["PatientenID"].nunique()))
-            missing = int(df["PatientenID"].isna().sum())
-            add(f"{name}_missing_patientenid", str(missing))
-
-    pd.DataFrame(checks).to_csv(ANALYSIS_TABLES_DIR / "input_quality_checks.csv", index=False)
-
-
-
-def _write_distribution_tables(df: pd.DataFrame) -> None:
-    pred_dist = df["klasse"].value_counts(dropna=False).sort_index().rename_axis("klasse").reset_index(name="count")
-    pred_dist.to_csv(ANALYSIS_TABLES_DIR / "distribution_predicted_class.csv", index=False)
-
-    if "baseline_reference_class" in df.columns:
-        ref_dist = (
-            df["baseline_reference_class"].value_counts(dropna=False).sort_index().rename_axis("baseline_reference_class").reset_index(name="count")
-        )
-        ref_dist.to_csv(ANALYSIS_TABLES_DIR / "distribution_reference_class.csv", index=False)
-
-    if "signalstaerke" in df.columns:
-        ss = df["signalstaerke"].fillna("missing").value_counts().rename_axis("signalstaerke").reset_index(name="count")
-        ss.to_csv(ANALYSIS_TABLES_DIR / "distribution_signalstaerke.csv", index=False)
-
-
-
-def _write_patient_level_analysis(df: pd.DataFrame) -> None:
-    out = pd.DataFrame()
-    out["PatientenID"] = df.get("PatientenID", pd.Series(dtype=str))
-    if "anzahl_treffer" in df.columns:
-        out["anzahl_treffer"] = pd.to_numeric(df["anzahl_treffer"], errors="coerce").fillna(0)
-    else:
-        out["anzahl_treffer"] = 0
-    out["klasse"] = pd.to_numeric(df.get("klasse", pd.Series(dtype=float)), errors="coerce")
-    out["baseline_reference_class"] = pd.to_numeric(df.get("baseline_reference_class", pd.Series(dtype=float)), errors="coerce")
-    out["abs_class_error"] = (out["klasse"] - out["baseline_reference_class"]).abs()
-
-    if "delir_signale" in df.columns:
-        out["n_signals_from_text"] = (
-            df["delir_signale"].fillna("").astype(str).apply(lambda s: 0 if s.strip() == "" else len([x for x in s.split(" | ") if x.strip()]))
-        )
-
-    if "report_text" in df.columns:
-        out["report_char_len"] = df["report_text"].fillna("").astype(str).str.len()
-
-    out.to_csv(ANALYSIS_TABLES_DIR / "patient_level_analysis_table.csv", index=False)
-
-
-
-def _write_confusions(df: pd.DataFrame) -> None:
-    if "baseline_reference_class" not in df.columns:
-        return
-
-    ct = pd.crosstab(df["baseline_reference_class"], df["klasse"], dropna=False)
-    ct = ct.reindex(index=CLASS_LABELS, columns=CLASS_LABELS, fill_value=0)
-    ct.to_csv(ANALYSIS_TABLES_DIR / "confusion_matrix_3class_analysis.csv")
-
-    row_sums = ct.sum(axis=1).replace(0, np.nan)
-    ct_norm = ct.div(row_sums, axis=0).fillna(0)
-    ct_norm.to_csv(ANALYSIS_TABLES_DIR / "confusion_matrix_3class_row_normalized.csv")
-
-    errors = df.copy()
-    errors["class_error"] = pd.to_numeric(errors["klasse"], errors="coerce") - pd.to_numeric(
-        errors["baseline_reference_class"], errors="coerce"
-    )
-    errors["error_type"] = errors["class_error"].map(lambda v: "overcall" if v > 0 else ("undercall" if v < 0 else "exact"))
-    errors.to_csv(ANALYSIS_TABLES_DIR / "class_error_detail_table.csv", index=False)
-
-
-
-def _plot_class_distribution(df: pd.DataFrame) -> None:
-    pred = df["klasse"].value_counts().reindex(CLASS_LABELS, fill_value=0)
-    ref = df.get("baseline_reference_class", pd.Series(dtype=float)).value_counts().reindex(CLASS_LABELS, fill_value=0)
-
-    x = np.arange(len(CLASS_LABELS))
-    width = 0.35
-    fig, ax = plt.subplots(figsize=(8, 4.5))
-    ax.bar(x - width / 2, pred.values, width=width, label="prediction", color="#2E86AB")
-    ax.bar(x + width / 2, ref.values, width=width, label="reference", color="#A23B72")
-    ax.set_xticks(x)
-    ax.set_xticklabels([str(c) for c in CLASS_LABELS])
-    ax.set_xlabel("Class")
-    ax.set_ylabel("Patients")
-    ax.set_title("Predicted vs Reference Class Distribution")
-    ax.legend()
-    ax.grid(axis="y", alpha=0.25)
-    fig.tight_layout()
-    fig.savefig(ANALYSIS_PLOTS_DIR / "01_class_distribution.png", dpi=150)
-    plt.close(fig)
-
-
-
-def _plot_signal_strength_by_class(df: pd.DataFrame) -> None:
-    if "signalstaerke" not in df.columns:
-        return
-    tab = pd.crosstab(df["klasse"], df["signalstaerke"], dropna=False)
-    tab = tab.sort_index()
-    tab.to_csv(ANALYSIS_TABLES_DIR / "signalstaerke_by_predicted_class.csv")
-
-    fig, ax = plt.subplots(figsize=(8, 4.5))
-    tab.plot(kind="bar", stacked=True, ax=ax, colormap="viridis")
-    ax.set_xlabel("Predicted class")
-    ax.set_ylabel("Count")
-    ax.set_title("Signal Strength Composition by Predicted Class")
-    ax.grid(axis="y", alpha=0.25)
-    fig.tight_layout()
-    fig.savefig(ANALYSIS_PLOTS_DIR / "02_signalstaerke_by_class.png", dpi=150)
-    plt.close(fig)
-
-
-
-def _plot_confusion_heatmap(df: pd.DataFrame) -> None:
-    if "baseline_reference_class" not in df.columns:
-        return
+def _confusion_matrix(df: pd.DataFrame) -> pd.DataFrame:
     cm = pd.crosstab(df["baseline_reference_class"], df["klasse"], dropna=False)
-    cm = cm.reindex(index=CLASS_LABELS, columns=CLASS_LABELS, fill_value=0)
+    return cm.reindex(index=CLASS_LABELS, columns=CLASS_LABELS, fill_value=0).astype(int)
 
+
+def _classification_report(cm: pd.DataFrame) -> pd.DataFrame:
+    rows: List[Dict[str, float]] = []
+    for cls in CLASS_LABELS:
+        tp = int(cm.loc[cls, cls])
+        fp = int(cm[cls].sum() - tp)
+        fn = int(cm.loc[cls].sum() - tp)
+        support = int(cm.loc[cls].sum())
+        precision = _safe_div(tp, tp + fp)
+        recall = _safe_div(tp, tp + fn)
+        f1 = _safe_div(2 * precision * recall, precision + recall)
+        rows.append(
+            {
+                "class": cls,
+                "support": support,
+                "precision": round(precision, 6),
+                "recall": round(recall, 6),
+                "f1_score": round(f1, 6),
+                "false_positives": fp,
+                "false_negatives": fn,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _class_distribution_comparison(df: pd.DataFrame) -> pd.DataFrame:
+    pred = df["klasse"].value_counts().reindex(CLASS_LABELS, fill_value=0)
+    ref = df["baseline_reference_class"].value_counts().reindex(CLASS_LABELS, fill_value=0)
+    rows = []
+    for cls in CLASS_LABELS:
+        rows.append(
+            {
+                "class": cls,
+                "prediction_count": int(pred.loc[cls]),
+                "baseline_count": int(ref.loc[cls]),
+                "prediction_share": round(_safe_div(pred.loc[cls], len(df)), 6),
+                "baseline_share": round(_safe_div(ref.loc[cls], len(df)), 6),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _ordinal_error_statistics(df: pd.DataFrame) -> pd.DataFrame:
+    diff = pd.to_numeric(df["klasse"], errors="coerce") - pd.to_numeric(df["baseline_reference_class"], errors="coerce")
+    abs_diff = diff.abs()
+    return pd.DataFrame(
+        [
+            {"metric": "mean_absolute_error", "value": round(float(abs_diff.mean()), 6)},
+            {"metric": "overprediction_count", "value": int((diff > 0).sum())},
+            {"metric": "underprediction_count", "value": int((diff < 0).sum())},
+            {"metric": "exact_match_count", "value": int((diff == 0).sum())},
+            {"metric": "total_rows", "value": int(diff.notna().sum())},
+        ]
+    )
+
+
+def _plot_confusion_heatmap(cm: pd.DataFrame) -> None:
     fig, ax = plt.subplots(figsize=(6, 5))
     im = ax.imshow(cm.values, cmap="Blues")
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
@@ -189,135 +104,142 @@ def _plot_confusion_heatmap(df: pd.DataFrame) -> None:
     ax.set_yticks(np.arange(len(CLASS_LABELS)))
     ax.set_xticklabels(CLASS_LABELS)
     ax.set_yticklabels(CLASS_LABELS)
-    ax.set_xlabel("Prediction")
-    ax.set_ylabel("Reference")
-    ax.set_title("Confusion Matrix (3-class)")
+    ax.set_xlabel("Predicted class")
+    ax.set_ylabel("Baseline class")
+    ax.set_title("Confusion Matrix (3-Class)")
     for i in range(cm.shape[0]):
         for j in range(cm.shape[1]):
             ax.text(j, i, int(cm.values[i, j]), ha="center", va="center", color="black")
     fig.tight_layout()
-    fig.savefig(ANALYSIS_PLOTS_DIR / "03_confusion_heatmap.png", dpi=150)
+    fig.savefig(ANALYSIS_EVALUATION_PLOTS_DIR / "01_confusion_matrix_heatmap.png", dpi=300)
     plt.close(fig)
 
 
-
-def _plot_hits_and_error(df: pd.DataFrame) -> None:
-    if "anzahl_treffer" not in df.columns or "baseline_reference_class" not in df.columns:
-        return
-    x = pd.to_numeric(df["anzahl_treffer"], errors="coerce").fillna(0)
-    y = pd.to_numeric(df["klasse"], errors="coerce") - pd.to_numeric(df["baseline_reference_class"], errors="coerce")
-
-    fig, ax = plt.subplots(figsize=(7.5, 4.5))
-    ax.scatter(x, y, alpha=0.7, s=40, color="#1b9e77")
-    ax.axhline(0, linestyle="--", color="black", linewidth=1)
-    ax.set_xlabel("Number of extracted hits (anzahl_treffer)")
-    ax.set_ylabel("Class error (prediction - reference)")
-    ax.set_title("Error vs Extracted Hits")
-    ax.grid(alpha=0.25)
-    fig.tight_layout()
-    fig.savefig(ANALYSIS_PLOTS_DIR / "04_error_vs_hits_scatter.png", dpi=150)
-    plt.close(fig)
-
-
-
-def _plot_report_length(df: pd.DataFrame, reports: pd.DataFrame) -> None:
-    if reports.empty:
-        return
-    rep = reports.copy()
-    rep["report_char_len"] = rep["report_text"].fillna("").astype(str).str.len()
-
-    merged = df.merge(rep[["PatientenID", "report_char_len"]], on="PatientenID", how="left") if "PatientenID" in df.columns else rep
-
-    fig, ax = plt.subplots(figsize=(8, 4.5))
-    vals = merged["report_char_len"].dropna()
-    if len(vals) > 0:
-        ax.hist(vals, bins=min(20, max(5, int(len(vals) / 2))), color="#386cb0", alpha=0.85)
-    ax.set_xlabel("Report length (characters)")
-    ax.set_ylabel("Count")
-    ax.set_title("Distribution of Patient-level Report Length")
+def _plot_distribution_comparison(dist_df: pd.DataFrame) -> None:
+    fig, ax = plt.subplots(figsize=(8.5, 5))
+    x = np.arange(len(CLASS_LABELS))
+    width = 0.35
+    ax.bar(x - width / 2, dist_df["prediction_count"], width=width, label="Prediction", color="#2E86AB")
+    ax.bar(x + width / 2, dist_df["baseline_count"], width=width, label="Baseline", color="#A23B72")
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(c) for c in CLASS_LABELS])
+    ax.set_title("Predicted vs Baseline Class Distribution")
+    ax.set_xlabel("Class")
+    ax.set_ylabel("Number of patients")
+    ax.legend()
     ax.grid(axis="y", alpha=0.25)
     fig.tight_layout()
-    fig.savefig(ANALYSIS_PLOTS_DIR / "05_report_length_histogram.png", dpi=150)
+    fig.savefig(ANALYSIS_EVALUATION_PLOTS_DIR / "02_predicted_vs_baseline_distribution.png", dpi=300)
     plt.close(fig)
 
-    merged[["PatientenID", "report_char_len"]].to_csv(ANALYSIS_TABLES_DIR / "report_length_per_patient.csv", index=False)
+
+def _plot_error_distribution(df: pd.DataFrame) -> pd.DataFrame:
+    diff = pd.to_numeric(df["klasse"], errors="coerce") - pd.to_numeric(df["baseline_reference_class"], errors="coerce")
+    counts = pd.DataFrame(
+        [
+            {"error_type": "false_positive_overprediction", "count": int((diff > 0).sum())},
+            {"error_type": "false_negative_underprediction", "count": int((diff < 0).sum())},
+            {"error_type": "exact_match", "count": int((diff == 0).sum())},
+        ]
+    )
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.bar(counts["error_type"], counts["count"], color=["#E67E22", "#5DADE2", "#58D68D"])
+    ax.set_title("Prediction Error Distribution")
+    ax.set_xlabel("Error category")
+    ax.set_ylabel("Count")
+    ax.tick_params(axis="x", rotation=20)
+    ax.grid(axis="y", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(ANALYSIS_EVALUATION_PLOTS_DIR / "03_error_distribution.png", dpi=300)
+    plt.close(fig)
+    return counts
 
 
-
-def _write_text_summary(main_df: pd.DataFrame, diagnosis_raw: pd.DataFrame, icd10_raw: pd.DataFrame, icdsc_raw: pd.DataFrame) -> None:
+def _write_text_summary(
+    main_df: pd.DataFrame,
+    classification_df: pd.DataFrame,
+    ordinal_df: pd.DataFrame,
+    dist_df: pd.DataFrame,
+) -> None:
     lines = []
-    lines.append("=== In-depth Analysis Summary ===")
+    lines.append("Thesis-Level Model Evaluation Report")
     lines.append("")
-    lines.append(f"Rows in comparison table: {len(main_df)}")
+    lines.append(f"Evaluated rows: {len(main_df)}")
     if "PatientenID" in main_df.columns:
-        lines.append(f"Unique patients in comparison table: {main_df['PatientenID'].nunique()}")
+        lines.append(f"Unique patients: {main_df['PatientenID'].nunique()}")
 
     lines.append("")
-    lines.append("-- Raw source rows --")
-    lines.append(f"Diagnosis raw rows: {len(diagnosis_raw)}")
-    lines.append(f"ICD10 raw rows: {len(icd10_raw)}")
-    lines.append(f"ICDSC raw rows: {len(icdsc_raw)}")
+    lines.append("Key statistics")
+    for _, row in ordinal_df.iterrows():
+        lines.append(f"- {row['metric']}: {row['value']}")
 
-    if "klasse" in main_df.columns:
-        lines.append("")
-        lines.append("-- Predicted class distribution --")
-        dist = main_df["klasse"].value_counts().sort_index().to_dict()
-        lines.append(str(dist))
+    lines.append("")
+    lines.append("Main findings")
+    best = classification_df.sort_values("f1_score", ascending=False).head(1)
+    worst = classification_df.sort_values("f1_score", ascending=True).head(1)
+    if not best.empty and not worst.empty:
+        lines.append(f"- Best-performing class by F1: {int(best.iloc[0]['class'])} ({best.iloc[0]['f1_score']})")
+        lines.append(f"- Weakest class by F1: {int(worst.iloc[0]['class'])} ({worst.iloc[0]['f1_score']})")
 
-    if "baseline_reference_class" in main_df.columns:
-        lines.append("")
-        lines.append("-- Reference class distribution --")
-        ref_dist = main_df["baseline_reference_class"].value_counts().sort_index().to_dict()
-        lines.append(str(ref_dist))
-
-        agree = (
-            (pd.to_numeric(main_df["klasse"], errors="coerce") == pd.to_numeric(main_df["baseline_reference_class"], errors="coerce"))
-            .mean()
+    drift = dist_df.assign(abs_gap=(dist_df["prediction_share"] - dist_df["baseline_share"]).abs())
+    if not drift.empty:
+        top_drift = drift.sort_values("abs_gap", ascending=False).iloc[0]
+        lines.append(
+            f"- Largest class share gap: class {int(top_drift['class'])} "
+            f"(prediction_share={top_drift['prediction_share']}, baseline_share={top_drift['baseline_share']})"
         )
-        lines.append(f"Exact class agreement: {agree:.4f}")
 
     lines.append("")
-    lines.append("Generated artifacts:")
-    lines.append(f"- tables: {ANALYSIS_TABLES_DIR}")
-    lines.append(f"- plots: {ANALYSIS_PLOTS_DIR}")
+    lines.append("Potential issues in model behavior")
+    over = ordinal_df.loc[ordinal_df["metric"] == "overprediction_count", "value"]
+    under = ordinal_df.loc[ordinal_df["metric"] == "underprediction_count", "value"]
+    if len(over) and len(under):
+        if float(over.iloc[0]) > float(under.iloc[0]):
+            lines.append("- The model tends to overpredict severity classes.")
+        elif float(under.iloc[0]) > float(over.iloc[0]):
+            lines.append("- The model tends to underpredict severity classes.")
+        else:
+            lines.append("- Overprediction and underprediction occur at similar rates.")
+    lines.append("- Inspect confusion hotspots between neighboring ordinal classes.")
 
-    (ANALYSIS_REPORTS_DIR / "analysis_summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
-
+    lines.append("")
+    lines.append("Artifacts")
+    lines.append(f"- tables: {ANALYSIS_EVALUATION_TABLES_DIR}")
+    lines.append(f"- plots: {ANALYSIS_EVALUATION_PLOTS_DIR}")
+    REPORT_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def main() -> None:
-    ANALYSIS_TABLES_DIR.mkdir(parents=True, exist_ok=True)
-    ANALYSIS_PLOTS_DIR.mkdir(parents=True, exist_ok=True)
-    ANALYSIS_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    ANALYSIS_EVALUATION_TABLES_DIR.mkdir(parents=True, exist_ok=True)
+    ANALYSIS_EVALUATION_PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+    REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     main_df = _load_main_df()
-    diagnosis_raw = _normalize_pid(_safe_load_tabular(DIAGNOSIS_INPUT_PATH))
-    icd10_raw = _normalize_pid(_safe_load_tabular(ICD10_PATH))
-    icdsc_raw = _normalize_pid(_safe_load_tabular(ICDSC_PATH))
-    reports = build_patient_level_reports()
+    if "klasse" not in main_df.columns or "baseline_reference_class" not in main_df.columns:
+        raise ValueError("Evaluation benötigt die Spalten 'klasse' und 'baseline_reference_class'.")
 
-    # Save standardized source snapshots for traceability
-    diagnosis_raw.to_csv(ANALYSIS_TABLES_DIR / "diagnosis_raw_snapshot.csv", index=False)
-    icd10_raw.to_csv(ANALYSIS_TABLES_DIR / "icd10_raw_snapshot.csv", index=False)
-    icdsc_raw.to_csv(ANALYSIS_TABLES_DIR / "icdsc_raw_snapshot.csv", index=False)
-    reports.to_csv(ANALYSIS_TABLES_DIR / "patient_level_reports_snapshot.csv", index=False)
+    cm = _confusion_matrix(main_df)
+    cm.to_csv(ANALYSIS_EVALUATION_TABLES_DIR / "confusion_matrix_3x3.csv")
 
-    _write_input_quality_tables(main_df, diagnosis_raw, icd10_raw, icdsc_raw)
-    _write_distribution_tables(main_df)
-    _write_patient_level_analysis(main_df)
-    _write_confusions(main_df)
+    class_report_df = _classification_report(cm)
+    class_report_df.to_csv(ANALYSIS_EVALUATION_TABLES_DIR / "classification_report.csv", index=False)
 
-    _plot_class_distribution(main_df)
-    _plot_signal_strength_by_class(main_df)
-    _plot_confusion_heatmap(main_df)
-    _plot_hits_and_error(main_df)
-    _plot_report_length(main_df, reports)
+    dist_df = _class_distribution_comparison(main_df)
+    dist_df.to_csv(ANALYSIS_EVALUATION_TABLES_DIR / "class_distribution_comparison.csv", index=False)
 
-    _write_text_summary(main_df, diagnosis_raw, icd10_raw, icdsc_raw)
+    ordinal_df = _ordinal_error_statistics(main_df)
+    ordinal_df.to_csv(ANALYSIS_EVALUATION_TABLES_DIR / "ordinal_error_statistics.csv", index=False)
 
-    print(f"Analysis tables: {ANALYSIS_TABLES_DIR}")
-    print(f"Analysis plots:  {ANALYSIS_PLOTS_DIR}")
-    print(f"Analysis report: {ANALYSIS_REPORTS_DIR / 'analysis_summary.txt'}")
+    error_dist_df = _plot_error_distribution(main_df)
+    error_dist_df.to_csv(ANALYSIS_EVALUATION_TABLES_DIR / "error_distribution_counts.csv", index=False)
+
+    _plot_confusion_heatmap(cm)
+    _plot_distribution_comparison(dist_df)
+    _write_text_summary(main_df, class_report_df, ordinal_df, dist_df)
+
+    print(f"Evaluation tables: {ANALYSIS_EVALUATION_TABLES_DIR}")
+    print(f"Evaluation plots:  {ANALYSIS_EVALUATION_PLOTS_DIR}")
+    print(f"Evaluation report: {REPORT_PATH}")
 
 
 if __name__ == "__main__":

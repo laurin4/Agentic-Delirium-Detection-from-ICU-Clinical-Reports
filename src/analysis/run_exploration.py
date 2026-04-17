@@ -2,7 +2,7 @@ import os
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Iterable, List
 
 _mpl_config = Path(__file__).resolve().parents[2] / "outputs" / ".mplconfig"
 _mpl_config.mkdir(parents=True, exist_ok=True)
@@ -16,10 +16,13 @@ import numpy as np
 import pandas as pd
 
 from src.pipeline.paths import (
+    ANALYSIS_DIR,
     DIAGNOSIS_INPUT_PATH,
+    PATIENT_LEVEL_REPORTS_PATH,
     EXPLORATION_PLOTS_DIR,
-    EXPLORATION_REPORTS_DIR,
     EXPLORATION_TABLES_DIR,
+    REPORT_VS_BASELINE_PATH,
+    PREDICTIONS_DIR,
     ICD10_PATH,
     ICDSC_PATH,
 )
@@ -30,6 +33,18 @@ STOPWORDS = {
     "ist", "im", "in", "zu", "zur", "zum", "den", "des", "dem", "als", "nach",
     "ohne", "durch", "nicht", "keine", "klinisch", "patient", "patientin", "status",
 }
+
+SIGNAL_CATEGORY_PATTERNS = {
+    "disorientation": [r"desorient", r"orientier"],
+    "explicit_delirium": [r"\bdelir\b", r"delirium"],
+    "agitation_hyperactivity": [r"agitation", r"unruh", r"hyperaktiv"],
+    "vigilance": [r"vigil", r"somnol", r"bewusst", r"schlaef"],
+    "delirium_therapy": [r"haloperidol", r"quetiapin", r"risperidon", r"olanzapin"],
+    "delirium_prophylaxis": [r"prophyl", r"melatonin", r"reorient"],
+}
+
+PREDICTIONS_PROMPT_PATH = PREDICTIONS_DIR / "agent1_agent2_agent3_results_prompt.csv"
+EXPLORATION_REPORT_PATH = ANALYSIS_DIR / "exploration" / "report.txt"
 
 
 def _normalize_pid(df: pd.DataFrame) -> pd.DataFrame:
@@ -67,6 +82,13 @@ def _tokenize(texts: Iterable[str]) -> Counter:
     return counter
 
 
+def _load_predictions() -> pd.DataFrame:
+    for candidate in [REPORT_VS_BASELINE_PATH, PREDICTIONS_PROMPT_PATH]:
+        if candidate.exists():
+            return _normalize_pid(pd.read_csv(candidate))
+    return pd.DataFrame()
+
+
 def _write_overview_tables(diag: pd.DataFrame, icd10: pd.DataFrame, icdsc: pd.DataFrame) -> None:
     overview = pd.DataFrame(
         [
@@ -102,6 +124,148 @@ def _write_overview_tables(diag: pd.DataFrame, icd10: pd.DataFrame, icdsc: pd.Da
         pd.DataFrame(set_rows).to_csv(EXPLORATION_TABLES_DIR / "patient_set_overlap_summary.csv", index=False)
 
 
+def _plot_report_length_distribution(reports: pd.DataFrame) -> pd.DataFrame:
+    if reports.empty or "report_text" not in reports.columns:
+        return pd.DataFrame(columns=["PatientenID", "report_characters", "report_words"])
+
+    out = reports.copy()
+    out["report_text"] = out["report_text"].fillna("").astype(str)
+    out["report_characters"] = out["report_text"].str.len()
+    out["report_words"] = out["report_text"].str.split().str.len()
+    out[["PatientenID", "report_characters", "report_words"]].to_csv(
+        EXPLORATION_TABLES_DIR / "report_length_distribution.csv",
+        index=False,
+    )
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    vals = out["report_words"].dropna()
+    if len(vals) > 0:
+        bins = min(30, max(8, int(np.sqrt(len(vals)))))
+        ax.hist(vals, bins=bins, color="#2E86AB", alpha=0.85)
+    ax.set_title("Patient Report Length Distribution")
+    ax.set_xlabel("Words per patient-level report")
+    ax.set_ylabel("Number of reports")
+    ax.grid(axis="y", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(EXPLORATION_PLOTS_DIR / "01_report_length_distribution.png", dpi=300)
+    plt.close(fig)
+    return out[["PatientenID", "report_characters", "report_words"]]
+
+
+def _plot_keyword_frequency_from_reports(reports: pd.DataFrame) -> pd.DataFrame:
+    if reports.empty or "report_text" not in reports.columns:
+        return pd.DataFrame(columns=["term", "count"])
+
+    term_counter = _tokenize(reports["report_text"].fillna("").astype(str).tolist())
+    top_terms = pd.DataFrame(term_counter.most_common(100), columns=["term", "count"])
+    top_terms.to_csv(EXPLORATION_TABLES_DIR / "keyword_frequency_top100.csv", index=False)
+
+    plot_terms = top_terms.head(20).iloc[::-1]
+    fig, ax = plt.subplots(figsize=(9, 6))
+    if not plot_terms.empty:
+        ax.barh(plot_terms["term"], plot_terms["count"], color="#355C7D")
+    ax.set_title("Top 20 Keywords in Patient Reports")
+    ax.set_xlabel("Frequency")
+    ax.set_ylabel("Keyword")
+    ax.grid(axis="x", alpha=0.2)
+    fig.tight_layout()
+    fig.savefig(EXPLORATION_PLOTS_DIR / "02_keyword_frequency_top20.png", dpi=300)
+    plt.close(fig)
+    return top_terms
+
+
+def _plot_signal_category_frequencies(predictions: pd.DataFrame) -> pd.DataFrame:
+    if predictions.empty or "delir_signale" not in predictions.columns:
+        return pd.DataFrame(columns=["signal_category", "count"])
+
+    counts = {name: 0 for name in SIGNAL_CATEGORY_PATTERNS}
+    counts["other_signal_mentions"] = 0
+    signal_text = predictions["delir_signale"].fillna("").astype(str)
+
+    for row in signal_text:
+        parts = [p.strip().lower() for p in row.split("|") if p.strip()]
+        for part in parts:
+            matched = False
+            for category, patterns in SIGNAL_CATEGORY_PATTERNS.items():
+                if any(re.search(pattern, part) for pattern in patterns):
+                    counts[category] += 1
+                    matched = True
+            if not matched:
+                counts["other_signal_mentions"] += 1
+
+    out = (
+        pd.DataFrame(
+            [{"signal_category": key, "count": value} for key, value in counts.items()]
+        )
+        .sort_values("count", ascending=False)
+        .reset_index(drop=True)
+    )
+    out.to_csv(EXPLORATION_TABLES_DIR / "signal_category_frequency.csv", index=False)
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.bar(out["signal_category"], out["count"], color="#6C5B7B")
+    ax.set_title("Signal Category Frequencies from Agent Extraction")
+    ax.set_xlabel("Signal category")
+    ax.set_ylabel("Frequency")
+    ax.tick_params(axis="x", rotation=30)
+    ax.grid(axis="y", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(EXPLORATION_PLOTS_DIR / "03_signal_category_frequency.png", dpi=300)
+    plt.close(fig)
+    return out
+
+
+def _plot_class_distribution_if_available(predictions: pd.DataFrame) -> pd.DataFrame:
+    if predictions.empty or "klasse" not in predictions.columns:
+        return pd.DataFrame(columns=["class", "count", "source"])
+
+    pred = pd.to_numeric(predictions["klasse"], errors="coerce").value_counts().sort_index()
+    rows = [{"class": int(k), "count": int(v), "source": "prediction"} for k, v in pred.items()]
+
+    if "baseline_reference_class" in predictions.columns:
+        ref = pd.to_numeric(predictions["baseline_reference_class"], errors="coerce").value_counts().sort_index()
+        rows.extend({"class": int(k), "count": int(v), "source": "baseline"} for k, v in ref.items())
+
+    dist_df = pd.DataFrame(rows).sort_values(["source", "class"])
+    dist_df.to_csv(EXPLORATION_TABLES_DIR / "class_distribution_if_available.csv", index=False)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    if not dist_df.empty:
+        pivot = (
+            dist_df.pivot_table(index="class", columns="source", values="count", aggfunc="sum")
+            .fillna(0)
+            .sort_index()
+        )
+        x = np.arange(len(pivot.index))
+        width = 0.35
+        ax.bar(x - width / 2, pivot.get("prediction", pd.Series(0, index=pivot.index)).values, width=width, label="Prediction")
+        if "baseline" in pivot.columns:
+            ax.bar(x + width / 2, pivot["baseline"].values, width=width, label="Baseline")
+        ax.set_xticks(x)
+        ax.set_xticklabels([str(i) for i in pivot.index])
+    ax.set_title("Class Distribution (Available Labels)")
+    ax.set_xlabel("Class")
+    ax.set_ylabel("Count")
+    ax.legend()
+    ax.grid(axis="y", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(EXPLORATION_PLOTS_DIR / "04_class_distribution_if_available.png", dpi=300)
+    plt.close(fig)
+    return dist_df
+
+
+def _write_optional_token_frequency(reports: pd.DataFrame) -> pd.DataFrame:
+    if reports.empty or "report_text" not in reports.columns:
+        return pd.DataFrame(columns=["token", "count"])
+    counter = Counter()
+    for text in reports["report_text"].fillna("").astype(str):
+        tokens = re.findall(r"[A-Za-zÄÖÜäöüß]{2,}", text.lower())
+        counter.update(tokens)
+    token_df = pd.DataFrame(counter.most_common(200), columns=["token", "count"])
+    token_df.to_csv(EXPLORATION_TABLES_DIR / "token_frequency_top200.csv", index=False)
+    return token_df
+
+
 def _diagnosis_exploration(diag: pd.DataFrame) -> None:
     if diag.empty:
         return
@@ -120,7 +284,7 @@ def _diagnosis_exploration(diag: pd.DataFrame) -> None:
         ax.set_title("Top diagnosis terms (Value text)")
         ax.set_xlabel("Frequency")
         fig.tight_layout()
-        fig.savefig(EXPLORATION_PLOTS_DIR / "01_top_diagnosis_terms.png", dpi=150)
+        fig.savefig(EXPLORATION_PLOTS_DIR / "10_top_diagnosis_terms.png", dpi=300)
         plt.close(fig)
 
     if "ParameterID" in diag.columns:
@@ -156,7 +320,7 @@ def _icd10_exploration(icd10: pd.DataFrame) -> None:
         ax.set_title("Top ICD10 codes")
         ax.set_xlabel("Frequency")
         fig.tight_layout()
-        fig.savefig(EXPLORATION_PLOTS_DIR / "02_top_icd10_codes.png", dpi=150)
+        fig.savefig(EXPLORATION_PLOTS_DIR / "11_top_icd10_codes.png", dpi=300)
         plt.close(fig)
 
 
@@ -179,7 +343,7 @@ def _icdsc_exploration(icdsc: pd.DataFrame) -> None:
         ax.set_title("ICDSC Value Distribution")
         ax.grid(axis="y", alpha=0.25)
         fig.tight_layout()
-        fig.savefig(EXPLORATION_PLOTS_DIR / "03_icdsc_value_histogram.png", dpi=150)
+        fig.savefig(EXPLORATION_PLOTS_DIR / "12_icdsc_value_histogram.png", dpi=300)
         plt.close(fig)
 
     if "ICDSC_DelirFlag" in icdsc.columns:
@@ -221,17 +385,27 @@ def _patient_activity_tables(diag: pd.DataFrame, icd10: pd.DataFrame, icdsc: pd.
         ax.set_title("Per-patient row count distribution by source")
         ax.set_ylabel("Rows per patient")
         fig.tight_layout()
-        fig.savefig(EXPLORATION_PLOTS_DIR / "04_patient_activity_boxplot.png", dpi=150)
+        fig.savefig(EXPLORATION_PLOTS_DIR / "13_patient_activity_boxplot.png", dpi=300)
         plt.close(fig)
 
 
-def _write_exploration_summary(diag: pd.DataFrame, icd10: pd.DataFrame, icdsc: pd.DataFrame) -> None:
+def _write_exploration_summary(
+    diag: pd.DataFrame,
+    icd10: pd.DataFrame,
+    icdsc: pd.DataFrame,
+    reports: pd.DataFrame,
+    predictions: pd.DataFrame,
+    top_terms: pd.DataFrame,
+    signal_freq: pd.DataFrame,
+) -> None:
     lines = []
-    lines.append("=== Advanced Data Exploration Summary ===")
+    lines.append("Thesis-Level Input Data Exploration Report")
     lines.append("")
     lines.append(f"Diagnosis rows: {len(diag)}")
     lines.append(f"ICD10 rows: {len(icd10)}")
     lines.append(f"ICDSC rows: {len(icdsc)}")
+    lines.append(f"Patient-level reports: {len(reports)}")
+    lines.append(f"Prediction rows available: {len(predictions)}")
     lines.append("")
 
     if "PatientenID" in diag.columns:
@@ -241,47 +415,51 @@ def _write_exploration_summary(diag: pd.DataFrame, icd10: pd.DataFrame, icdsc: p
     if "PatientenID" in icdsc.columns:
         lines.append(f"Unique ICDSC patients: {icdsc['PatientenID'].nunique()}")
 
-    if "Value" in diag.columns and not diag.empty:
-        top = diag["Value"].fillna("").astype(str).value_counts().head(3)
+    if not top_terms.empty:
         lines.append("")
-        lines.append("Top diagnosis text entries (raw):")
-        for k, v in top.items():
-            short = k[:140] + ("..." if len(k) > 140 else "")
-            lines.append(f"- {v}x: {short}")
+        lines.append("Top keywords in patient-level reports:")
+        for _, row in top_terms.head(5).iterrows():
+            lines.append(f"- {row['term']}: {int(row['count'])}")
 
-    if "Code" in icd10.columns and not icd10.empty:
-        topc = icd10["Code"].fillna("").astype(str).str.upper().value_counts().head(5)
+    if not signal_freq.empty:
         lines.append("")
-        lines.append("Top ICD10 codes:")
-        for k, v in topc.items():
-            lines.append(f"- {k}: {v}")
+        lines.append("Most frequent extracted signal categories:")
+        for _, row in signal_freq.head(5).iterrows():
+            lines.append(f"- {row['signal_category']}: {int(row['count'])}")
 
     lines.append("")
-    lines.append("Artifacts:")
+    lines.append("Artifacts")
     lines.append(f"- tables: {EXPLORATION_TABLES_DIR}")
     lines.append(f"- plots: {EXPLORATION_PLOTS_DIR}")
-    (EXPLORATION_REPORTS_DIR / "exploration_summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    EXPLORATION_REPORT_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def main() -> None:
     EXPLORATION_TABLES_DIR.mkdir(parents=True, exist_ok=True)
     EXPLORATION_PLOTS_DIR.mkdir(parents=True, exist_ok=True)
-    EXPLORATION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    EXPLORATION_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     diagnosis = _safe_load(DIAGNOSIS_INPUT_PATH)
     icd10 = _safe_load(ICD10_PATH)
     icdsc = _safe_load(ICDSC_PATH)
+    reports = _safe_load(PATIENT_LEVEL_REPORTS_PATH)
+    predictions = _load_predictions()
 
     _write_overview_tables(diagnosis, icd10, icdsc)
     _diagnosis_exploration(diagnosis)
     _icd10_exploration(icd10)
     _icdsc_exploration(icdsc)
     _patient_activity_tables(diagnosis, icd10, icdsc)
-    _write_exploration_summary(diagnosis, icd10, icdsc)
+    _plot_report_length_distribution(reports)
+    top_terms = _plot_keyword_frequency_from_reports(reports)
+    signal_freq = _plot_signal_category_frequencies(predictions)
+    _plot_class_distribution_if_available(predictions)
+    _write_optional_token_frequency(reports)
+    _write_exploration_summary(diagnosis, icd10, icdsc, reports, predictions, top_terms, signal_freq)
 
     print(f"Exploration tables: {EXPLORATION_TABLES_DIR}")
     print(f"Exploration plots:  {EXPLORATION_PLOTS_DIR}")
-    print(f"Exploration report: {EXPLORATION_REPORTS_DIR / 'exploration_summary.txt'}")
+    print(f"Exploration report: {EXPLORATION_REPORT_PATH}")
 
 
 if __name__ == "__main__":
