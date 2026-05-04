@@ -21,3 +21,6 @@ __pycache__/
 
 # Logs / temp
 *.log
+
+
+echo "wheelhouse_linux.zip" >> .gitignore
