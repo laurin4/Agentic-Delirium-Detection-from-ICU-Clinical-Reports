@@ -3,11 +3,10 @@ from typing import Dict, Any, List
 
 def classify_delirium(interpretation: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Agent 3: finale Klassifikation in 0 / 1 / 2.
+    Agent 3: finale Klassifikation in 0 / 1.
 
     0 = kein Delir
-    1 = mögliches Delir
-    2 = dokumentiertes Delir
+    1 = Delir
     """
     signalstaerke = interpretation.get("signalstaerke", "niedrig")
     kontext = interpretation.get("kontext", "")
@@ -15,7 +14,7 @@ def classify_delirium(interpretation: Dict[str, Any]) -> Dict[str, Any]:
     begruendung: List[str] = list(interpretation.get("begruendung", []))
 
     if signalstaerke == "hoch":
-        klasse = 2
+        klasse = 1
         finale_begruendung = [
             "Explizite oder sehr starke Delir-Signale vorhanden.",
             *begruendung,
@@ -23,7 +22,7 @@ def classify_delirium(interpretation: Dict[str, Any]) -> Dict[str, Any]:
     elif signalstaerke == "mittel":
         klasse = 1
         finale_begruendung = [
-            "Indirekte Delir-Signale vorhanden, aber keine explizite Delirdiagnose.",
+            "Indirekte Delir-Signale vorhanden.",
             *begruendung,
         ]
     else:
@@ -37,8 +36,7 @@ def classify_delirium(interpretation: Dict[str, Any]) -> Dict[str, Any]:
         "klasse": klasse,
         "klassifikation": {
             0: "kein_delir",
-            1: "moegliches_delir",
-            2: "dokumentiertes_delir",
+            1: "delir",
         }[klasse],
         "kontext": kontext,
         "alternative_erklaerung": alternative_erklaerung,

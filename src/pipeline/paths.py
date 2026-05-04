@@ -15,7 +15,7 @@ STRUCTURED_RAW_DIR = STRUCTURED_DIR / "raw"
 # Default production inputs (CSV unter data/raw fuer Ubuntu/local parity).
 # Set DATA_MODE = "synthetic" only for offline regression tests (CSV generator outputs).
 DATA_MODE = "real"  # allowed: "real", "synthetic"
-MAX_REPORTS = None  # None = alle Berichte; int = nur erste N Berichte
+MAX_REPORTS = 150  # None = alle Berichte; int = nur erste N Berichte
 
 # Outputs
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
@@ -44,11 +44,14 @@ _MODE_INPUTS = {
         "icd10": REAL_RAW_DIR / "ICD.csv",
         "icdsc": REAL_RAW_DIR / "ICDSC.csv",
         "diagnosis": REAL_RAW_DIR / "Diagnosenliste.csv",
+        # Primary text input (CSV, semicolon-separated; not in repo on secure setups).
+        "berichte_csv": REAL_RAW_DIR / "Berichte.csv",
     },
     "synthetic": {
         "icd10": STRUCTURED_RAW_DIR / "synthetic_icd10.csv",
         "icdsc": STRUCTURED_RAW_DIR / "synthetic_icdsc.csv",
         "diagnosis": DIAGNOSIS_EXAMPLES_DIR / "synthetic_diagnoses.csv",
+        "berichte_csv": STRUCTURED_RAW_DIR / "synthetic_berichte.csv",
     },
 }
 
@@ -61,6 +64,8 @@ _paths = _MODE_INPUTS[DATA_MODE]
 ICD10_PATH = _paths["icd10"]
 ICDSC_PATH = _paths["icdsc"]
 DIAGNOSIS_INPUT_PATH = _paths["diagnosis"]
+# Same logical path constant as REAL_RAW_DIR / "Berichte.csv" in DATA_MODE=="real".
+BERICHTE_INPUT_PATH = _paths["berichte_csv"]
 REPORT_ID_MAPPING_PATH = STRUCTURED_DIR / "report_patient_ids.csv"
 
 STRUCTURED_BASELINE_PATH = BASELINE_DIR / "structured_baseline.csv"
@@ -68,6 +73,26 @@ REPORT_VS_BASELINE_PATH = COMPARISONS_DIR / "report_vs_baseline_comparison.csv"
 EVALUATION_SUMMARY_PATH = EVALUATION_DIR / "evaluation_summary.csv"
 EVALUATION_MULTICLASS_SUMMARY_PATH = EVALUATION_DIR / "evaluation_multiclass_summary.csv"
 EVALUATION_CONFUSION_3CLASS_PATH = EVALUATION_DIR / "confusion_matrix_3class.csv"
+EVALUATION_BINARY_BASELINES_DIR = EVALUATION_DIR / "binary_baselines"
+EVALUATION_BINARY_BASELINES_TABLES_DIR = EVALUATION_BINARY_BASELINES_DIR / "tables"
+EVALUATION_BINARY_BASELINES_PLOTS_DIR = EVALUATION_BINARY_BASELINES_DIR / "plots"
+EVALUATION_BINARY_BASELINE_SUMMARY_PATH = (
+    EVALUATION_BINARY_BASELINES_TABLES_DIR / "binary_baseline_summary.csv"
+)
+EVALUATION_BINARY_BASELINE_CONFUSION_COUNTS_PATH = (
+    EVALUATION_BINARY_BASELINES_TABLES_DIR / "binary_baseline_confusion_counts.csv"
+)
+EVALUATION_BINARY_BASELINE_REPORT_PATH = (
+    EVALUATION_BINARY_BASELINES_DIR / "report.txt"
+)
 PATIENT_LEVEL_REPORTS_PATH = PREPARED_DATA_DIR / "patient_level_reports.csv"
 VALIDATION_RESULTS_CSV_PATH = VALIDATION_DIR / "validation_results.csv"
 VALIDATION_SUMMARY_TXT_PATH = VALIDATION_DIR / "validation_summary.txt"
+
+
+LLM_DEBUG_DIR = OUTPUTS_DIR / "logs" / "llm_debug"
+
+# Field-level keyword analysis (Berichte.csv vs structured baselines)
+FIELD_DELIRIUM_ANALYSIS_DIR = ANALYSIS_DIR / "field_delirium"
+FIELD_DELIRIUM_TABLES_DIR = FIELD_DELIRIUM_ANALYSIS_DIR / "tables"
+FIELD_DELIRIUM_PLOTS_DIR = FIELD_DELIRIUM_ANALYSIS_DIR / "plots"

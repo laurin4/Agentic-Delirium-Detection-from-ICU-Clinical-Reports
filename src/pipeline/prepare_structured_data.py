@@ -7,8 +7,8 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _normalize_patient_column(df: pd.DataFrame) -> pd.DataFrame:
-    if "PatientenID" not in df.columns and "PatientID" in df.columns:
-        return df.rename(columns={"PatientID": "PatientenID"})
+    if "PatientID" in df.columns: 
+            df= df.rename(columns={"PatientID": "PatientenID"})
     return df
 
 
@@ -22,6 +22,7 @@ def load_data():
     return icd10, icdsc
 
 
+
 def _ensure_column(df: pd.DataFrame, column: str, default_value):
     if column not in df.columns:
         LOGGER.warning("Missing column '%s'. Filling default values.", column)
@@ -31,7 +32,7 @@ def _ensure_column(df: pd.DataFrame, column: str, default_value):
 
 def _is_valid_delir_code(code: str) -> bool:
     normalized = str(code).strip().upper()
-    return normalized.startswith("F05") and normalized != "F05.1"
+    return normalized in {"F05.0", "F05.8", "F05.9"}
 
 
 def prepare_icd10(icd10: pd.DataFrame) -> pd.DataFrame:
@@ -104,32 +105,52 @@ def prepare_icdsc(icdsc: pd.DataFrame) -> pd.DataFrame:
     return grouped
 
 
-def add_reference_class(df: pd.DataFrame) -> pd.DataFrame:
+def add_binary_baselines(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    for col, default in [
-        ("has_delir_icd10", 0),
-        ("any_delir_flag", 0),
-        ("max_icdsc", 0),
-    ]:
-        if col not in df.columns:
-            LOGGER.warning("Missing baseline column '%s'. Using default fallback.", col)
-            df[col] = default
+    required_input_columns = ["has_delir_icd10", "max_icdsc"]
+    missing_input_columns = [col for col in required_input_columns if col not in df.columns]
+    if missing_input_columns:
+        raise ValueError(
+            "Cannot generate binary baselines: missing required columns: "
+            + ", ".join(missing_input_columns)
+        )
 
-    df["has_delir_icd10"] = pd.to_numeric(df["has_delir_icd10"], errors="coerce").fillna(0).astype(int)
-    df["any_delir_flag"] = pd.to_numeric(df["any_delir_flag"], errors="coerce").fillna(0).astype(int)
+    df["has_delir_icd10"] = (
+        pd.to_numeric(df["has_delir_icd10"], errors="coerce").fillna(0).astype(int)
+    )
     df["max_icdsc"] = pd.to_numeric(df["max_icdsc"], errors="coerce").fillna(0)
 
-    class_2 = (df["has_delir_icd10"] == 1) & (df["any_delir_flag"] == 1)
-    class_1 = (~class_2) & (
-        (df["has_delir_icd10"] == 1) |
-        (df["any_delir_flag"] == 1) |
-        (df["max_icdsc"] >= 4)
-    )
+    for threshold in [1, 2, 3, 4, 5]:
+        df[f"baseline_icdsc_ge_{threshold}"] = (df["max_icdsc"] >= threshold).astype(int)
+    df["baseline_icd10"] = (df["has_delir_icd10"] == 1).astype(int)
+    # Additional ICDSC-shaped baselines (do not replace threshold columns above).
+    df["baseline_icdsc_0"] = (df["max_icdsc"] == 0).astype(int)
+    df["baseline_icdsc_1_to_3"] = (
+        (df["max_icdsc"] >= 1) & (df["max_icdsc"] <= 3)
+    ).astype(int)
+    df["baseline_icdsc_ge_4_grouped"] = (df["max_icdsc"] >= 4).astype(int)
+    return df
 
-    df["baseline_reference_class"] = 0
-    df.loc[class_1, "baseline_reference_class"] = 1
-    df.loc[class_2, "baseline_reference_class"] = 2
+
+def add_reference_class(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df = add_binary_baselines(df)
+
+    def _assign_class(row):
+        has_icd10_delir = row["has_delir_icd10"] == 1
+        max_icdsc = row["max_icdsc"]
+
+        if has_icd10_delir:
+            return 2
+        if max_icdsc >= 6:
+            return 2
+        if max_icdsc >= 4:
+            return 1
+        return 0
+
+    df["baseline_reference_class"] = df.apply(_assign_class, axis=1)
     df["baseline_delir_reference"] = (df["baseline_reference_class"] == 2).astype(int)
+
     return df
 
 

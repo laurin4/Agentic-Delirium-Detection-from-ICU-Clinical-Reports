@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
 
@@ -66,10 +66,17 @@ def _read_diagnosis_file(file_path: Path) -> pd.DataFrame:
 def _read_diagnosis_csv_manual(file_path: Path) -> pd.DataFrame:
     """
     Robuster CSV-Parser für Diagnose-Dateien mit Semikolon-Separator.
-    Erwartet 4 Felder; alles nach dem dritten Semikolon bleibt in Value.
+    Erwartet 4 Felder:
+      PatientID;ParameterID;Time;Value
+
+    Unterstützt:
+    - zusätzliche Semikolons im Value-Feld
+    - Fortsetzungszeilen ohne neue PatientID/ParameterID/Time
+    - verschiedene Encodings
     """
     raw_text = None
     used_encoding = None
+
     for enc in _CSV_ENCODINGS:
         try:
             raw_text = file_path.read_text(encoding=enc)
@@ -93,6 +100,7 @@ def _read_diagnosis_csv_manual(file_path: Path) -> pd.DataFrame:
     header = lines[0].strip().lstrip("\ufeff")
     expected_header = "PatientID;ParameterID;Time;Value"
     comma_header = "PatientID,ParameterID,Time,Value"
+
     if ";" not in header and "," in header:
         LOGGER.warning(
             "Diagnose-CSV %s scheint komma-separiert zu sein. Fallback auf pandas-Parser wird verwendet.",
@@ -110,27 +118,45 @@ def _read_diagnosis_csv_manual(file_path: Path) -> pd.DataFrame:
 
     parsed_rows = []
     malformed_count = 0
+    continuation_count = 0
+    last_row = None
+
     for line_number, raw_line in enumerate(lines[1:], start=2):
-        line = raw_line.strip("\n\r")
+        line = raw_line.rstrip("\n\r")
+
         if not line.strip():
             continue
+
         parts = line.split(";", 3)
-        if len(parts) != 4:
-            malformed_count += 1
-            LOGGER.warning(
-                "Zeile %d in %s konnte nicht korrekt geparst werden und wird übersprungen.",
-                line_number,
-                file_path.name,
-            )
-            continue
-        patient_id, parameter_id, time_value, value = [p.strip() for p in parts]
-        parsed_rows.append(
-            {
+
+        # Normalfall: vollständige neue Datenzeile
+        if len(parts) == 4 and parts[0].strip() and parts[1].strip():
+            patient_id, parameter_id, time_value, value = [p.strip() for p in parts]
+
+            current_row = {
                 "PatientID": patient_id,
                 "ParameterID": parameter_id,
                 "Time": time_value,
                 "Value": value,
             }
+            parsed_rows.append(current_row)
+            last_row = current_row
+            continue
+
+        # Fortsetzungszeile: hängt an vorherigen Value an
+        if last_row is not None:
+            continuation_text = line.strip()
+            if continuation_text:
+                last_row["Value"] = f"{last_row['Value']}\n{continuation_text}".strip()
+                continuation_count += 1
+                continue
+
+        # Wirklich unbrauchbare Zeile
+        malformed_count += 1
+        LOGGER.warning(
+            "Zeile %d in %s konnte nicht korrekt geparst werden und wird übersprungen.",
+            line_number,
+            file_path.name,
         )
 
     if not parsed_rows:
@@ -139,11 +165,12 @@ def _read_diagnosis_csv_manual(file_path: Path) -> pd.DataFrame:
             f"Keine gültigen Datenzeilen gefunden (Kodierung: {used_encoding})."
         )
 
-    if malformed_count > 0:
+    if malformed_count > 0 or continuation_count > 0:
         LOGGER.warning(
-            "Diagnose-CSV %s: %d fehlerhafte Zeile(n) wurden übersprungen (Kodierung: %s).",
+            "Diagnose-CSV %s: %d fehlerhafte Zeile(n) übersprungen, %d Fortsetzungszeile(n) angehängt (Kodierung: %s).",
             file_path.name,
             malformed_count,
+            continuation_count,
             used_encoding,
         )
 
@@ -187,7 +214,7 @@ def _load_diagnosis_rows(input_path: Path) -> pd.DataFrame:
     return combined[EXPECTED_COLUMNS]
 
 
-def build_patient_level_reports(input_dir: Path | None = None) -> pd.DataFrame:
+def build_patient_level_reports(input_dir: Optional[Path] = None) -> pd.DataFrame:
     base_input = input_dir or DIAGNOSIS_INPUT_PATH
     rows = _load_diagnosis_rows(base_input)
     if rows.empty:
@@ -219,6 +246,11 @@ def build_patient_level_reports(input_dir: Path | None = None) -> pd.DataFrame:
     return grouped[["PatientenID", "bericht", "report_text"]]
 
 
-def build_patient_level_report_records(input_dir: Path | None = None) -> List[dict]:
+def build_patient_level_report_records(input_dir: Optional[Path] = None) -> List[dict]:
     df = build_patient_level_reports(input_dir)
     return df.to_dict(orient="records")
+
+
+def load_diagnosis_dataframe(path):
+    rows = _load_diagnosis_rows(path)
+    return pd.DataFrame(rows)

@@ -16,8 +16,8 @@ def test_classify_delirium_high_returns_class_2():
 
     result = classify_delirium(interpretation)
 
-    assert result["klasse"] == 2
-    assert result["klassifikation"] == "dokumentiertes_delir"
+    assert result["klasse"] == 1
+    assert result["klassifikation"] == "delir"
 
 
 
@@ -32,7 +32,7 @@ def test_classify_delirium_medium_returns_class_1():
     result = classify_delirium(interpretation)
 
     assert result["klasse"] == 1
-    assert result["klassifikation"] == "moegliches_delir"
+    assert result["klassifikation"] == "delir"
 
 
 
@@ -109,7 +109,7 @@ def test_prepare_icd10_detects_delir_code_and_main_diagnosis():
     df = pd.DataFrame(
         {
             "PatientenID": [1001, 1001, 1002],
-            "Code": ["F05", "I10", "J44.1"],
+            "Code": ["F05.0", "I10", "J44.1"],
             "IsHauptDiagn": ["1", "NULL", "1"],
         }
     )
@@ -120,7 +120,7 @@ def test_prepare_icd10_detects_delir_code_and_main_diagnosis():
     assert result.loc[0, "PatientenID"] == "1001"
     assert result.loc[0, "has_delir_icd10"] == 1
     assert result.loc[0, "has_main_delir_icd10"] == 1
-    assert "F05" in result.loc[0, "delir_codes"]
+    assert "F05.0" in result.loc[0, "delir_codes"]
 
     assert result.loc[1, "PatientenID"] == "1002"
     assert result.loc[1, "has_delir_icd10"] == 0
@@ -166,10 +166,13 @@ def test_add_reference_class_uses_three_class_logic():
 
     result = add_reference_class(df).sort_values("PatientenID").reset_index(drop=True)
     assert result.loc[0, "baseline_reference_class"] == 2
-    assert result.loc[1, "baseline_reference_class"] == 1
+    assert result.loc[1, "baseline_reference_class"] == 2
     assert result.loc[2, "baseline_reference_class"] == 0
     assert result.loc[0, "baseline_delir_reference"] == 1
-    assert result.loc[1, "baseline_delir_reference"] == 0
+    assert result.loc[1, "baseline_delir_reference"] == 1
+    assert result.loc[0, "baseline_icd10"] == 1
+    assert result.loc[2, "baseline_icdsc_ge_1"] == 1
+    assert result.loc[2, "baseline_icdsc_ge_2"] == 0
 
 
 def test_build_patient_level_reports_groups_and_sorts(tmp_path):

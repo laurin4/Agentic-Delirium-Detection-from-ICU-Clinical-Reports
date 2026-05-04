@@ -3,6 +3,7 @@ from typing import Dict, Any
 
 from src.models.llm_interface import call_llm
 from src.models.json_parsing import parse_llm_json_output
+from src.models.llm_debug import write_llm_debug
 
 
 def load_prompt() -> str:
@@ -20,17 +21,13 @@ def empty_result() -> Dict[str, Any]:
     }
 
 
-def interpret_signals_llm(report_text: str, signals: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Agent 2 (LLM-basiert):
-    interpretiert die von Agent 1 extrahierten Signale mit einem Prompt.
-    Gibt KEINE finale Klasse 0/1/2 zurück, sondern nur:
-    - signalstaerke
-    - kontext
-    - alternative_erklaerung
-    - alternative_erklaerung_keywords
-    - begruendung
-    """
+def interpret_signals_llm(
+    report_text: str,
+    signals: Dict[str, Any],
+    patient_id: str = "",
+    report_name: str = "",
+) -> Dict[str, Any]:
+
     system_prompt = load_prompt()
 
     signals_json = json.dumps(signals, ensure_ascii=False, indent=2)
@@ -42,28 +39,44 @@ Extrahierte Signale (JSON):
 {signals_json}
 """
 
-    raw_output = call_llm(system_prompt, user_prompt)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    raw_output = ""
 
     try:
+        raw_output = call_llm(messages)
         result = parse_llm_json_output(raw_output, "Agent 2 / Interpretation")
 
-        if "signalstaerke" not in result or result["signalstaerke"] not in ["hoch", "mittel", "niedrig"]:
+        if result.get("signalstaerke") not in ["hoch", "mittel", "niedrig"]:
             result["signalstaerke"] = "niedrig"
 
-        if "kontext" not in result or not isinstance(result["kontext"], str):
+        if not isinstance(result.get("kontext"), str):
             result["kontext"] = "keine verwertbare LLM-Interpretation"
 
-        if "alternative_erklaerung" not in result or not isinstance(result["alternative_erklaerung"], bool):
+        if not isinstance(result.get("alternative_erklaerung"), bool):
             result["alternative_erklaerung"] = False
 
-        if "alternative_erklaerung_keywords" not in result or not isinstance(result["alternative_erklaerung_keywords"], list):
+        if not isinstance(result.get("alternative_erklaerung_keywords"), list):
             result["alternative_erklaerung_keywords"] = []
 
-        if "begruendung" not in result or not isinstance(result["begruendung"], list):
+        if not isinstance(result.get("begruendung"), list):
             result["begruendung"] = []
 
         return result
 
     except Exception as exc:
+        debug_path = write_llm_debug(
+            agent_name="Agent_2_Interpretation",
+            patient_id=patient_id,
+            report_name=report_name,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            raw_output=raw_output,
+            error_message=str(exc),
+        )
         print(f"Fehler beim JSON-Parsing in Agent 2: {exc}")
+        print(f"LLM-Debug gespeichert in: {debug_path}")
         return empty_result()

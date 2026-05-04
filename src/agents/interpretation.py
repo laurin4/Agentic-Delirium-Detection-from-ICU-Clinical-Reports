@@ -44,7 +44,7 @@ def interpret_signals(report_text: str, signals: Dict[str, Any]) -> Dict[str, An
     """
     Agent 2: interpretiert die von Agent 1 extrahierten Signale.
 
-    Dieser Agent klassifiziert noch NICHT final in 0/1/2,
+    Dieser Agent klassifiziert noch NICHT final in 0/1,
     sondern bewertet die Signalstärke und den klinischen Kontext.
     """
     normalized = {key: _safe_list(signals, key) for key in SIGNAL_KEYS}

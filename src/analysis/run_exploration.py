@@ -27,6 +27,7 @@ from src.pipeline.paths import (
     ICDSC_PATH,
 )
 from src.pipeline.tabular_io import read_tabular
+from src.preprocessing.diagnosis_mapper import load_diagnosis_dataframe
 
 STOPWORDS = {
     "und", "oder", "bei", "der", "die", "das", "mit", "auf", "von", "ein", "eine",
@@ -540,7 +541,7 @@ def main() -> None:
     EXPLORATION_PLOTS_DIR.mkdir(parents=True, exist_ok=True)
     EXPLORATION_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    diagnosis = _safe_load(DIAGNOSIS_INPUT_PATH)
+    diagnosis = load_diagnosis_dataframe(DIAGNOSIS_INPUT_PATH)
     icd10 = _safe_load(ICD10_PATH)
     icdsc = _safe_load(ICDSC_PATH)
     reports = _safe_load(PATIENT_LEVEL_REPORTS_PATH)
