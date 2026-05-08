@@ -111,6 +111,7 @@ From the project root (`delirium_project/`):
 ```bash
 python -m src.pipeline.prepare_structured_data
 python -m src.analysis.run_data_coverage_analysis
+python -m src.analysis.run_icd_icdsc_overlap_analysis
 python -m src.pipeline.run_pipeline
 python -m src.pipeline.compare_reports_vs_baseline
 python -m src.pipeline.evaluate_predictions
@@ -131,6 +132,7 @@ Optional: `python -m src.validation.validate_inputs`, `python -m src.analysis.ru
 | Report vs baseline merge | `outputs/comparisons/report_vs_baseline_comparison.csv` |
 | Binary baseline evaluation | `outputs/evaluation/binary_baselines/` (tables, plots, `report.txt`) |
 | Data coverage | `outputs/analysis/data_coverage/` |
+| ICD vs ICDSC overlap | `outputs/analysis/icd_icdsc_overlap/` |
 | Field keyword / OR analysis | `outputs/analysis/field_delirium/` |
 | LLM debug dumps | `outputs/logs/llm_debug/` |
 
