@@ -29,6 +29,12 @@ from src.pipeline.paths import (
 LOGGER = logging.getLogger(__name__)
 
 
+def _pct(numerator: int, denominator: int) -> float:
+    if denominator == 0:
+        return 0.0
+    return float(numerator) / float(denominator)
+
+
 def _mpl_config_dir() -> Path:
     root = Path(__file__).resolve().parents[2]
     cfg = root / "outputs" / ".mplconfig"
@@ -215,12 +221,23 @@ def _plot_dataset_sizes(sizes: pd.DataFrame, out_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(8.0, 4.5))
     x = np.arange(len(sizes))
     w = 0.35
-    ax.bar(x - w / 2, sizes["n_rows"], width=w, label="Rows", color="#2563eb")
-    ax.bar(x + w / 2, sizes["n_unique_patient_ids"], width=w, label="Unique patient IDs", color="#38bdf8")
+    rows_bars = ax.bar(x - w / 2, sizes["n_rows"], width=w, label="Rows", color="#1d4ed8")
+    uniq_bars = ax.bar(x + w / 2, sizes["n_unique_patient_ids"], width=w, label="Unique patient IDs", color="#60a5fa")
     ax.set_xticks(x)
     ax.set_xticklabels(sizes["dataset"], rotation=15, ha="right")
     ax.set_ylabel("Count")
-    ax.set_title("Dataset sizes")
+    ax.set_title("Dataset sizes\nStructured baseline contains full cohort; Berichte is a subset")
+    for bars in (rows_bars, uniq_bars):
+        for bar in bars:
+            h = int(bar.get_height())
+            ax.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                bar.get_height(),
+                f"{h}",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+            )
     ax.legend()
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)
@@ -231,10 +248,25 @@ def _plot_overlap_bars(rows: List[Tuple[str, int]], title: str, out_path: Path) 
     labels = [r[0] for r in rows]
     vals = [r[1] for r in rows]
     fig, ax = plt.subplots(figsize=(8.0, 4.5))
-    ax.bar(labels, vals, color="#059669")
+    color_map = {
+        "Intersection": "#16a34a",
+        "Berichte only": "#ea580c",
+        "Baseline only": "#64748b",
+    }
+    colors = [color_map.get(lbl, "#2563eb") for lbl in labels]
+    bars = ax.bar(labels, vals, color=colors)
     ax.set_ylabel("Unique patient IDs")
-    ax.set_title(title)
+    ax.set_title(f"{title}\nStructured baseline contains full cohort; Berichte is a subset")
     ax.tick_params(axis="x", rotation=20)
+    for bar, val in zip(bars, vals):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            bar.get_height(),
+            f"{int(val)}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
@@ -242,10 +274,20 @@ def _plot_overlap_bars(rows: List[Tuple[str, int]], title: str, out_path: Path) 
 
 def _plot_unmatched(labels: List[str], vals: List[int], out_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(7.5, 4.5))
-    ax.bar(labels, vals, color="#dc2626")
+    colors = ["#ea580c", "#64748b", "#16a34a", "#16a34a"]
+    bars = ax.bar(labels, vals, color=colors[: len(labels)])
     ax.set_ylabel("Patient count")
-    ax.set_title("Matching gaps (unique IDs)")
+    ax.set_title("PatientID linkage counts\nStructured baseline contains full cohort; Berichte is a subset")
     ax.tick_params(axis="x", rotation=15)
+    for bar, val in zip(bars, vals):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            bar.get_height(),
+            f"{int(val)}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
@@ -277,6 +319,147 @@ def _plot_duplicates_histogram(
     plt.close(fig)
 
 
+def _plot_berichte_matching_pie(
+    n_berichte_matched: int,
+    n_berichte_unmatched: int,
+    out_path: Path,
+) -> None:
+    fig, ax = plt.subplots(figsize=(7.0, 5.2))
+    vals = [n_berichte_matched, n_berichte_unmatched]
+    labels = ["Matched Berichte patients", "Unmatched Berichte patients"]
+    colors = ["#16a34a", "#ea580c"]
+    total = max(sum(vals), 1)
+
+    def _autopct(pct: float) -> str:
+        count = int(round(pct * total / 100.0))
+        return f"{pct:.1f}%\n(n={count})"
+
+    wedges, _texts, _autotexts = ax.pie(
+        vals,
+        labels=labels,
+        colors=colors,
+        autopct=_autopct,
+        startangle=90,
+        wedgeprops={"width": 0.45, "edgecolor": "white"},
+    )
+    ax.legend(wedges, labels, loc="center left", bbox_to_anchor=(1.0, 0.5))
+    ax.set_title("Berichte PatientID matching against structured baseline")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
+def _plot_berichte_matching_bar(
+    n_berichte_matched: int,
+    n_berichte_unmatched: int,
+    n_berichte_unique: int,
+    out_path: Path,
+) -> None:
+    labels = ["Matched Berichte patients", "Unmatched Berichte patients"]
+    vals = [n_berichte_matched, n_berichte_unmatched]
+    colors = ["#16a34a", "#ea580c"]
+    fig, ax = plt.subplots(figsize=(7.6, 4.8))
+    bars = ax.bar(labels, vals, color=colors)
+    ax.set_ylabel("Number of Berichte patients")
+    ax.set_title("Berichte coverage: matched vs unmatched PatientIDs")
+    ax.tick_params(axis="x", rotation=10)
+    for bar, val in zip(bars, vals):
+        pct = _pct(int(val), n_berichte_unique) * 100.0
+        ax.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            bar.get_height(),
+            f"{int(val)} ({pct:.1f}%)",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+        )
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
+def _plot_cohort_size_context(
+    n_berichte_unique: int,
+    n_baseline_unique: int,
+    n_overlap: int,
+    out_path: Path,
+) -> None:
+    labels = ["Berichte unique patients", "Structured baseline unique patients", "Overlap"]
+    vals = [n_berichte_unique, n_baseline_unique, n_overlap]
+    colors = ["#2563eb", "#64748b", "#16a34a"]
+    fig, ax = plt.subplots(figsize=(8.4, 4.8))
+    bars = ax.bar(labels, vals, color=colors)
+    ax.set_yscale("log")
+    ax.set_ylabel("Unique patient IDs (log scale)")
+    ax.set_title("Cohort size context: Berichte subset vs full structured baseline")
+    ax.tick_params(axis="x", rotation=12)
+    for bar, val in zip(bars, vals):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            bar.get_height(),
+            f"{int(val)}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+    ax.text(
+        0.99,
+        0.02,
+        "Log scale used to show subset and full-cohort counts together.",
+        ha="right",
+        va="bottom",
+        transform=ax.transAxes,
+        fontsize=8,
+    )
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
+def _plot_overlap_venn_style(
+    n_berichte_only: int,
+    n_overlap: int,
+    n_baseline_only: int,
+    n_berichte_unique: int,
+    n_baseline_unique: int,
+    out_path: Path,
+) -> None:
+    vals = [n_berichte_only, n_overlap, n_baseline_only]
+    labels = ["Berichte only", "Overlap", "Baseline only"]
+    colors = ["#ea580c", "#16a34a", "#64748b"]
+    fig, ax = plt.subplots(figsize=(9.0, 4.8))
+    left = 0
+    for val, label, color in zip(vals, labels, colors):
+        ax.barh(["PatientID universe"], [val], left=left, color=color, height=0.55, label=label)
+        ax.text(
+            left + val / 2.0,
+            0,
+            f"{label}\n{int(val)}",
+            ha="center",
+            va="center",
+            fontsize=9,
+            color="black",
+        )
+        left += val
+    pct_of_berichte = _pct(n_overlap, n_berichte_unique) * 100.0
+    pct_of_baseline = _pct(n_overlap, n_baseline_unique) * 100.0
+    ax.set_title("PatientID overlap between Berichte and structured baseline")
+    ax.set_xlabel("Unique patient ID count")
+    ax.legend(loc="upper center", ncol=3, bbox_to_anchor=(0.5, 1.22))
+    ax.text(
+        0.01,
+        -0.28,
+        f"Overlap as % of Berichte: {pct_of_berichte:.1f}% | Overlap as % of baseline: {pct_of_baseline:.2f}%",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=9,
+    )
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
 def main() -> None:
     os.environ.setdefault("MPLCONFIGDIR", str(_mpl_config_dir()))
 
@@ -297,6 +480,38 @@ def main() -> None:
     ber_only = b_ids - m_ids
     base_only = m_ids - b_ids
     union_ids = b_ids | m_ids
+    n_berichte_unique = len(b_ids)
+    n_baseline_unique = len(m_ids)
+    n_overlap = len(inter)
+    n_berichte_unmatched = len(ber_only)
+    n_baseline_without_berichte = len(base_only)
+
+    berichte_matching_summary = pd.DataFrame(
+        [
+            {
+                "n_berichte_unique": n_berichte_unique,
+                "n_baseline_unique": n_baseline_unique,
+                "n_overlap": n_overlap,
+                "n_berichte_unmatched": n_berichte_unmatched,
+                "n_baseline_without_berichte": n_baseline_without_berichte,
+                "percent_berichte_matched": _pct(n_overlap, n_berichte_unique),
+                "percent_berichte_unmatched": _pct(n_berichte_unmatched, n_berichte_unique),
+                "percent_baseline_with_berichte": _pct(n_overlap, n_baseline_unique),
+            }
+        ]
+    )
+    berichte_matching_summary.to_csv(
+        DATA_COVERAGE_TABLES_DIR / "berichte_matching_summary.csv",
+        index=False,
+    )
+    pd.DataFrame({"PatientID": sorted(ber_only)}).to_csv(
+        DATA_COVERAGE_TABLES_DIR / "berichte_unmatched_patient_ids.csv",
+        index=False,
+    )
+    pd.DataFrame({"PatientenID": sorted(base_only)}).to_csv(
+        DATA_COVERAGE_TABLES_DIR / "baseline_without_berichte_patient_ids.csv",
+        index=False,
+    )
 
     sizes_df = pd.DataFrame(
         [
@@ -392,7 +607,7 @@ def main() -> None:
             "metric_group": "linkage",
             "metric": "baseline_without_berichte_patientid",
             "n_unique_patient_ids": len(base_only),
-            "definition": "PatientenID in structured_baseline.csv absent from Berichte.csv.",
+            "definition": "Baseline patients without report in Berichte subset.",
         },
         {
             "metric_group": "linkage",
@@ -462,6 +677,31 @@ def main() -> None:
     _plot_unmatched(um_labels, um_vals, DATA_COVERAGE_PLOTS_DIR / "unmatched_counts.png")
 
     _plot_duplicates_histogram(ber_vc, base_vc, DATA_COVERAGE_PLOTS_DIR / "duplicates_histogram.png")
+    _plot_berichte_matching_pie(
+        n_berichte_matched=n_overlap,
+        n_berichte_unmatched=n_berichte_unmatched,
+        out_path=DATA_COVERAGE_PLOTS_DIR / "berichte_matching_pie.png",
+    )
+    _plot_berichte_matching_bar(
+        n_berichte_matched=n_overlap,
+        n_berichte_unmatched=n_berichte_unmatched,
+        n_berichte_unique=n_berichte_unique,
+        out_path=DATA_COVERAGE_PLOTS_DIR / "berichte_matching_bar.png",
+    )
+    _plot_cohort_size_context(
+        n_berichte_unique=n_berichte_unique,
+        n_baseline_unique=n_baseline_unique,
+        n_overlap=n_overlap,
+        out_path=DATA_COVERAGE_PLOTS_DIR / "cohort_size_context.png",
+    )
+    _plot_overlap_venn_style(
+        n_berichte_only=n_berichte_unmatched,
+        n_overlap=n_overlap,
+        n_baseline_only=n_baseline_without_berichte,
+        n_berichte_unique=n_berichte_unique,
+        n_baseline_unique=n_baseline_unique,
+        out_path=DATA_COVERAGE_PLOTS_DIR / "overlap_venn_style.png",
+    )
 
     report_lines = [
         "Data coverage analysis (pre-model)",
@@ -485,8 +725,24 @@ def main() -> None:
         f"  berichte_with_baseline_patientid: {len(inter)}",
         f"  all_patientid_overlap: {len(inter)}",
         "",
-        "Clinical positivity among Berichte patient IDs",
+        "Berichte-centric matching interpretation",
+        f"  Berichte unique patients: {n_berichte_unique}",
+        f"  Structured baseline unique patients: {n_baseline_unique}",
+        f"  Matched Berichte patients: {n_overlap} ({_pct(n_overlap, n_berichte_unique) * 100.0:.1f}%)",
+        f"  Unmatched Berichte patients: {n_berichte_unmatched} ({_pct(n_berichte_unmatched, n_berichte_unique) * 100.0:.1f}%)",
+        f"  Baseline patients without Berichte: {n_baseline_without_berichte}",
+        "  Interpretation: The structured baseline is much larger than Berichte.csv. Therefore the clinically relevant linkage metric for this report dataset is the proportion of Berichte patients found in the baseline.",
+        "  First 30 unmatched Berichte PatientIDs:",
     ]
+    for pid in sorted(list(ber_only))[:30]:
+        report_lines.append(f"    - {pid}")
+    report_lines.extend(
+        [
+            "  Note: unmatched Berichte PatientIDs should be checked with the data provider.",
+            "",
+        "Clinical positivity among Berichte patient IDs",
+        ]
+    )
     for r in unmatched_rows:
         if r["metric_group"] == "clinical_positivity":
             report_lines.append(f"  {r['metric']}: {r['n_unique_patient_ids']}")
