@@ -23,6 +23,8 @@ from src.pipeline.paths import (
     DATA_COVERAGE_ANALYSIS_DIR,
     DATA_COVERAGE_PLOTS_DIR,
     DATA_COVERAGE_TABLES_DIR,
+    ICD10_PATH,
+    ICDSC_PATH,
     STRUCTURED_BASELINE_PATH,
 )
 
@@ -222,16 +224,38 @@ def _duplicate_distribution_and_summary(
     return summary_df, dist_df
 
 
-def _plot_dataset_sizes(sizes: pd.DataFrame, out_path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(8.0, 4.5))
+def _load_raw_with_patient_id(path: Path, label: str) -> pd.DataFrame:
+    _require_file(path, label)
+    df = pd.read_csv(path, sep=";", dtype=str)
+    df.columns = [str(c).strip() for c in df.columns]
+    if "PatientID" in df.columns:
+        pid_col = "PatientID"
+    elif "PatientenID" in df.columns:
+        pid_col = "PatientenID"
+    else:
+        raise ValueError(f"{label} must contain 'PatientID' or 'PatientenID'. Found: {list(df.columns)}")
+    out = df.copy()
+    out["PatientID"] = _normalize_id_series(out[pid_col])
+    out = out[out["PatientID"].str.len() > 0]
+    out = out[out["PatientID"].str.lower() != "nan"]
+    return out
+
+
+def _plot_raw_source_sizes(sizes: pd.DataFrame, out_path: Path) -> None:
+    fig, ax = plt.subplots(figsize=(10.0, 6.0))
     x = np.arange(len(sizes))
-    w = 0.35
+    w = 0.36
     rows_bars = ax.bar(x - w / 2, sizes["n_rows"], width=w, label="Rows", color="#1d4ed8")
-    uniq_bars = ax.bar(x + w / 2, sizes["n_unique_patient_ids"], width=w, label="Unique patient IDs", color="#60a5fa")
+    uniq_bars = ax.bar(x + w / 2, sizes["n_unique_patient_ids"], width=w, label="Unique PatientIDs", color="#60a5fa")
     ax.set_xticks(x)
-    ax.set_xticklabels(sizes["dataset"], rotation=15, ha="right")
-    ax.set_ylabel("Count")
-    ax.set_title("Dataset sizes\nStructured baseline contains full cohort; Berichte is a subset")
+    ax.set_xticklabels(sizes["dataset"], rotation=12, ha="right", fontsize=PLOT_TICK_SIZE)
+    ax.tick_params(axis="y", labelsize=PLOT_TICK_SIZE)
+    ax.set_ylabel("Count", fontsize=PLOT_LABEL_SIZE)
+    ax.set_title(
+        "Raw source sizes: rows vs unique PatientIDs",
+        fontsize=PLOT_TITLE_SIZE,
+        pad=14,
+    )
     for bars in (rows_bars, uniq_bars):
         for bar in bars:
             h = int(bar.get_height())
@@ -241,9 +265,42 @@ def _plot_dataset_sizes(sizes: pd.DataFrame, out_path: Path) -> None:
                 f"{h}",
                 ha="center",
                 va="bottom",
-                fontsize=8,
+                fontsize=PLOT_ANNOTATION_SIZE,
             )
-    ax.legend()
+    ax.legend(fontsize=PLOT_LABEL_SIZE)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
+def _plot_patient_level_cohort_sizes(
+    n_berichte_unique: int,
+    n_baseline_unique: int,
+    n_overlap: int,
+    out_path: Path,
+) -> None:
+    labels = ["Berichte unique PatientIDs", "structured_baseline unique PatientIDs", "Berichte ∩ structured_baseline"]
+    vals = [n_berichte_unique, n_baseline_unique, n_overlap]
+    colors = ["#1d4ed8", "#64748b", "#16a34a"]
+    fig, ax = plt.subplots(figsize=(10.0, 6.0))
+    bars = ax.bar(labels, vals, color=colors)
+    ax.set_ylabel("Unique patient IDs", fontsize=PLOT_LABEL_SIZE)
+    ax.set_title(
+        "Patient-level cohort sizes",
+        fontsize=PLOT_TITLE_SIZE,
+        pad=14,
+    )
+    ax.tick_params(axis="x", rotation=10, labelsize=PLOT_TICK_SIZE)
+    ax.tick_params(axis="y", labelsize=PLOT_TICK_SIZE)
+    for bar, val in zip(bars, vals):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            bar.get_height(),
+            f"{int(val)}",
+            ha="center",
+            va="bottom",
+            fontsize=PLOT_ANNOTATION_SIZE,
+        )
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
@@ -411,7 +468,7 @@ def _plot_cohort_size_context(
     labels = ["Berichte unique patients", "Structured baseline unique patients", "Overlap"]
     vals = [n_berichte_unique, n_baseline_unique, n_overlap]
     colors = ["#2563eb", "#64748b", "#16a34a"]
-    fig, ax = plt.subplots(figsize=(10.0, 6.0))
+    fig, ax = plt.subplots(figsize=(11.5, 7.2))
     bars = ax.bar(labels, vals, color=colors)
     ax.set_yscale("log")
     ax.set_ylabel("Unique patient IDs (log scale)", fontsize=PLOT_LABEL_SIZE)
@@ -424,33 +481,22 @@ def _plot_cohort_size_context(
     ax.tick_params(axis="x", rotation=10, labelsize=PLOT_TICK_SIZE)
     ax.tick_params(axis="y", labelsize=PLOT_TICK_SIZE)
     for bar, val in zip(bars, vals):
+        y = max(float(val) * 1.08, float(val) + 1.0)
         ax.text(
             bar.get_x() + bar.get_width() / 2.0,
-            bar.get_height(),
+            y,
             f"{int(val)}",
             ha="center",
             va="bottom",
             fontsize=PLOT_ANNOTATION_SIZE,
         )
-    ax.text(
-        0.01,
-        0.98,
-        "Log scale is used so subset and full-cohort counts are readable in one panel.",
-        ha="left",
-        va="top",
-        transform=ax.transAxes,
-        fontsize=PLOT_ANNOTATION_SIZE,
+    footer = (
+        f"Overlap coverage: {n_overlap} / {n_berichte_unique} Berichte patients "
+        f"({_pct(n_overlap, n_berichte_unique) * 100.0:.1f}%)"
     )
-    ax.text(
-        0.01,
-        0.90,
-        f"Berichte overlap coverage: {n_overlap}/{n_berichte_unique} ({_pct(n_overlap, n_berichte_unique) * 100.0:.1f}%)",
-        ha="left",
-        va="top",
-        transform=ax.transAxes,
-        fontsize=PLOT_ANNOTATION_SIZE,
-    )
+    fig.text(0.5, 0.03, footer, ha="center", va="center", fontsize=PLOT_ANNOTATION_SIZE)
     fig.tight_layout()
+    plt.subplots_adjust(top=0.84, bottom=0.17)
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
 
@@ -507,6 +553,8 @@ def main() -> None:
 
     berichte = _load_berichte(berichte_path)
     baseline = _load_baseline(baseline_path)
+    raw_icd = _load_raw_with_patient_id(ICD10_PATH, "ICD.csv")
+    raw_icdsc = _load_raw_with_patient_id(ICDSC_PATH, "ICDSC.csv")
 
     DATA_COVERAGE_ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
     DATA_COVERAGE_TABLES_DIR.mkdir(parents=True, exist_ok=True)
@@ -552,7 +600,7 @@ def main() -> None:
         index=False,
     )
 
-    sizes_df = pd.DataFrame(
+    raw_sizes_df = pd.DataFrame(
         [
             {
                 "dataset": "Berichte.csv",
@@ -560,13 +608,27 @@ def main() -> None:
                 "n_unique_patient_ids": len(b_ids),
             },
             {
-                "dataset": "structured_baseline.csv",
-                "n_rows": len(baseline),
-                "n_unique_patient_ids": len(m_ids),
+                "dataset": "ICD.csv",
+                "n_rows": len(raw_icd),
+                "n_unique_patient_ids": int(raw_icd["PatientID"].nunique()),
+            },
+            {
+                "dataset": "ICDSC.csv",
+                "n_rows": len(raw_icdsc),
+                "n_unique_patient_ids": int(raw_icdsc["PatientID"].nunique()),
             },
         ]
     )
-    sizes_df.to_csv(DATA_COVERAGE_TABLES_DIR / "dataset_sizes.csv", index=False)
+    raw_sizes_df.to_csv(DATA_COVERAGE_TABLES_DIR / "raw_source_sizes.csv", index=False)
+
+    patient_level_sizes_df = pd.DataFrame(
+        [
+            {"cohort": "Berichte_unique_patient_ids", "n_unique_patient_ids": n_berichte_unique},
+            {"cohort": "structured_baseline_unique_patient_ids", "n_unique_patient_ids": n_baseline_unique},
+            {"cohort": "berichte_intersection_structured_baseline", "n_unique_patient_ids": n_overlap},
+        ]
+    )
+    patient_level_sizes_df.to_csv(DATA_COVERAGE_TABLES_DIR / "patient_level_cohort_sizes.csv", index=False)
 
     overlap_rows: List[Dict[str, object]] = [
         {"category": "berichte_intersect_baseline", "n_unique_patient_ids": len(inter)},
@@ -693,7 +755,13 @@ def main() -> None:
     duplicates_df = pd.concat([s1, d1, s2, d2], ignore_index=True)
     duplicates_df.to_csv(DATA_COVERAGE_TABLES_DIR / "duplicates_summary.csv", index=False)
 
-    _plot_dataset_sizes(sizes_df, DATA_COVERAGE_PLOTS_DIR / "dataset_sizes.png")
+    _plot_raw_source_sizes(raw_sizes_df, DATA_COVERAGE_PLOTS_DIR / "raw_source_sizes.png")
+    _plot_patient_level_cohort_sizes(
+        n_berichte_unique=n_berichte_unique,
+        n_baseline_unique=n_baseline_unique,
+        n_overlap=n_overlap,
+        out_path=DATA_COVERAGE_PLOTS_DIR / "patient_level_cohort_sizes.png",
+    )
     _plot_berichte_matching_pie(
         n_berichte_matched=n_overlap,
         n_berichte_unmatched=n_berichte_unmatched,
@@ -718,9 +786,19 @@ def main() -> None:
         f"Berichte path: {berichte_path}",
         f"Baseline path: {baseline_path}",
         "",
-        "Dataset sizes",
-        f"  Berichte rows: {len(berichte)}, unique PatientID: {len(b_ids)}",
-        f"  Baseline rows: {len(baseline)}, unique PatientenID: {len(m_ids)}",
+        "Raw data row counts and unique patient IDs",
+        f"  Berichte.csv -> rows: {len(berichte)}, unique PatientID: {len(b_ids)}",
+        f"  ICD.csv -> rows: {len(raw_icd)}, unique PatientID: {int(raw_icd['PatientID'].nunique())}",
+        f"  ICDSC.csv -> rows: {len(raw_icdsc)}, unique PatientID: {int(raw_icdsc['PatientID'].nunique())}",
+        "",
+        "Patient-level cohort sizes",
+        f"  Berichte unique PatientIDs: {n_berichte_unique}",
+        f"  structured_baseline unique PatientIDs: {n_baseline_unique}",
+        f"  Berichte ∩ structured_baseline: {n_overlap}",
+        "",
+        "Aggregation note",
+        "  structured_baseline is already aggregated to one row per PatientID by design.",
+        "  Therefore structured_baseline rows represent patient-level cohort size, not raw ICD/ICDSC measurement row volume.",
         "",
         "Overlap (unique patient IDs)",
         f"  Intersection: {len(inter)}",
