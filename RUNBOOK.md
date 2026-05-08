@@ -1,0 +1,95 @@
+# Runbook — Delirium pipeline (production-oriented)
+
+Assume project root: `delirium_project/`.
+
+## Server setup
+
+1. Python 3.9+ and virtualenv (recommended).
+2. `pip install -r requirements.txt`
+3. Place inputs under **`data/raw/`** (see `src/pipeline/paths.py`):
+   - `Berichte.csv` (primary reports)
+   - `ICD.csv`, `ICDSC.csv` (baselines)
+4. Start the **USZ LLM** HTTP service so `USZ_LLM_URL` is reachable (default `http://localhost:8100/generate`).
+
+## Environment — primary (USZ)
+
+```bash
+export LLM_PROVIDER=usz_api
+export USZ_LLM_URL=http://localhost:8100/generate
+export LLM_MODEL_LABEL=gemma4_26b_usz
+export LLM_TEMPERATURE=0.1
+export LLM_TOP_P=0.9
+export LLM_MAX_TOKENS=1000
+export LLM_TIMEOUT=120
+export LLM_LONG_INPUT_WARNING_CHARS=12000
+```
+
+## USZ API smoke test
+
+```bash
+python scripts/test_usz_llm_api.py
+```
+
+Expect HTTP 200 and JSON body with a `response` field. If the service is down, fix networking or URL before `run_pipeline`.
+
+## Primary production run (USZ)
+
+```bash
+python -m src.pipeline.prepare_structured_data
+python -m src.analysis.run_data_coverage_analysis
+python -m src.pipeline.run_pipeline
+python -m src.pipeline.compare_reports_vs_baseline
+python -m src.pipeline.evaluate_predictions
+python -m src.analysis.run_field_delirium_analysis
+```
+
+## Optional Ollama comparison run
+
+```bash
+export LLM_PROVIDER=ollama
+export OLLAMA_URL=http://127.0.0.1:11500
+export OLLAMA_MODEL=qwen2.5:7b
+export OLLAMA_NUM_CTX=8192
+python -m src.pipeline.run_pipeline
+```
+
+Downstream steps still read **`outputs/predictions/agent1_agent2_agent3_results_prompt.csv`** — re-run `compare_reports_vs_baseline` and `evaluate_predictions` after swapping providers.
+
+## Sanity checks after a run
+
+| Check | What to do |
+|-------|------------|
+| **klasse distribution** | Count values in `agent1_agent2_agent3_results_prompt.csv` (`klasse` column). |
+| **signalstaerke** | Tabulate `signalstaerke` in the same file. |
+| **Baseline positives** | In `report_vs_baseline_comparison.csv` or `structured_baseline.csv`, sum `baseline_icd10`, `baseline_icdsc_ge_4`, etc. |
+| **Outputs** | Confirm canonical CSV + `agent_results_<provider>_<model_label>.csv` exist under `outputs/predictions/`. |
+| **Binary evaluation** | Open `outputs/evaluation/binary_baselines/tables/binary_baseline_summary.csv`. |
+
+## Troubleshooting
+
+### `Berichte.csv` missing
+
+`run_pipeline` with `INPUT_MODE=berichte` raises **`FileNotFoundError`** with the expected path. Either add the file under `data/raw/` or temporarily set `INPUT_MODE='diagnosis'` in `run_pipeline.py` (fallback — not primary production).
+
+### USZ API unavailable
+
+LLM calls fail; agents catch errors and may return empty extraction / failed JSON parsing (see `outputs/logs/llm_debug/`). Restore the API or switch to Ollama for debugging.
+
+### All predictions `klasse=0`
+
+Check `signalstaerke` and raw LLM JSON in debug logs; verify the USZ model returns valid JSON for agents 1–2. Coverage analysis (`run_data_coverage_analysis`) helps confirm text fields are non-empty.
+
+### JSON parsing failures
+
+Inspect `outputs/logs/llm_debug/*.json`. Prompts are unchanged by design; backend must return parseable JSON (or adjust prompts in a future change).
+
+### Long input warning
+
+Log line: `Long LLM input detected ...`. No truncation is applied. If outputs degrade, consider shorter reports or future chunking (not implemented yet).
+
+## Compile / tests (CI-style)
+
+```bash
+python -m compileall src scripts
+python -m pytest tests -q
+```

@@ -7,7 +7,7 @@ from src.agents.classification import classify_delirium
 from src.agents.extraction import extract_passages
 from src.agents.interpretation import interpret_signals
 from src.agents.interpretation_llm import interpret_signals_llm
-from src.models.model_config import OLLAMA_MODEL
+from src.models.model_config import LLM_MODEL_LABEL, LLM_PROVIDER
 from src.pipeline.paths import ANONYMIZED_DIR, BERICHTE_INPUT_PATH, PREDICTIONS_DIR, MAX_REPORTS
 from src.preprocessing.berichte_mapper import build_patient_level_berichte_report_records
 from src.preprocessing.diagnosis_mapper import build_patient_level_report_records
@@ -84,14 +84,16 @@ def _get_output_path() -> Path:
     return PREDICTIONS_DIR / f"agent1_agent2_agent3_results_{INTERPRETATION_MODE}.csv"
 
 
-def _sanitize_model_slug(name: str) -> str:
-    s = re.sub(r"[^0-9A-Za-z._-]+", "_", (name or "model").strip())
+def _sanitize_provider_model_slug(provider: str, model_label: str) -> str:
+    """Filename-safe slug for `<provider>_<model>` (no dots/colons)."""
+    raw = f"{provider}_{model_label}"
+    s = re.sub(r"[^0-9A-Za-z_-]+", "_", raw.strip())
     return (s[:200] or "model").strip("_") or "model"
 
 
 def _get_model_named_output_path() -> Path:
     PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
-    slug = _sanitize_model_slug(OLLAMA_MODEL)
+    slug = _sanitize_provider_model_slug(LLM_PROVIDER, LLM_MODEL_LABEL)
     return PREDICTIONS_DIR / f"agent_results_{slug}.csv"
 
 

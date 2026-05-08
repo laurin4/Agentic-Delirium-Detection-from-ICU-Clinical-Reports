@@ -1,26 +1,84 @@
-# Data (CRITICAL - do not upload)
-data/
+# =====================================================================
+# Sensitive data (NEVER commit)
+# =====================================================================
+data/raw/
+data/processed/
+data/anonymized/
+data/structured/raw/
+data/structured/processed/
 Data/
+*.csv
+*.xlsx
+*.xls
+*.parquet
+*.jsonl
 
-# Outputs / results
+# =====================================================================
+# Outputs / generated artifacts
+# =====================================================================
 outputs/
+reports/
+plots/
+*.png
+*.pdf
 
-# Virtual environment
+# =====================================================================
+# Environments
+# =====================================================================
 Ba_venv/
+Ba_venv_backup/
+delirium_env/
 .venv/
+venv/
+env/
 
-# Python
+# =====================================================================
+# Python artifacts
+# =====================================================================
 __pycache__/
 *.pyc
-
-# Jupyter
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .ipynb_checkpoints/
 
-# System
+# =====================================================================
+# System / editor
+# =====================================================================
 .DS_Store
+.vscode/
+.idea/
 
-# Logs / temp
-*.log
+# =====================================================================
+# Secrets / local config
+# =====================================================================
+.env
+*.env
+*.token
+*.key
+*.pem
+
+# =====================================================================
+# Ollama / models / wheelhouses
+# =====================================================================
+models/
+models_Qwen/
+models_Ollama/
 wheelhouse/
 wheelhouse_linux/
 wheelhouse_linux.zip
+*.tar.gz
+
+# =====================================================================
+# Logs
+# =====================================================================
+*.log
+
+# =====================================================================
+# Folder placeholders (allow .gitkeep so structure is preserved)
+# =====================================================================
+!.gitkeep
+!data/.gitkeep
+!data/raw/.gitkeep
+!outputs/.gitkeep

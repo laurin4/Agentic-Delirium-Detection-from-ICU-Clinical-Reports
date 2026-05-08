@@ -8,6 +8,54 @@ from src.pipeline.prepare_structured_data import add_reference_class
 
 REPORT_PREDICTIONS_PATH = PREDICTIONS_DIR / "agent1_agent2_agent3_results_prompt.csv"
 
+# Columns that must be present on every merged row (from structured baseline).
+# Missing values indicate no baseline row or incomplete baseline data for that PatientenID.
+REQUIRED_BASELINE_COLUMNS = [
+    "has_delir_icd10",
+    "max_icdsc",
+    "baseline_icd10",
+    "baseline_icdsc_ge_1",
+    "baseline_icdsc_ge_2",
+    "baseline_icdsc_ge_3",
+    "baseline_icdsc_ge_4",
+    "baseline_icdsc_ge_5",
+    "baseline_icdsc_0",
+    "baseline_icdsc_1_to_3",
+    "baseline_icdsc_ge_4_grouped",
+]
+
+
+def _raise_if_incomplete_baseline_merge(merged: pd.DataFrame) -> None:
+    """Ensure every prediction row has full baseline data (no silent NaN -> 0 for unmatched)."""
+    missing_cols = [c for c in REQUIRED_BASELINE_COLUMNS if c not in merged.columns]
+    if missing_cols:
+        raise ValueError(
+            "structured_baseline.csv or merge result is missing required baseline columns: "
+            + ", ".join(missing_cols)
+            + ". Re-run prepare_structured_data with an up-to-date pipeline."
+        )
+
+    subset = merged[REQUIRED_BASELINE_COLUMNS]
+    incomplete_mask = subset.isna().any(axis=1)
+    if not incomplete_mask.any():
+        return
+
+    bad_ids = (
+        merged.loc[incomplete_mask, "PatientenID"]
+        .astype(str)
+        .str.strip()
+        .unique()
+        .tolist()
+    )
+    n = len(bad_ids)
+    preview = bad_ids[:20]
+    raise ValueError(
+        f"Prediction merge has {n} PatientenID(s) without complete baseline data "
+        f"(missing baseline row and/or NaN in required baseline columns). "
+        f"First up to 20 IDs: {preview!r}. "
+        "Fix structured_baseline.csv coverage or prediction PatientenIDs before compare_reports_vs_baseline."
+    )
+
 
 def load_data():
     if not STRUCTURED_BASELINE_PATH.exists():
@@ -40,8 +88,10 @@ def main():
         )
 
     reports["PatientenID"] = reports["PatientenID"].astype(str).str.strip()
-    baseline["PatientenID"] = baseline["PatientenID"].astype(str).str.strip()    
+    baseline["PatientenID"] = baseline["PatientenID"].astype(str).str.strip()
     merged = reports.merge(baseline, on="PatientenID", how="left")
+
+    _raise_if_incomplete_baseline_merge(merged)
 
     merged = add_reference_class(merged)
     merged["klasse"] = pd.to_numeric(merged["klasse"], errors="coerce")

@@ -1,3 +1,10 @@
+"""EDA over diagnosis / ICD / ICDSC tables and optional prediction merges.
+
+Production runs use `data/raw/Berichte.csv` as the primary report source (see README).
+This module still reads diagnosis + ICD files from `paths.py` for overlap and
+distribution summaries.
+"""
+
 import os
 import re
 from collections import Counter
@@ -304,40 +311,44 @@ def _plot_signal_category_frequencies(predictions: pd.DataFrame, output_dir: Pat
 
 
 def _plot_class_distribution_if_available(predictions: pd.DataFrame) -> pd.DataFrame:
+    """Binary klasse vs optional binary baselines (no multiclass reference)."""
     if predictions.empty or "klasse" not in predictions.columns:
-        return pd.DataFrame(columns=["class", "count", "source"])
+        return pd.DataFrame(columns=["label", "count", "source"])
 
-    pred = pd.to_numeric(predictions["klasse"], errors="coerce").value_counts().sort_index()
-    rows = [{"class": int(k), "count": int(v), "source": "prediction"} for k, v in pred.items()]
+    pdf = predictions.copy()
+    pdf["_k"] = pd.to_numeric(pdf["klasse"], errors="coerce")
+    pdf = pdf[pdf["_k"].isin([0, 1])].copy()
+    if pdf.empty:
+        return pd.DataFrame(columns=["label", "count", "source"])
 
-    if "baseline_reference_class" in predictions.columns:
-        ref = pd.to_numeric(predictions["baseline_reference_class"], errors="coerce").value_counts().sort_index()
-        rows.extend({"class": int(k), "count": int(v), "source": "baseline"} for k, v in ref.items())
+    rows = []
+    vc = pdf["_k"].astype(int).value_counts().sort_index()
+    for k, v in vc.items():
+        rows.append({"label": f"prediction_klasse_{int(k)}", "count": int(v), "source": "prediction"})
 
-    dist_df = pd.DataFrame(rows).sort_values(["source", "class"])
-    dist_df.to_csv(EXPLORATION_TABLES_DIR / "class_distribution_if_available.csv", index=False)
+    for base_col in ("baseline_icd10", "baseline_icdsc_ge_4"):
+        if base_col not in pdf.columns:
+            continue
+        b = pd.to_numeric(pdf[base_col], errors="coerce").fillna(0).astype(int)
+        pos = int((b == 1).sum())
+        neg = int((b == 0).sum())
+        rows.append({"label": f"{base_col}_positive", "count": pos, "source": "baseline"})
+        rows.append({"label": f"{base_col}_negative", "count": neg, "source": "baseline"})
 
+    dist_df = pd.DataFrame(rows)
+    dist_df.to_csv(EXPLORATION_TABLES_DIR / "class_distribution_binary.csv", index=False)
+
+    plot_df = dist_df[dist_df["source"] == "prediction"].copy()
     fig, ax = plt.subplots(figsize=(8, 5))
-    if not dist_df.empty:
-        pivot = (
-            dist_df.pivot_table(index="class", columns="source", values="count", aggfunc="sum")
-            .fillna(0)
-            .sort_index()
-        )
-        x = np.arange(len(pivot.index))
-        width = 0.35
-        ax.bar(x - width / 2, pivot.get("prediction", pd.Series(0, index=pivot.index)).values, width=width, label="Prediction")
-        if "baseline" in pivot.columns:
-            ax.bar(x + width / 2, pivot["baseline"].values, width=width, label="Baseline")
-        ax.set_xticks(x)
-        ax.set_xticklabels([str(i) for i in pivot.index])
-    ax.set_title("Class Distribution (Available Labels)")
-    ax.set_xlabel("Class")
-    ax.set_ylabel("Count")
-    ax.legend()
+    if not plot_df.empty:
+        ax.bar(plot_df["label"], plot_df["count"], color="#2E86AB")
+        ax.set_title("Binary prediction class distribution (klasse 0/1)")
+        ax.set_xlabel("Label")
+        ax.set_ylabel("Count")
+        ax.tick_params(axis="x", rotation=15)
     ax.grid(axis="y", alpha=0.25)
     fig.tight_layout()
-    fig.savefig(EXPLORATION_PLOTS_DIR / "04_class_distribution_if_available.png", dpi=300)
+    fig.savefig(EXPLORATION_PLOTS_DIR / "04_class_distribution_binary.png", dpi=300)
     plt.close(fig)
     return dist_df
 

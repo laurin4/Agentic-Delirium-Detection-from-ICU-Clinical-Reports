@@ -6,7 +6,7 @@ from src.pipeline.prepare_structured_data import prepare_icd10, prepare_icdsc, a
 from src.preprocessing.diagnosis_mapper import build_patient_level_reports
 
 
-def test_classify_delirium_high_returns_class_2():
+def test_classify_delirium_high_returns_class_1_delir():
     interpretation = {
         "signalstaerke": "hoch",
         "kontext": "explizite Delirdiagnose dokumentiert",
@@ -185,7 +185,7 @@ def test_build_patient_level_reports_groups_and_sorts(tmp_path):
         }
     )
     input_file = tmp_path / "diagnose.csv"
-    raw.to_csv(input_file, index=False)
+    raw.to_csv(input_file, index=False, sep=";")
 
     reports = build_patient_level_reports(tmp_path).sort_values("PatientenID").reset_index(drop=True)
 

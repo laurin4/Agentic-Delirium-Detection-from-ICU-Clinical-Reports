@@ -22,7 +22,7 @@ from src.pipeline.paths import (
     VALIDATION_RESULTS_CSV_PATH,
     VALIDATION_SUMMARY_TXT_PATH,
 )
-from src.pipeline.prepare_structured_data import add_reference_class
+from src.pipeline.prepare_structured_data import add_reference_class, add_binary_baselines
 from src.preprocessing.diagnosis_mapper import build_patient_level_reports
 
 LOGGER = logging.getLogger(__name__)
@@ -181,6 +181,7 @@ def run_checks() -> List[Dict[str, Any]]:
         if "baseline_reference_class" not in base.columns:
             base = add_reference_class(base)
         dist = base["baseline_reference_class"].value_counts().sort_index().to_dict()
+        bb = add_binary_baselines(base.copy())
         rows.append(
             {
                 "check": "structured_baseline_row_count",
@@ -191,10 +192,26 @@ def run_checks() -> List[Dict[str, Any]]:
         )
         rows.append(
             {
-                "check": "structured_baseline_class_distribution",
+                "check": "structured_baseline_binary_icd10_positive_patients",
+                "status": "ok",
+                "value": str(int((bb["baseline_icd10"] == 1).sum())) if "baseline_icd10" in bb.columns else "n/a",
+                "detail": "baseline_icd10==1 (patient rows)",
+            }
+        )
+        rows.append(
+            {
+                "check": "structured_baseline_binary_icdsc_ge_4_positive_patients",
+                "status": "ok",
+                "value": str(int((bb["baseline_icdsc_ge_4"] == 1).sum())) if "baseline_icdsc_ge_4" in bb.columns else "n/a",
+                "detail": "baseline_icdsc_ge_4==1",
+            }
+        )
+        rows.append(
+            {
+                "check": "structured_baseline_legacy_reference_class_distribution",
                 "status": "ok",
                 "value": str(dist),
-                "detail": "baseline_reference_class counts",
+                "detail": "LEGACY multiclass baseline_reference_class counts — not the primary evaluation target",
             }
         )
     else:
