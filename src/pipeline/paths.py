@@ -15,7 +15,7 @@ STRUCTURED_RAW_DIR = STRUCTURED_DIR / "raw"
 # Default production inputs (CSV unter data/raw fuer Ubuntu/local parity).
 # Set DATA_MODE = "synthetic" only for offline regression tests (CSV generator outputs).
 DATA_MODE = "real"  # allowed: "real", "synthetic"
-MAX_REPORTS = 5  # None = alle Berichte; int = nur erste N Berichte
+MAX_REPORTS = 25  # None = alle Berichte; int = nur erste N Berichte
 
 # Outputs
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
