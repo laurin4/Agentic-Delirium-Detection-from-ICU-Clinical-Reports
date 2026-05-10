@@ -70,6 +70,9 @@ REPORT_ID_MAPPING_PATH = STRUCTURED_DIR / "report_patient_ids.csv"
 
 STRUCTURED_BASELINE_PATH = BASELINE_DIR / "structured_baseline.csv"
 REPORT_VS_BASELINE_PATH = COMPARISONS_DIR / "report_vs_baseline_comparison.csv"
+REPORT_VS_BASELINE_EXCLUDED_PATH = (
+    COMPARISONS_DIR / "report_vs_baseline_excluded_missing_baseline.csv"
+)
 EVALUATION_SUMMARY_PATH = EVALUATION_DIR / "evaluation_summary.csv"
 EVALUATION_MULTICLASS_SUMMARY_PATH = EVALUATION_DIR / "evaluation_multiclass_summary.csv"
 EVALUATION_CONFUSION_3CLASS_PATH = EVALUATION_DIR / "confusion_matrix_3class.csv"

@@ -129,7 +129,8 @@ Optional: `python -m src.validation.validate_inputs`, `python -m src.analysis.ru
 | Structured baseline | `outputs/baseline/structured_baseline.csv` |
 | Predictions (canonical) | `outputs/predictions/agent1_agent2_agent3_results_prompt.csv` |
 | Predictions (tagged copy) | `outputs/predictions/agent_results_<provider>_<model_label>.csv` |
-| Report vs baseline merge | `outputs/comparisons/report_vs_baseline_comparison.csv` |
+| Report vs baseline merge | `outputs/comparisons/report_vs_baseline_comparison.csv` (evaluable rows only) |
+| Excluded predictions (no / incomplete baseline) | `outputs/comparisons/report_vs_baseline_excluded_missing_baseline.csv` |
 | Binary baseline evaluation | `outputs/evaluation/binary_baselines/` (tables, plots, `report.txt`) |
 | Data coverage | `outputs/analysis/data_coverage/` |
 | ICD vs ICDSC overlap | `outputs/analysis/icd_icdsc_overlap/` |

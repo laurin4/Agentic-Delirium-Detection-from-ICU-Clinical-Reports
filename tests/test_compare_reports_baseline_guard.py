@@ -5,7 +5,8 @@ import pytest
 
 from src.pipeline.compare_reports_vs_baseline import (
     REQUIRED_BASELINE_COLUMNS,
-    _raise_if_incomplete_baseline_merge,
+    _ensure_required_baseline_columns_exist,
+    _split_evaluable_vs_excluded,
 )
 
 
@@ -26,7 +27,7 @@ def _minimal_baseline_row(pid: str) -> dict:
     }
 
 
-def test_raise_if_incomplete_merge_detects_unmatched_patient():
+def test_split_marks_unmatched_prediction_as_not_evaluable():
     merged = pd.DataFrame(
         [
             {**_minimal_baseline_row("p1"), "klasse": 0},
@@ -37,20 +38,22 @@ def test_raise_if_incomplete_merge_detects_unmatched_patient():
             },
         ]
     )
-    with pytest.raises(ValueError) as excinfo:
-        _raise_if_incomplete_baseline_merge(merged)
-    msg = str(excinfo.value)
-    assert "p_missing" in msg
-    assert "without complete baseline" in msg
+    baseline_ids = {"p1"}
+    evaluable_mask, reason = _split_evaluable_vs_excluded(merged, baseline_ids)
+    assert evaluable_mask.tolist() == [True, False]
+    assert reason.tolist() == ["", "no_structured_baseline_row"]
 
 
-def test_raise_if_incomplete_merge_passes_when_complete():
+def test_split_all_rows_evaluable_when_baseline_complete():
     merged = pd.DataFrame([{**_minimal_baseline_row("p1"), "klasse": 0}])
-    _raise_if_incomplete_baseline_merge(merged)
+    baseline_ids = {"p1"}
+    evaluable_mask, reason = _split_evaluable_vs_excluded(merged, baseline_ids)
+    assert evaluable_mask.all()
+    assert (reason == "").all()
 
 
-def test_raise_if_missing_required_column_in_merge_result():
+def test_ensure_required_columns_raises_when_missing_in_merge_result():
     merged = pd.DataFrame([{"PatientenID": "p1", "klasse": 0}])
     with pytest.raises(ValueError) as excinfo:
-        _raise_if_incomplete_baseline_merge(merged)
+        _ensure_required_baseline_columns_exist(merged)
     assert "missing required baseline columns" in str(excinfo.value)

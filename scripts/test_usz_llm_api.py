@@ -17,8 +17,15 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 
 import requests
+
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from src.models.llm_interface import extract_first_json_object
 
 
 DEFAULT_URL = "http://localhost:8100/generate"
@@ -74,11 +81,12 @@ def main() -> int:
 
     result = body.get("response", "")
     if isinstance(result, list):
-        final_text = "\n".join(str(x) for x in result)
+        raw_text = "\n".join(str(x) for x in result)
     else:
-        final_text = str(result)
+        raw_text = str(result)
+    final_text = extract_first_json_object(raw_text.strip())
 
-    print("normalized final_text:")
+    print("normalized final_text (after extract_first_json_object):")
     print(final_text)
 
     try:

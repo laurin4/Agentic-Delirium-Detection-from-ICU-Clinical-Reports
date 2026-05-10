@@ -37,6 +37,66 @@ from src.models.model_config import (
 
 LOGGER = logging.getLogger(__name__)
 
+# USZ/Gemma template tokens sometimes appended after the model JSON payload.
+_USZ_TOKENS_TO_STRIP = (
+    "<start_of_turn>user",
+    "<start_of_turn>model",
+    "<start_of_turn>",
+    "<end_of_turn>",
+)
+
+
+def _strip_usz_template_tokens(text: str) -> str:
+    """Remove known Gemma/USZ turn markers so JSON extraction is reliable."""
+    out = text
+    for tok in _USZ_TOKENS_TO_STRIP:
+        out = out.replace(tok, "")
+    return out
+
+
+def extract_first_json_object(text: str) -> str:
+    """
+    Return the first complete top-level JSON object substring, or stripped original text.
+
+    Uses brace matching with awareness of double-quoted strings and backslash escapes.
+    """
+    if text is None:
+        return ""
+    original_stripped = text.strip()
+    if not original_stripped:
+        return ""
+
+    cleaned = _strip_usz_template_tokens(original_stripped).strip()
+
+    start = cleaned.find("{")
+    if start < 0:
+        return original_stripped
+
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(cleaned)):
+        ch = cleaned[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return cleaned[start : i + 1].strip()
+
+    return original_stripped
+
 
 def _build_chat_url(base_url: str) -> str:
     clean = base_url.rstrip("/")
@@ -173,7 +233,8 @@ def call_usz_api(system_prompt: str, user_prompt: str) -> str:
         final_text = "\n".join(str(x) for x in result)
     else:
         final_text = str(result)
-    return final_text.strip()
+    final_text = extract_first_json_object(final_text.strip())
+    return final_text
 
 
 def call_llm(messages: list) -> str:
