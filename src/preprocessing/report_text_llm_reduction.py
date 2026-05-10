@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Sequence, Tuple
 
+from src.preprocessing.delirium_hint_keywords import DELIRIUM_HINT_KEYWORDS
+
 LOGGER = logging.getLogger(__name__)
 
 # Priority order for clinical sections (highest first)
@@ -24,25 +26,8 @@ SECTION_HEADINGS: Dict[str, str] = {
     "epikrise": "[Epikrise]",
 }
 
-# Keywords (case-insensitive substring match)
-DELIR_KEYWORDS: Tuple[str, ...] = (
-    "delir",
-    "delirium",
-    "delirant",
-    "delirös",
-    "verwirrt",
-    "verwirrtheit",
-    "desorientiert",
-    "desorientierung",
-    "agitiert",
-    "agitation",
-    "unruhig",
-    "vigilanz",
-    "vigilanzminderung",
-    "somnolent",
-    "soporös",
-    "bewusstseinsstörung",
-)
+# Keywords (same master list as LLM prefilter; case-insensitive substring match)
+DELIR_KEYWORDS: Tuple[str, ...] = DELIRIUM_HINT_KEYWORDS
 
 # Search explicit delirium wording first within [Diagnosen] for ordering / emphasis
 EXPLICIT_DIAG_TERMS: Tuple[str, ...] = ("delir", "delirium", "delirant", "delirös")

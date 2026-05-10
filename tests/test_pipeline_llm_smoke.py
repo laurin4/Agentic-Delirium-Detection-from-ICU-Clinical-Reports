@@ -4,7 +4,8 @@ import json
 
 import pandas as pd
 
-import src.models.llm_interface as llm_interface
+import src.agents.extraction as extraction
+import src.agents.interpretation_llm as interpretation_llm
 from src.pipeline import run_pipeline
 
 
@@ -48,11 +49,13 @@ def test_run_pipeline_prompt_mode_with_stubbed_llm(monkeypatch, tmp_path, capsys
         {
             "PatientenID": "stub_patient_001",
             "bericht": "berichte_stub_patient_001.txt",
-            "report_text": "Kein Delir dokumentiert. Patient orientiert.",
+            # No delirium *hint* substrings — prefilter skips LLM; stubbed LLM is never called here.
+            "report_text": "Patient stabil ohne kognitives Defizit. Keine akute Infektion.",
         }
     ]
     monkeypatch.setattr(run_pipeline, "_get_report_records", lambda: stub_records)
-    monkeypatch.setattr(llm_interface, "call_llm", _fake_call_llm)
+    monkeypatch.setattr(extraction, "call_llm", _fake_call_llm)
+    monkeypatch.setattr(interpretation_llm, "call_llm", _fake_call_llm)
 
     run_pipeline.main()
 
@@ -62,6 +65,8 @@ def test_run_pipeline_prompt_mode_with_stubbed_llm(monkeypatch, tmp_path, capsys
     df = pd.read_csv(standard_path)
     assert df["klasse"].isin([0, 1]).all()
     assert df["klassifikation"].iloc[0] == "kein_delir"
+    assert "llm_skipped_by_prefilter" in df.columns
+    assert str(df["llm_skipped_by_prefilter"].iloc[0]).lower() in ("true", "1")
 
     slug = run_pipeline._sanitize_provider_model_slug(
         run_pipeline.LLM_PROVIDER,

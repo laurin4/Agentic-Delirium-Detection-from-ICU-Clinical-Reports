@@ -3,6 +3,7 @@ import logging
 import re
 import shutil
 from pathlib import Path
+from typing import Dict, Tuple
 
 from src.agents.classification import classify_delirium
 from src.agents.extraction import extract_passages
@@ -12,6 +13,7 @@ from src.models.model_config import LLM_MODEL_LABEL, LLM_PROVIDER
 from src.pipeline.paths import ANONYMIZED_DIR, BERICHTE_INPUT_PATH, PREDICTIONS_DIR, MAX_REPORTS
 from src.preprocessing.berichte_mapper import build_patient_level_berichte_report_records
 from src.preprocessing.diagnosis_mapper import build_patient_level_report_records
+from src.preprocessing.delirium_hint_keywords import haystack_contains_delirium_hint
 from src.preprocessing.report_text_llm_reduction import reduce_report_text_for_llm
 
 
@@ -29,6 +31,42 @@ INTERPRETATION_MODE = "prompt"  # "rule" oder "prompt"
 INPUT_MODE = "berichte"  # "berichte" | "diagnosis" | "txt"
 
 LOGGER = logging.getLogger(__name__)
+
+PREFILTER_SKIP_BE = "LLM übersprungen: keine Delir-Hinweisbegriffe im Bericht."
+PREFILTER_SKIP_KONTEXT = "Kein regelbasierter Delir-Hinweis im Bericht gefunden."
+
+_KLASSE_NULL_BE = "Keine ausreichenden Hinweise für ein dokumentiertes Delir."
+
+
+def _report_contains_delirium_hint(full_text: str, reduced_text: str) -> bool:
+    """Hints in either original or reduced text trigger the LLM (avoids truncation false negatives)."""
+    return haystack_contains_delirium_hint(full_text) or haystack_contains_delirium_hint(reduced_text)
+
+
+def _prediction_row_prefilter_skip(
+    patient_id: str,
+    report_name: str,
+    reduction,
+) -> Dict[str, object]:
+    return {
+        "PatientenID": patient_id,
+        "bericht": report_name,
+        "original_report_text_length": reduction.original_report_text_length,
+        "llm_report_text_length": reduction.llm_report_text_length,
+        "llm_text_reduction_method": reduction.llm_text_reduction_method,
+        "delir_keyword_hits_count": reduction.delir_keyword_hits_count,
+        "llm_skipped_by_prefilter": True,
+        "anzahl_treffer": 0,
+        "delir_signale": "",
+        "signalstaerke": "niedrig",
+        "kontext": PREFILTER_SKIP_KONTEXT,
+        "alternative_erklaerung": False,
+        "alternative_erklaerung_keywords": "",
+        "begruendung": PREFILTER_SKIP_BE,
+        "klasse": 0,
+        "klassifikation": "kein_delir",
+        "klassifikation_begruendung": _KLASSE_NULL_BE + " | " + PREFILTER_SKIP_BE,
+    }
 
 
 def load_report(path: str) -> str:
@@ -112,7 +150,8 @@ def _assert_binary_klassen(rows: list) -> None:
             raise ValueError(f"Non-binary klasse (expected 0 or 1): {ki}")
 
 
-def _run_single_report(report: dict) -> dict:
+def _run_single_report(report: dict) -> Tuple[dict, bool]:
+    """Returns (row_dict, skipped_by_prefilter bool)."""
     full_report_text = str(report.get("report_text", "") or "")
     reduction = reduce_report_text_for_llm(full_report_text)
     text = reduction.reduced_text
@@ -134,6 +173,14 @@ def _run_single_report(report: dict) -> dict:
         reduction.llm_report_text_length,
         reduction.llm_text_reduction_method,
     )
+
+    if not _report_contains_delirium_hint(full_report_text, text):
+        print(
+            f"[Delirium prefilter] Patient={patient_id} — keine Hinweisbegriffe, "
+            f"Agent 1 + LLM Interpretation werden übersprungen."
+        )
+        LOGGER.info("Delirium prefilter skipped LLM for patient=%s", patient_id)
+        return (_prediction_row_prefilter_skip(patient_id, report_name, reduction), True)
 
     print("\n=== DEBUG REPORT ===")
     print("Patient:", patient_id)
@@ -198,13 +245,14 @@ def _run_single_report(report: dict) -> dict:
 
     print()
 
-    return {
+    return ({
         "PatientenID": patient_id,
         "bericht": report_name,
         "original_report_text_length": reduction.original_report_text_length,
         "llm_report_text_length": reduction.llm_report_text_length,
         "llm_text_reduction_method": reduction.llm_text_reduction_method,
         "delir_keyword_hits_count": reduction.delir_keyword_hits_count,
+        "llm_skipped_by_prefilter": False,
         "anzahl_treffer": len(hits),
         "delir_signale": " | ".join(hits),
         "signalstaerke": interpretation["signalstaerke"],
@@ -217,7 +265,7 @@ def _run_single_report(report: dict) -> dict:
         "klasse": classification["klasse"],
         "klassifikation": classification["klassifikation"],
         "klassifikation_begruendung": " | ".join(classification.get("begruendung", [])),
-    }
+    }, False)
 
 
 def main():
@@ -228,8 +276,28 @@ def main():
     print(f"Anzahl Berichte: {len(report_records)}\n")
 
     rows = []
+    n_prefilter_skip = 0
+    n_llm = 0
     for report in report_records:
-        rows.append(_run_single_report(report))
+        row_dict, skipped = _run_single_report(report)
+        rows.append(row_dict)
+        if skipped:
+            n_prefilter_skip += 1
+        else:
+            n_llm += 1
+
+    LOGGER.info(
+        "Delirium prefilter summary: skipped_llm_reports=%d sent_to_llm=%d total=%d",
+        n_prefilter_skip,
+        n_llm,
+        len(report_records),
+    )
+    print(
+        "\n=== Delirium prefilter summary ===\n"
+        f"Übersprungen (keine Hinweisbegriffe): {n_prefilter_skip}\n"
+        f"An LLM geschickt: {n_llm}\n"
+        f"Berichte gesamt: {len(report_records)}\n"
+    )
 
     _assert_binary_klassen(rows)
 
@@ -240,6 +308,7 @@ def main():
         "llm_report_text_length",
         "llm_text_reduction_method",
         "delir_keyword_hits_count",
+        "llm_skipped_by_prefilter",
         "anzahl_treffer",
         "delir_signale",
         "signalstaerke",
