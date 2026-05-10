@@ -1,4 +1,5 @@
 import csv
+import logging
 import re
 import shutil
 from pathlib import Path
@@ -11,6 +12,7 @@ from src.models.model_config import LLM_MODEL_LABEL, LLM_PROVIDER
 from src.pipeline.paths import ANONYMIZED_DIR, BERICHTE_INPUT_PATH, PREDICTIONS_DIR, MAX_REPORTS
 from src.preprocessing.berichte_mapper import build_patient_level_berichte_report_records
 from src.preprocessing.diagnosis_mapper import build_patient_level_report_records
+from src.preprocessing.report_text_llm_reduction import reduce_report_text_for_llm
 
 
 SIGNAL_KEYS = [
@@ -25,6 +27,8 @@ SIGNAL_KEYS = [
 INTERPRETATION_MODE = "prompt"  # "rule" oder "prompt"
 # PRIMARY: anonymized hospital reports CSV (Berichte.csv). Fallback: Diagnosenliste.
 INPUT_MODE = "berichte"  # "berichte" | "diagnosis" | "txt"
+
+LOGGER = logging.getLogger(__name__)
 
 
 def load_report(path: str) -> str:
@@ -109,17 +113,32 @@ def _assert_binary_klassen(rows: list) -> None:
 
 
 def _run_single_report(report: dict) -> dict:
-    text = str(report.get("report_text", "") or "")
+    full_report_text = str(report.get("report_text", "") or "")
+    reduction = reduce_report_text_for_llm(full_report_text)
+    text = reduction.reduced_text
     patient_id = str(report.get("PatientenID", "") or "").strip()
     default_bericht = (
         f"berichte_{patient_id}.txt" if INPUT_MODE == "berichte" else f"diagnosis_{patient_id}.txt"
     )
     report_name = str(report.get("bericht", default_bericht) or "").strip()
 
+    print(
+        f"[LLM report text] original_len={reduction.original_report_text_length} "
+        f"reduced_len={reduction.llm_report_text_length} "
+        f"method={reduction.llm_text_reduction_method}"
+    )
+    LOGGER.info(
+        "LLM report text reduction patient=%s original_len=%d reduced_len=%d method=%s",
+        patient_id,
+        reduction.original_report_text_length,
+        reduction.llm_report_text_length,
+        reduction.llm_text_reduction_method,
+    )
 
     print("\n=== DEBUG REPORT ===")
     print("Patient:", patient_id)
-    print("Text length:", len(text))
+    print("Full report length:", len(full_report_text))
+    print("LLM input length:", len(text))
     print("Text preview:", text[:500])
     print("====================\n")
 
@@ -182,6 +201,10 @@ def _run_single_report(report: dict) -> dict:
     return {
         "PatientenID": patient_id,
         "bericht": report_name,
+        "original_report_text_length": reduction.original_report_text_length,
+        "llm_report_text_length": reduction.llm_report_text_length,
+        "llm_text_reduction_method": reduction.llm_text_reduction_method,
+        "delir_keyword_hits_count": reduction.delir_keyword_hits_count,
         "anzahl_treffer": len(hits),
         "delir_signale": " | ".join(hits),
         "signalstaerke": interpretation["signalstaerke"],
@@ -213,6 +236,10 @@ def main():
     fieldnames = [
         "PatientenID",
         "bericht",
+        "original_report_text_length",
+        "llm_report_text_length",
+        "llm_text_reduction_method",
+        "delir_keyword_hits_count",
         "anzahl_treffer",
         "delir_signale",
         "signalstaerke",
