@@ -104,3 +104,22 @@ FIELD_DELIRIUM_PLOTS_DIR = FIELD_DELIRIUM_ANALYSIS_DIR / "plots"
 DATA_COVERAGE_ANALYSIS_DIR = ANALYSIS_DIR / "data_coverage"
 DATA_COVERAGE_TABLES_DIR = DATA_COVERAGE_ANALYSIS_DIR / "tables"
 DATA_COVERAGE_PLOTS_DIR = DATA_COVERAGE_ANALYSIS_DIR / "plots"
+
+# Error review (FP/FN exports vs baselines)
+ERROR_REVIEW_DIR = ANALYSIS_DIR / "error_review"
+ERROR_REVIEW_TABLES_DIR = ERROR_REVIEW_DIR / "tables"
+ERROR_REVIEW_PLOTS_DIR = ERROR_REVIEW_DIR / "plots"
+
+# Keyword / term association with predictions and baselines
+KEYWORD_ANALYSIS_DIR = ANALYSIS_DIR / "keyword_analysis"
+KEYWORD_ANALYSIS_TABLES_DIR = KEYWORD_ANALYSIS_DIR / "tables"
+KEYWORD_ANALYSIS_PLOTS_DIR = KEYWORD_ANALYSIS_DIR / "plots"
+
+# Field-level signal analysis (Berichte fields vs model / baselines)
+FIELD_SIGNAL_ANALYSIS_DIR = ANALYSIS_DIR / "field_signal_analysis"
+FIELD_SIGNAL_TABLES_DIR = FIELD_SIGNAL_ANALYSIS_DIR / "tables"
+FIELD_SIGNAL_PLOTS_DIR = FIELD_SIGNAL_ANALYSIS_DIR / "plots"
+
+# Evidence snippets (interpretability export; does not change predictions)
+EVIDENCE_SNIPPETS_DIR = ANALYSIS_DIR / "evidence"
+EVIDENCE_SNIPPETS_TABLES_DIR = EVIDENCE_SNIPPETS_DIR / "tables"

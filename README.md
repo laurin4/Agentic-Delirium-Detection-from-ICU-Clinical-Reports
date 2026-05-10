@@ -118,6 +118,18 @@ python -m src.pipeline.evaluate_predictions
 python -m src.analysis.run_field_delirium_analysis
 ```
 
+After `compare_reports_vs_baseline`, you can generate **interpretability and error-review exports** (science / review tooling; read-only on model logic):
+
+```bash
+python -m src.analysis.run_error_review_export
+python -m src.analysis.run_keyword_analysis
+python -m src.analysis.run_field_signal_analysis
+python -m src.analysis.run_evidence_snippets_export
+python -m src.analysis.run_full_analysis_suite   # runs error review + keyword + field signal + evidence export
+```
+
+Outputs land under `outputs/analysis/error_review/`, `keyword_analysis/`, `field_signal_analysis/`, and `analysis/evidence/tables/`.
+
 Optional: `python -m src.validation.validate_inputs`, `python -m src.analysis.run_exploration`, `python -m src.analysis.run_analysis`, `python -m src.analysis.run_false_negative_review`.
 
 ---
@@ -135,6 +147,10 @@ Optional: `python -m src.validation.validate_inputs`, `python -m src.analysis.ru
 | Data coverage | `outputs/analysis/data_coverage/` |
 | ICD vs ICDSC overlap | `outputs/analysis/icd_icdsc_overlap/` |
 | Field keyword / OR analysis | `outputs/analysis/field_delirium/` |
+| Error review (FP/FN per baseline) | `outputs/analysis/error_review/` |
+| Keyword / term stratification | `outputs/analysis/keyword_analysis/` |
+| Field signal vs model / baselines | `outputs/analysis/field_signal_analysis/` |
+| Evidence snippets (interpretability CSV) | `outputs/analysis/evidence/tables/` |
 | LLM debug dumps | `outputs/logs/llm_debug/` |
 
 ---

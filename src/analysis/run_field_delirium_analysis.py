@@ -107,6 +107,17 @@ def _odds_ratio_2x2(
 
 
 def _plot_odds_ratios(rows: List[Dict[str, object]], out_path: Path) -> None:
+    field_labels = {
+        "diag": "Diagnoses field (diag)",
+        "epikrise": "Course summary (epikrise)",
+        "jetziges_leiden": "Present illness (jetziges_leiden)",
+        "prozedere": "Plan / procedure (prozedere)",
+        "any_field": "Any Berichte section",
+    }
+    outcome_labels = {
+        "icd10_delir": "ICD-10 delirium (F05.* excl. F05.1)",
+        "icdsc_ge_4": "ICDSC score ≥ 4",
+    }
     labels: List[str] = []
     values: List[float] = []
     for r in rows:
@@ -119,22 +130,29 @@ def _plot_odds_ratios(rows: List[Dict[str, object]], out_path: Path) -> None:
             continue
         if not np.isfinite(fv):
             continue
-        labels.append(str(r.get("comparison", "")))
+        fkey = str(r.get("field", ""))
+        okey = str(r.get("outcome", ""))
+        labels.append(
+            f"{field_labels.get(fkey, fkey)}  →  {outcome_labels.get(okey, okey)}"
+        )
         values.append(fv)
     if not labels:
         LOGGER.warning("No finite odds ratios to plot.")
         return
-    fig_h = max(3.0, 0.35 * len(labels))
-    fig, ax = plt.subplots(figsize=(8.0, fig_h))
+    fig_h = max(3.5, 0.42 * len(labels))
+    fig, ax = plt.subplots(figsize=(9.5, fig_h))
     y = np.arange(len(labels))
     ax.barh(y, values, color="#2563eb")
     ax.set_yticks(y)
     ax.set_yticklabels(labels, fontsize=8)
     ax.set_xlabel("Odds ratio (Haldane +0.5 if any cell is zero)")
-    ax.set_title("Field delir-hint vs baseline outcomes")
+    ax.set_title(
+        "Delirium keyword signal in Berichte sections vs structured baselines\n"
+        "OR > 1: higher odds of positive baseline when keyword hit is present"
+    )
     ax.axvline(1.0, color="gray", linestyle="--", linewidth=0.8)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=120)
+    fig.savefig(out_path, dpi=120, bbox_inches="tight")
     plt.close(fig)
 
 

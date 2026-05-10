@@ -61,13 +61,13 @@ Optional synthetic mode:
 
 ### Manual step-by-step
 ```bash
-python -m src.pipeline.prepare_structured_data
-python -m src.pipeline.run_pipeline
-python -m src.pipeline.compare_reports_vs_baseline
-python -m src.pipeline.evaluate_predictions
-python -m src.validation.validate_inputs
-python -m src.analysis.run_exploration
-python -m src.analysis.run_analysis
+python3 -m src.pipeline.prepare_structured_data
+python3 -m src.pipeline.run_pipeline
+python3 -m src.pipeline.compare_reports_vs_baseline
+python3 -m src.pipeline.evaluate_predictions
+python3 -m src.validation.validate_inputs
+python3 -m src.analysis.run_exploration
+python3 -m src.analysis.run_analysis
 ```
 
 ## Output Structure
