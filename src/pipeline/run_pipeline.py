@@ -3,15 +3,15 @@ import logging
 import os
 import re
 import shutil
+import traceback
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 from src.agents.classification import classify_delirium
 from src.agents.extraction import extract_passages
 from src.agents.interpretation import interpret_signals
 from src.agents.interpretation_llm import interpret_signals_llm
 from src.models.model_config import LLM_MODEL_LABEL, LLM_PROVIDER
-from src.analysis.evidence_snippets import compute_evidence_snippets_cell
 from src.pipeline.paths import (
     ANONYMIZED_DIR,
     BERICHTE_INPUT_PATH,
@@ -21,8 +21,11 @@ from src.pipeline.paths import (
 )
 from src.preprocessing.berichte_mapper import build_patient_level_berichte_report_records
 from src.preprocessing.diagnosis_mapper import build_patient_level_report_records
-from src.preprocessing.delirium_hint_keywords import haystack_contains_delirium_hint
-from src.preprocessing.report_text_llm_reduction import reduce_report_text_for_llm
+from src.preprocessing.evidence_extraction import (
+    evidence_snippets_json_for_csv,
+    extract_delirium_evidence,
+    llm_should_receive_evidence,
+)
 
 
 SIGNAL_KEYS = [
@@ -35,51 +38,80 @@ SIGNAL_KEYS = [
 ]
 
 INTERPRETATION_MODE = "prompt"  # "rule" oder "prompt"
-# PRIMARY: anonymized hospital reports CSV (Berichte.csv). Fallback: Diagnosenliste.
 INPUT_MODE = "berichte"  # "berichte" | "diagnosis" | "txt"
 
 LOGGER = logging.getLogger(__name__)
 
-PREFILTER_SKIP_BE = "LLM übersprungen: keine Delir-Hinweisbegriffe im Bericht."
-PREFILTER_SKIP_KONTEXT = "Kein regelbasierter Delir-Hinweis im Bericht gefunden."
+DEBUG_VERBOSE = os.environ.get("DEBUG_LLM_OUTPUT", "").strip().lower() in ("1", "true", "yes")
+
+NO_EVIDENCE_KONTEXT = "LLM übersprungen: keine regelbasierten Delir-Hinweise im Bericht gefunden."
+NO_EVIDENCE_BE = "Kein Delir-Hinweis in regelbasierter Volltextsuche."
 
 _KLASSE_NULL_BE = "Keine ausreichenden Hinweise für ein dokumentiertes Delir."
 
 
-def _report_contains_delirium_hint(full_text: str, reduced_text: str) -> bool:
-    """Hints in either original or reduced text trigger the LLM (avoids truncation false negatives)."""
-    return haystack_contains_delirium_hint(full_text) or haystack_contains_delirium_hint(reduced_text)
+def _bool_csv(b: bool) -> str:
+    return "True" if b else "False"
 
 
-def _prediction_row_prefilter_skip(
+def _base_evidence_metadata(ev: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "original_report_text_length": ev["original_report_text_length"],
+        "llm_report_text_length": ev["llm_report_text_length"],
+        "llm_text_reduction_method": ev["llm_text_reduction_method"],
+        "delir_keyword_hits_count": ev["delir_keyword_hits_count"],
+        "has_direct_delir_evidence": _bool_csv(bool(ev["has_direct_delir_evidence"])),
+        "has_indirect_delir_evidence": _bool_csv(bool(ev["has_indirect_delir_evidence"])),
+        "has_negated_delir_evidence": _bool_csv(bool(ev["has_negated_delir_evidence"])),
+        "has_prophylaxis_or_risk_only": _bool_csv(bool(ev["has_prophylaxis_or_risk_only"])),
+        "evidence_snippets": evidence_snippets_json_for_csv(ev.get("evidence_snippets") or []),
+    }
+
+
+def _prediction_row_no_evidence(
+    ev: Dict[str, Any],
     patient_id: str,
     report_name: str,
-    reduction,
-    full_report_text: str,
-) -> Dict[str, object]:
+) -> Dict[str, Any]:
     return {
         "PatientenID": patient_id,
         "bericht": report_name,
-        "original_report_text_length": reduction.original_report_text_length,
-        "llm_report_text_length": reduction.llm_report_text_length,
-        "llm_text_reduction_method": reduction.llm_text_reduction_method,
-        "delir_keyword_hits_count": reduction.delir_keyword_hits_count,
+        **_base_evidence_metadata(ev),
         "llm_skipped_by_prefilter": True,
         "anzahl_treffer": 0,
         "delir_signale": "",
         "signalstaerke": "niedrig",
-        "kontext": PREFILTER_SKIP_KONTEXT,
+        "kontext": NO_EVIDENCE_KONTEXT,
         "alternative_erklaerung": False,
         "alternative_erklaerung_keywords": "",
-        "begruendung": PREFILTER_SKIP_BE,
+        "begruendung": NO_EVIDENCE_BE,
         "klasse": 0,
         "klassifikation": "kein_delir",
-        "klassifikation_begruendung": _KLASSE_NULL_BE + " | " + PREFILTER_SKIP_BE,
-        "evidence_snippets": compute_evidence_snippets_cell(
-            full_report_text,
-            "",
-            PREFILTER_SKIP_KONTEXT,
-        ),
+        "klassifikation_begruendung": _KLASSE_NULL_BE + " | " + NO_EVIDENCE_BE,
+    }
+
+
+def _prediction_row_pipeline_error(
+    ev: Dict[str, Any],
+    patient_id: str,
+    report_name: str,
+    err: str,
+) -> Dict[str, Any]:
+    return {
+        "PatientenID": patient_id,
+        "bericht": report_name,
+        **_base_evidence_metadata(ev),
+        "llm_skipped_by_prefilter": False,
+        "anzahl_treffer": 0,
+        "delir_signale": "",
+        "signalstaerke": "niedrig",
+        "kontext": f"Pipeline-Fehler: {err[:500]}",
+        "alternative_erklaerung": False,
+        "alternative_erklaerung_keywords": "",
+        "begruendung": "Ausführung fehlgeschlagen",
+        "klasse": 0,
+        "klassifikation": "kein_delir",
+        "klassifikation_begruendung": _KLASSE_NULL_BE,
     }
 
 
@@ -141,7 +173,6 @@ def _get_output_path() -> Path:
 
 
 def _sanitize_provider_model_slug(provider: str, model_label: str) -> str:
-    """Filename-safe slug for `<provider>_<model>` (no dots/colons)."""
     raw = f"{provider}_{model_label}"
     s = re.sub(r"[^0-9A-Za-z_-]+", "_", raw.strip())
     return (s[:200] or "model").strip("_") or "model"
@@ -164,159 +195,224 @@ def _assert_binary_klassen(rows: list) -> None:
             raise ValueError(f"Non-binary klasse (expected 0 or 1): {ki}")
 
 
-def _run_single_report(report: dict) -> Tuple[dict, bool]:
-    """Returns (row_dict, skipped_by_prefilter bool)."""
+def _compact_line(
+    idx: int,
+    total: int,
+    patient_id: str,
+    ev: Dict[str, Any],
+    *,
+    status: str,
+    klasse: Any,
+    signal: str,
+) -> str:
+    n_snip = len(ev.get("evidence_snippets") or [])
+    return (
+        f"Patient {idx}/{total} | ID={patient_id} | evidence={n_snip} | "
+        f"original={ev['original_report_text_length']} | llm={ev['llm_report_text_length']} | "
+        f"method={ev['llm_text_reduction_method']} | klasse={klasse} | signal={signal} | status={status}"
+    )
+
+
+def _print_evidence_preview(ev: Dict[str, Any], limit: int = 3) -> None:
+    snips: List[Dict[str, Any]] = list(ev.get("evidence_snippets") or [])
+    if not snips:
+        return
+    pos = [s for s in snips if s.get("evidence_type") in ("direct_delir", "indirect_symptom")]
+    show = pos[:limit] if pos else snips[:limit]
+    print("Evidence:")
+    for s in show:
+        sec = s.get("section", "")
+        et = s.get("evidence_type", "")
+        tx = str(s.get("text") or "")[:400]
+        print(f"- [{sec} | {et}] {tx}")
+
+
+def _run_single_report(report: dict, idx: int, total: int) -> Tuple[dict, bool, bool]:
+    """
+    Returns (row_dict, skipped_no_evidence, failed).
+
+    skipped_no_evidence: rule layer found nothing to send to LLM.
+    failed: exception during LLM path (row still written).
+    """
     full_report_text = str(report.get("report_text", "") or "")
-    reduction = reduce_report_text_for_llm(full_report_text)
-    text = reduction.reduced_text
     patient_id = str(report.get("PatientenID", "") or "").strip()
     default_bericht = (
         f"berichte_{patient_id}.txt" if INPUT_MODE == "berichte" else f"diagnosis_{patient_id}.txt"
     )
     report_name = str(report.get("bericht", default_bericht) or "").strip()
 
-    print(
-        f"[LLM report text] original_len={reduction.original_report_text_length} "
-        f"reduced_len={reduction.llm_report_text_length} "
-        f"method={reduction.llm_text_reduction_method}"
-    )
-    LOGGER.info(
-        "LLM report text reduction patient=%s original_len=%d reduced_len=%d method=%s",
-        patient_id,
-        reduction.original_report_text_length,
-        reduction.llm_report_text_length,
-        reduction.llm_text_reduction_method,
-    )
+    ev = extract_delirium_evidence(full_report_text)
+    snippets = ev.get("evidence_snippets") or []
 
-    if not _report_contains_delirium_hint(full_report_text, text):
-        print(
-            f"[Delirium prefilter] Patient={patient_id} — keine Hinweisbegriffe, "
-            f"Agent 1 + LLM Interpretation werden übersprungen."
-        )
-        LOGGER.info("Delirium prefilter skipped LLM for patient=%s", patient_id)
-        return (_prediction_row_prefilter_skip(patient_id, report_name, reduction, full_report_text), True)
+    if not llm_should_receive_evidence(snippets):
+        row = _prediction_row_no_evidence(ev, patient_id, report_name)
+        msg = _compact_line(idx, total, patient_id, ev, status="skipped", klasse=0, signal="niedrig")
+        if DEBUG_VERBOSE:
+            print(msg)
+        else:
+            print(msg)
+        LOGGER.info(msg)
+        return row, True, False
 
-    print("\n=== DEBUG REPORT ===")
-    print("Patient:", patient_id)
-    print("Full report length:", len(full_report_text))
-    print("LLM input length:", len(text))
-    print("Text preview:", text[:500])
-    print("====================\n")
+    llm_text = ev["llm_report_text"]
 
-    result = extract_passages(text, patient_id=patient_id, report_name=report_name)
-
-    if INTERPRETATION_MODE == "rule":
-        interpretation = interpret_signals(text, result)
-    elif INTERPRETATION_MODE == "prompt":
-        interpretation = interpret_signals_llm(text, result, patient_id=patient_id, report_name=report_name)
+    if DEBUG_VERBOSE:
+        print(_compact_line(idx, total, patient_id, ev, status="llm", klasse="n/a", signal="…"))
+        print("\n=== DEBUG LLM input (evidence bundle) ===")
+        print(f"Patient: {patient_id} | len={len(llm_text)}")
+        print(llm_text[:4000])
+        print("====================\n")
     else:
-        raise ValueError(f"Ungültiger INTERPRETATION_MODE: {INTERPRETATION_MODE}")
+        LOGGER.info(
+            "Evidence patient=%s snippets=%d llm_len=%d method=%s",
+            patient_id,
+            len(snippets),
+            len(llm_text),
+            ev["llm_text_reduction_method"],
+        )
 
-    classification = classify_delirium(interpretation)
+    try:
+        result = extract_passages(llm_text, patient_id=patient_id, report_name=report_name)
 
-    hits = []
-    for key in SIGNAL_KEYS:
-        values = result.get(key, [])
-        if isinstance(values, list):
-            hits.extend(values)
+        if INTERPRETATION_MODE == "rule":
+            interpretation = interpret_signals(llm_text, result)
+        elif INTERPRETATION_MODE == "prompt":
+            interpretation = interpret_signals_llm(
+                llm_text, result, patient_id=patient_id, report_name=report_name
+            )
+        else:
+            raise ValueError(f"Ungültiger INTERPRETATION_MODE: {INTERPRETATION_MODE}")
 
-    print(f"[{report_name}] PatientenID={patient_id} | Treffer gesamt: {len(hits)}")
+        classification = classify_delirium(interpretation)
 
-    if hits:
+        hits: List[str] = []
         for key in SIGNAL_KEYS:
             values = result.get(key, [])
-            if isinstance(values, list) and values:
-                print(f"  [{key}]")
-                for idx, hit in enumerate(values, start=1):
-                    print(f"    {idx}. {hit}")
-    else:
-        print("  - Keine Delir-Signale gefunden")
+            if isinstance(values, list):
+                hits.extend(values)
 
-    print("  [interpretation]")
-    print(f"    signalstaerke: {interpretation['signalstaerke']}")
-    print(f"    kontext: {interpretation['kontext']}")
-    print(f"    alternative_erklaerung: {interpretation['alternative_erklaerung']}")
+        if DEBUG_VERBOSE:
+            print(f"[{report_name}] PatientenID={patient_id} | Treffer gesamt: {len(hits)}")
+            if hits:
+                for key in SIGNAL_KEYS:
+                    values = result.get(key, [])
+                    if isinstance(values, list) and values:
+                        print(f"  [{key}]")
+                        for hit_idx, hit in enumerate(values, start=1):
+                            print(f"    {hit_idx}. {hit}")
+            print("  [interpretation]")
+            print(f"    signalstaerke: {interpretation['signalstaerke']}")
+            print(f"    kontext: {interpretation['kontext']}")
+            print("  [classification]")
+            print(f"    klasse: {classification['klasse']}")
+            print(f"    klassifikation: {classification['klassifikation']}")
+            print()
+        else:
+            msg = _compact_line(
+                idx,
+                total,
+                patient_id,
+                ev,
+                status="success",
+                klasse=int(classification["klasse"]),
+                signal=str(interpretation.get("signalstaerke", "")),
+            )
+            print(msg)
+            if int(classification["klasse"]) == 1:
+                _print_evidence_preview(ev)
+            LOGGER.info(msg)
 
-    if interpretation.get("alternative_erklaerung_keywords"):
-        print(
-            "    alternative_erklaerung_keywords: "
-            + ", ".join(interpretation["alternative_erklaerung_keywords"])
+        row: Dict[str, Any] = {
+            "PatientenID": patient_id,
+            "bericht": report_name,
+            **_base_evidence_metadata(ev),
+            "llm_skipped_by_prefilter": False,
+            "anzahl_treffer": len(hits),
+            "delir_signale": " | ".join(hits),
+            "signalstaerke": interpretation["signalstaerke"],
+            "kontext": interpretation["kontext"],
+            "alternative_erklaerung": interpretation["alternative_erklaerung"],
+            "alternative_erklaerung_keywords": " | ".join(
+                interpretation.get("alternative_erklaerung_keywords", [])
+            ),
+            "begruendung": " | ".join(interpretation.get("begruendung", [])),
+            "klasse": classification["klasse"],
+            "klassifikation": classification["klassifikation"],
+            "klassifikation_begruendung": " | ".join(classification.get("begruendung", [])),
+        }
+        return row, False, False
+
+    except Exception as exc:
+        LOGGER.exception("Pipeline failure patient=%s", patient_id)
+        err = f"{type(exc).__name__}: {exc}"
+        row = _prediction_row_pipeline_error(ev, patient_id, report_name, err)
+        msg = _compact_line(
+            idx, total, patient_id, ev, status="failed", klasse=0, signal="niedrig"
         )
-
-    if interpretation.get("begruendung"):
-        print("    begruendung:")
-        for reason in interpretation["begruendung"]:
-            print(f"      - {reason}")
-
-    print("  [classification]")
-    print(f"    klasse: {classification['klasse']}")
-    print(f"    klassifikation: {classification['klassifikation']}")
-
-    if classification.get("begruendung"):
-        print("    begruendung:")
-        for reason in classification["begruendung"]:
-            print(f"      - {reason}")
-
-    print()
-
-    return ({
-        "PatientenID": patient_id,
-        "bericht": report_name,
-        "original_report_text_length": reduction.original_report_text_length,
-        "llm_report_text_length": reduction.llm_report_text_length,
-        "llm_text_reduction_method": reduction.llm_text_reduction_method,
-        "delir_keyword_hits_count": reduction.delir_keyword_hits_count,
-        "llm_skipped_by_prefilter": False,
-        "anzahl_treffer": len(hits),
-        "delir_signale": " | ".join(hits),
-        "signalstaerke": interpretation["signalstaerke"],
-        "kontext": interpretation["kontext"],
-        "alternative_erklaerung": interpretation["alternative_erklaerung"],
-        "alternative_erklaerung_keywords": " | ".join(
-            interpretation.get("alternative_erklaerung_keywords", [])
-        ),
-        "begruendung": " | ".join(interpretation.get("begruendung", [])),
-        "klasse": classification["klasse"],
-        "klassifikation": classification["klassifikation"],
-        "klassifikation_begruendung": " | ".join(classification.get("begruendung", [])),
-        "evidence_snippets": compute_evidence_snippets_cell(
-            full_report_text,
-            " | ".join(hits),
-            interpretation["kontext"],
-        ),
-    }, False)
+        print(msg)
+        if DEBUG_VERBOSE:
+            print(traceback.format_exc())
+        LOGGER.error("%s | %s", msg, err)
+        return row, False, True
 
 
 def main():
     output_csv = _get_output_path()
     report_records = _get_report_records()
+    total = len(report_records)
 
     print(f"\n=== Agent 1 + Agent 2 + Agent 3: Delir-Pipeline ({INTERPRETATION_MODE}) ===")
-    print(f"Anzahl Berichte: {len(report_records)}\n")
+    print(f"Anzahl Berichte: {total}\n")
 
-    rows = []
+    rows: List[Dict[str, Any]] = []
     n_prefilter_skip = 0
     n_llm = 0
-    for report in report_records:
-        row_dict, skipped = _run_single_report(report)
+    n_failed = 0
+    n_k0 = n_k1 = 0
+    sig_counts: Dict[str, int] = {}
+    sum_orig = sum_llm = 0
+
+    for i, report in enumerate(report_records, start=1):
+        row_dict, skipped, failed = _run_single_report(report, i, total)
         rows.append(row_dict)
-        if skipped:
+        sum_orig += int(row_dict.get("original_report_text_length") or 0)
+        sum_llm += int(row_dict.get("llm_report_text_length") or 0)
+        k = int(row_dict.get("klasse") or 0)
+        if k == 1:
+            n_k1 += 1
+        else:
+            n_k0 += 1
+        sig = str(row_dict.get("signalstaerke") or "")
+        sig_counts[sig] = sig_counts.get(sig, 0) + 1
+        if failed:
+            n_failed += 1
+        elif skipped:
             n_prefilter_skip += 1
         else:
             n_llm += 1
 
     LOGGER.info(
-        "Delirium prefilter summary: skipped_llm_reports=%d sent_to_llm=%d total=%d",
+        "Run summary: total=%d skipped=%d llm=%d failed=%d klasse0=%d klasse1=%d",
+        total,
         n_prefilter_skip,
         n_llm,
-        len(report_records),
+        n_failed,
+        n_k0,
+        n_k1,
     )
-    print(
-        "\n=== Delirium prefilter summary ===\n"
-        f"Übersprungen (keine Hinweisbegriffe): {n_prefilter_skip}\n"
-        f"An LLM geschickt: {n_llm}\n"
-        f"Berichte gesamt: {len(report_records)}\n"
-    )
+
+    avg_orig = sum_orig / total if total else 0.0
+    avg_llm = sum_llm / total if total else 0.0
+
+    print("\n=== Run summary ===")
+    print(f"total_reports={total}")
+    print(f"sent_to_llm={n_llm}")
+    print(f"skipped_no_evidence={n_prefilter_skip}")
+    print(f"failed={n_failed}")
+    print(f"klasse: 0={n_k0}, 1={n_k1}")
+    print(f"signalstaerke: {sig_counts}")
+    print(f"avg_original_length={avg_orig:.1f}")
+    print(f"avg_llm_input_length={avg_llm:.1f}")
 
     _assert_binary_klassen(rows)
 
@@ -327,6 +423,10 @@ def main():
         "llm_report_text_length",
         "llm_text_reduction_method",
         "delir_keyword_hits_count",
+        "has_direct_delir_evidence",
+        "has_indirect_delir_evidence",
+        "has_negated_delir_evidence",
+        "has_prophylaxis_or_risk_only",
         "llm_skipped_by_prefilter",
         "anzahl_treffer",
         "delir_signale",

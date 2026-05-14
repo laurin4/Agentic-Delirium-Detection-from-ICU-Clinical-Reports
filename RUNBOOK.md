@@ -24,6 +24,23 @@ export LLM_TIMEOUT=120
 export LLM_LONG_INPUT_WARNING_CHARS=12000
 ```
 
+## Evidence extraction + console verbosity
+
+Rule-based extraction (`src/preprocessing/evidence_extraction.py`) runs **before** Agent 1. Optional tuning:
+
+```bash
+export EVIDENCE_MAX_SNIPPETS=12
+export EVIDENCE_MAX_LLM_CHARS=8000
+export EVIDENCE_WINDOW_SENTENCES=1
+export EVIDENCE_MAX_SNIPPET_CHARS=400
+```
+
+Compact per-patient logging is default. For deep debugging:
+
+```bash
+export DEBUG_LLM_OUTPUT=true
+```
+
 ## USZ API smoke test
 
 ```bash

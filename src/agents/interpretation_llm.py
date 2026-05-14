@@ -32,10 +32,13 @@ def interpret_signals_llm(
 
     signals_json = json.dumps(signals, ensure_ascii=False, indent=2)
 
-    user_prompt = f"""Klinischer Bericht:
+    user_prompt = f"""The following block is NOT a full ICU report. It contains only **rule-extracted evidence snippets**
+(section labels, evidence_type, priority) cut from the full report for scalable review.
+
+Evidence bundle:
 {report_text}
 
-Extrahierte Signale (JSON):
+Extrahierte Signale (JSON) from the same bundle (Agent 1):
 {signals_json}
 """
 

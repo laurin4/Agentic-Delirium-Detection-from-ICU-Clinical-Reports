@@ -48,8 +48,9 @@ def test_prefilter_skips_llm_when_no_hints(monkeypatch, tmp_path):
     assert df["klassifikation"].iloc[0] == "kein_delir"
     assert int(df["anzahl_treffer"].iloc[0]) == 0
     assert str(df["delir_signale"].iloc[0]) in ("nan", "")
-    assert "LLM übersprungen" in str(df["begruendung"].iloc[0])
-    assert run_pipeline.PREFILTER_SKIP_KONTEXT in str(df["kontext"].iloc[0])
+    assert run_pipeline.NO_EVIDENCE_BE in str(df["begruendung"].iloc[0])
+    assert run_pipeline.NO_EVIDENCE_KONTEXT in str(df["kontext"].iloc[0])
+    assert json.loads(str(df["evidence_snippets"].iloc[0])) == []
 
 
 def test_prefilter_calls_llm_when_delirium_present(monkeypatch, tmp_path):
@@ -101,9 +102,16 @@ def test_prefilter_calls_llm_when_delirium_present(monkeypatch, tmp_path):
     run_pipeline.main()
 
     assert len(calls) >= 2
+    extr_messages = calls[0]
+    user_ex = str(extr_messages[-1].get("content", "")) if extr_messages else ""
+    assert "Evidence snippet bundle" in user_ex
     df = pd.read_csv(pred_dir / "agent1_agent2_agent3_results_prompt.csv")
     assert str(df["llm_skipped_by_prefilter"].iloc[0]).lower() in ("false", "0")
     assert int(df["klasse"].iloc[0]) in (0, 1)
+    raw_snip = str(df["evidence_snippets"].iloc[0])
+    data = json.loads(raw_snip)
+    assert isinstance(data, list) and len(data) >= 1
+    assert "section" in data[0] and "evidence_type" in data[0]
 
 
 _EXPECTED_COLUMNS = (
@@ -113,6 +121,10 @@ _EXPECTED_COLUMNS = (
     "llm_report_text_length",
     "llm_text_reduction_method",
     "delir_keyword_hits_count",
+    "has_direct_delir_evidence",
+    "has_indirect_delir_evidence",
+    "has_negated_delir_evidence",
+    "has_prophylaxis_or_risk_only",
     "llm_skipped_by_prefilter",
     "anzahl_treffer",
     "delir_signale",

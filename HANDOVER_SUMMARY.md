@@ -6,11 +6,31 @@
 - Provide reproducible validation, evaluation, and exploratory analysis outputs.
 
 ## Core Architecture
-- **Agent 1**: extraction (`src/agents/extraction.py`)
-- **Agent 2**: interpretation (rule/prompt; default prompt) (`src/agents/interpretation.py`, `src/agents/interpretation_llm.py`)
-- **Agent 3**: classification into classes 0/1/2 (`src/agents/classification.py`)
+- **Pre-LLM layer**: structured rule-based evidence extraction (`src/preprocessing/evidence_extraction.py`) — full `report_text` is scanned; only bounded, section-tagged snippets are assembled for the LLM.
+- **Agent 1**: extraction (`src/agents/extraction.py`) — JSON signal buckets from the **evidence bundle** (not the full report).
+- **Agent 2**: interpretation (rule/prompt; default prompt) (`src/agents/interpretation.py`, `src/agents/interpretation_llm.py`) — assigns **signalstaerke** (`niedrig` / `mittel` / `hoch`).
+- **Agent 3**: classification (`src/agents/classification.py`) — **binary** `klasse` 0/1 from signal strength (`mittel`/`hoch` → 1, `niedrig` → 0).
 
-Pipeline stages:
+## Evidence extraction (scientific / scalability)
+- **Binary output only**: `klasse` ∈ {0, 1}. There is **no** multiclass prediction head.
+- **Signal strength** remains `niedrig` | `mittel` | `hoch` (interpretation only); mapping to `klasse` is unchanged.
+- The **entire** stitched `report_text` is scanned with deterministic keyword groups:
+  - **direct_delir**, **indirect_symptom**, **negation**, **prophylaxis_or_risk** (see `evidence_extraction.py`).
+- **Negated** delirium phrases are **not** treated as positive evidence; **prophylaxis / screening / risk-only** mentions are **not** auto-positive for delirium (the LLM is instructed; final class still flows through signal strength).
+- If **no** snippet qualifies for LLM review (i.e. nothing beyond negation-only), the LLM is **skipped**, `llm_text_reduction_method=no_evidence_prefilter_skip`, and **`klasse=0`**.
+- If actionable snippets exist, `llm_text_reduction_method=structured_evidence_extraction` and the LLM receives **`llm_report_text`**: labeled snippets + short instruction — **not** the full chart.
+- **Transparency**: describe this two-stage design (rules → LLM) in thesis/defense materials; CSV stores structured `evidence_snippets` (JSON list) plus boolean flags for audit.
+
+### Environment (evidence + logging)
+| Variable | Default | Role |
+|----------|---------|------|
+| `EVIDENCE_MAX_SNIPPETS` | 12 | Max structured snippets per patient. |
+| `EVIDENCE_MAX_LLM_CHARS` | 8000 | Cap on assembled LLM evidence bundle size. |
+| `EVIDENCE_WINDOW_SENTENCES` | 1 | Sentences before/after the hit sentence in each window. |
+| `EVIDENCE_MAX_SNIPPET_CHARS` | 400 | Max characters per snippet `text` field. |
+| `DEBUG_LLM_OUTPUT` | false | If true, print verbose per-agent debug (full previews, raw LLM). |
+
+## Pipeline stages
 1. Prepare structured baseline (`src/pipeline/prepare_structured_data.py`)
 2. Run text pipeline (`src/pipeline/run_pipeline.py`)
 3. Compare predictions vs baseline (`src/pipeline/compare_reports_vs_baseline.py`)

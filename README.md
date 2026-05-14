@@ -119,6 +119,16 @@ ENABLE_SQLITE_LOGGING=true python -m src.pipeline.run_pipeline
 
 Writes rows to `outputs/logs/prediction_run.sqlite` (see `src/pipeline/sqlite_logging.py`).
 
+**Pre-LLM evidence extraction** (`src/preprocessing/evidence_extraction.py`): the stitched `report_text` is scanned with rule-based keyword groups (direct delirium wording, indirect symptoms, negations, prophylaxis/screening). Only bounded, section-labeled snippets are sent to the LLM as `llm_report_text`. If nothing actionable is found (e.g. negation-only), the LLM is skipped and `klasse=0`. Tune caps with:
+
+```bash
+export EVIDENCE_MAX_SNIPPETS=12
+export EVIDENCE_MAX_LLM_CHARS=8000
+export EVIDENCE_WINDOW_SENTENCES=1
+export EVIDENCE_MAX_SNIPPET_CHARS=400
+export DEBUG_LLM_OUTPUT=false   # true = verbose per-agent dumps to stdout
+```
+
 ---
 
 ## Command order (recommended)

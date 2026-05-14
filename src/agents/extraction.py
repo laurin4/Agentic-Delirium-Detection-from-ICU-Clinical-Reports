@@ -31,7 +31,7 @@ def empty_result():
 
 def extract_passages(text: str, patient_id: str = "", report_name: str = ""):
     system_prompt = load_prompt()
-    user_prompt = f"""Bericht:
+    user_prompt = f"""Evidence snippet bundle (rule-extracted from full report; not the full chart):
 {text}
 """
 

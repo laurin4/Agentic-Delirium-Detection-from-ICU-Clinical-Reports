@@ -47,6 +47,10 @@ DATA_COLUMN_ORDER: Sequence[str] = (
     "original_report_text_length",
     "llm_report_text_length",
     "llm_skipped_by_prefilter",
+    "has_direct_delir_evidence",
+    "has_indirect_delir_evidence",
+    "has_negated_delir_evidence",
+    "has_prophylaxis_or_risk_only",
 )
 
 MANUAL_ANNOTATION_COLUMNS = (
