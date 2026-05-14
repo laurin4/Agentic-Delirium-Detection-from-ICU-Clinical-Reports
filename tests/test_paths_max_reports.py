@@ -5,9 +5,14 @@ import pytest
 from src.pipeline.paths import MAX_REPORTS, parse_max_reports_env
 
 
-def test_parse_max_reports_env_blank():
-    assert parse_max_reports_env("") is None
-    assert parse_max_reports_env("   ") is None
+def test_parse_max_reports_env_blank_defaults_to_thirty():
+    assert parse_max_reports_env("") == 30
+    assert parse_max_reports_env("   ") == 30
+
+
+def test_parse_max_reports_env_all_means_unlimited():
+    assert parse_max_reports_env("all") is None
+    assert parse_max_reports_env("ALL") is None
 
 
 def test_parse_max_reports_env_positive():
@@ -23,9 +28,6 @@ def test_parse_max_reports_env_invalid():
         parse_max_reports_env("-2")
 
 
-def test_max_reports_module_constant_follows_environment(monkeypatch):
-    """Sanity: paths.MAX_REPORTS reflects env at import time (typical CLI usage)."""
+def test_max_reports_module_constant_is_int_or_none(monkeypatch):
     monkeypatch.delenv("MAX_REPORTS", raising=False)
-    assert os.environ.get("MAX_REPORTS") in (None, "")
-    # Module was imported with current env in this worker
-    assert MAX_REPORTS is None or isinstance(MAX_REPORTS, int)
+    assert isinstance(MAX_REPORTS, int) or MAX_REPORTS is None

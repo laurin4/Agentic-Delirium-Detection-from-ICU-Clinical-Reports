@@ -18,33 +18,42 @@ STRUCTURED_RAW_DIR = STRUCTURED_DIR / "raw"
 DATA_MODE = "real"  # allowed: "real", "synthetic"
 
 
+# Default cap (matches historical paths.py): avoids accidentally running the full corpus.
+DEFAULT_MAX_REPORTS = 30
+
+
 def parse_max_reports_env(raw: str | None = None) -> int | None:
     """
-    Parse MAX_REPORTS limit from *raw* or from the MAX_REPORTS environment variable.
+    Parse MAX_REPORTS from *raw* or from the environment.
 
-    Returns None when unset/blank. Raises ValueError for non-positive or non-integer values.
+    - Unset / blank → ``DEFAULT_MAX_REPORTS`` (30).
+    - ``all`` (case-insensitive) → ``None`` (no limit, every patient-level report).
+    - Otherwise a positive integer cap.
+
+    Raises ValueError for invalid strings or non-positive integers (except ``all``).
     """
     if raw is None:
         raw = os.environ.get("MAX_REPORTS", "")
     raw = raw.strip()
     if not raw:
+        return DEFAULT_MAX_REPORTS
+    if raw.lower() == "all":
         return None
     try:
         n = int(raw)
     except ValueError as exc:
-        raise ValueError("MAX_REPORTS must be a positive integer when set.") from exc
+        raise ValueError(
+            "MAX_REPORTS must be 'all', a positive integer, or unset (defaults to 30)."
+        ) from exc
     if n <= 0:
-        raise ValueError("MAX_REPORTS must be a positive integer when set.")
+        raise ValueError(
+            "MAX_REPORTS must be 'all', a positive integer, or unset (defaults to 30)."
+        )
     return n
 
 
 def _max_reports_from_environment() -> int | None:
-    """
-    Limit patient-level reports when MAX_REPORTS is set in the environment.
-
-    Example: MAX_REPORTS=30 python -m src.pipeline.run_pipeline
-    If unset or empty, all reports are processed (None).
-    """
+    """``MAX_REPORTS`` env (see ``parse_max_reports_env``); defaults to first 30 reports."""
     return parse_max_reports_env()
 
 
