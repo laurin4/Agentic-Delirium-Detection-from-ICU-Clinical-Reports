@@ -1,6 +1,6 @@
 """Evidence snippet helpers (interpretability export only)."""
 
-from src.analysis.evidence_snippets import extract_evidence_snippets
+from src.analysis.evidence_snippets import compute_evidence_snippets_cell, extract_evidence_snippets
 
 
 def test_extract_evidence_includes_section_label():
@@ -27,3 +27,13 @@ def test_separator_joins_multiple_hits():
     text = "[Diagnosen]\ndelirium vorhanden.\n\n[Jetziges Leiden]\njemand verwirrt"
     s = extract_evidence_snippets(text, separator=";;", max_snippet_len=120, max_snippets=5)
     assert ";;" in s
+
+
+def test_compute_evidence_snippets_cell_empty_is_brackets():
+    assert compute_evidence_snippets_cell("", "", "") == "[]"
+
+
+def test_compute_evidence_snippets_from_signals_without_report_text():
+    s = compute_evidence_snippets_cell("", "Desorientierung im Raum", "")
+    assert "Treffer" in s
+    assert "Desorientierung" in s

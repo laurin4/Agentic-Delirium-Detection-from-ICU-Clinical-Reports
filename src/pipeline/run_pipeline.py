@@ -1,5 +1,6 @@
 import csv
 import logging
+import os
 import re
 import shutil
 from pathlib import Path
@@ -10,7 +11,14 @@ from src.agents.extraction import extract_passages
 from src.agents.interpretation import interpret_signals
 from src.agents.interpretation_llm import interpret_signals_llm
 from src.models.model_config import LLM_MODEL_LABEL, LLM_PROVIDER
-from src.pipeline.paths import ANONYMIZED_DIR, BERICHTE_INPUT_PATH, PREDICTIONS_DIR, MAX_REPORTS
+from src.analysis.evidence_snippets import compute_evidence_snippets_cell
+from src.pipeline.paths import (
+    ANONYMIZED_DIR,
+    BERICHTE_INPUT_PATH,
+    PREDICTIONS_DIR,
+    MAX_REPORTS,
+    SQLITE_PREDICTIONS_DB_PATH,
+)
 from src.preprocessing.berichte_mapper import build_patient_level_berichte_report_records
 from src.preprocessing.diagnosis_mapper import build_patient_level_report_records
 from src.preprocessing.delirium_hint_keywords import haystack_contains_delirium_hint
@@ -47,6 +55,7 @@ def _prediction_row_prefilter_skip(
     patient_id: str,
     report_name: str,
     reduction,
+    full_report_text: str,
 ) -> Dict[str, object]:
     return {
         "PatientenID": patient_id,
@@ -66,6 +75,11 @@ def _prediction_row_prefilter_skip(
         "klasse": 0,
         "klassifikation": "kein_delir",
         "klassifikation_begruendung": _KLASSE_NULL_BE + " | " + PREFILTER_SKIP_BE,
+        "evidence_snippets": compute_evidence_snippets_cell(
+            full_report_text,
+            "",
+            PREFILTER_SKIP_KONTEXT,
+        ),
     }
 
 
@@ -180,7 +194,7 @@ def _run_single_report(report: dict) -> Tuple[dict, bool]:
             f"Agent 1 + LLM Interpretation werden übersprungen."
         )
         LOGGER.info("Delirium prefilter skipped LLM for patient=%s", patient_id)
-        return (_prediction_row_prefilter_skip(patient_id, report_name, reduction), True)
+        return (_prediction_row_prefilter_skip(patient_id, report_name, reduction, full_report_text), True)
 
     print("\n=== DEBUG REPORT ===")
     print("Patient:", patient_id)
@@ -265,6 +279,11 @@ def _run_single_report(report: dict) -> Tuple[dict, bool]:
         "klasse": classification["klasse"],
         "klassifikation": classification["klassifikation"],
         "klassifikation_begruendung": " | ".join(classification.get("begruendung", [])),
+        "evidence_snippets": compute_evidence_snippets_cell(
+            full_report_text,
+            " | ".join(hits),
+            interpretation["kontext"],
+        ),
     }, False)
 
 
@@ -311,6 +330,7 @@ def main():
         "llm_skipped_by_prefilter",
         "anzahl_treffer",
         "delir_signale",
+        "evidence_snippets",
         "signalstaerke",
         "kontext",
         "alternative_erklaerung",
@@ -320,13 +340,18 @@ def main():
         "klassifikation",
         "klassifikation_begruendung",
     ]
-
-   
-
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+    if os.environ.get("ENABLE_SQLITE_LOGGING", "").strip().lower() in ("1", "true", "yes"):
+        from src.pipeline.sqlite_logging import init_prediction_db, log_prediction_row
+
+        init_prediction_db(SQLITE_PREDICTIONS_DB_PATH)
+        for row_dict in rows:
+            log_prediction_row(SQLITE_PREDICTIONS_DB_PATH, row_dict)
+        print(f"SQLite prediction log: {SQLITE_PREDICTIONS_DB_PATH}")
 
     model_copy_path = _get_model_named_output_path()
     shutil.copy2(output_csv, model_copy_path)

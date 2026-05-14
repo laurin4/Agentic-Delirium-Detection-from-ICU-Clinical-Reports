@@ -40,6 +40,7 @@ def test_compare_all_prediction_rows_evaluable(tmp_path):
     cmp_df = pd.read_csv(out)
     excl_df = pd.read_csv(excl)
     assert len(cmp_df) == 2
+    assert "evidence_snippets" in cmp_df.columns
     assert len(excl_df) == 0
     assert set(cmp_df["PatientenID"].astype(str)) == {"p1", "p2"}
     assert cmp_df["agreement_report_vs_combined_baseline"].isna().all()

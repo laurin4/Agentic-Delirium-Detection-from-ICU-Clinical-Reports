@@ -20,6 +20,7 @@ from src.pipeline.paths import (
     FIELD_SIGNAL_ANALYSIS_DIR,
     KEYWORD_ANALYSIS_DIR,
     EVIDENCE_SNIPPETS_TABLES_DIR,
+    MANUAL_REVIEW_DIR,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -27,13 +28,14 @@ LOGGER = logging.getLogger(__name__)
 
 def main() -> None:
     paths_to_print = [
-        ("error_review_tables", ERROR_REVIEW_TABLES_DIR),
+        ("manual_review", MANUAL_REVIEW_DIR),
         ("keyword_analysis_root", KEYWORD_ANALYSIS_DIR),
         ("field_signal_root", FIELD_SIGNAL_ANALYSIS_DIR),
         ("evidence_tables", EVIDENCE_SNIPPETS_TABLES_DIR),
+        ("legacy_error_review_tables", ERROR_REVIEW_TABLES_DIR),
     ]
 
-    LOGGER.info("1/4 Error review export (FP/FN + summary)...")
+    LOGGER.info("1/4 Manual review export (TP/TN/FP/FN samples)...")
     error_review_main()
 
     LOGGER.info("2/4 Keyword association analysis...")
@@ -45,26 +47,22 @@ def main() -> None:
     LOGGER.info("4/4 Evidence snippets export...")
     evidence_main()
 
-    summary_path = ERROR_REVIEW_TABLES_DIR / "error_review_summary.csv"
+    summary_path = MANUAL_REVIEW_DIR / "manual_review_summary.csv"
     if summary_path.exists():
         try:
             sdf = pd.read_csv(summary_path)
-            sub = sdf.dropna(subset=["f1"]) if "f1" in sdf.columns else sdf.iloc[0:0]
-            if len(sub) and "baseline" in sub.columns:
-                row = sub.loc[sub["f1"].astype(float).idxmax()]
-                n_ev = row.get("n_evaluable")
-                n_disp = int(float(n_ev)) if n_ev == n_ev and n_ev is not None else int(row.get("n", 0))
+            if len(sdf) and "baseline_name" in sdf.columns:
+                row = sdf.iloc[0]
                 print("")
-                print("Key metric (review): highest F1 among exported baselines (exploratory):")
+                print("Manual review export (first baseline row in summary):")
                 print(
-                    f"  baseline={row['baseline']!r}, "
-                    f"F1={float(row['f1']):.3f}, "
-                    f"P={float(row['precision']):.3f}, "
-                    f"R={float(row['recall']):.3f}, "
-                    f"n_evaluable={n_disp}"
+                    f"  baseline={row.get('baseline_name')!r}, "
+                    f"evaluable n={int(row.get('total_evaluable_rows', 0))}, "
+                    f"TP={int(row.get('count_TP', 0))}, TN={int(row.get('count_TN', 0))}, "
+                    f"FP={int(row.get('count_FP', 0))}, FN={int(row.get('count_FN', 0))}"
                 )
         except Exception as exc:
-            LOGGER.warning("Could not print error review summary teaser: %s", exc)
+            LOGGER.warning("Could not print manual review summary teaser: %s", exc)
 
     print("")
     print("Full analysis suite — output directories:")

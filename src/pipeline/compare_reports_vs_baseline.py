@@ -8,6 +8,7 @@ from src.pipeline.paths import (
     REPORT_VS_BASELINE_EXCLUDED_PATH,
     PREDICTIONS_DIR,
 )
+from src.analysis.evidence_snippets import attach_evidence_snippets_to_dataframe
 from src.pipeline.prepare_structured_data import add_reference_class
 
 REPORT_PREDICTIONS_PATH = PREDICTIONS_DIR / "agent1_agent2_agent3_results_prompt.csv"
@@ -176,6 +177,8 @@ def run_compare(
     # Deprecated/disabled: project now uses binary baselines; comparing binary klasse
     # against legacy multiclass baseline_reference_class would be semantically wrong.
     evaluable["agreement_report_vs_combined_baseline"] = pd.NA
+
+    evaluable = attach_evidence_snippets_to_dataframe(evaluable)
 
     evaluable.to_csv(output_path, index=False)
 

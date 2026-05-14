@@ -102,6 +102,22 @@ Ollama maps `LLM_MAX_TOKENS` → `num_predict`, and uses `LLM_TEMPERATURE`, `LLM
 - Copy: `outputs/predictions/agent_results_<provider>_<model_label>.csv`  
   Examples: `agent_results_usz_api_gemma4_26b_usz.csv`, `agent_results_ollama_qwen2_5_7b.csv`.
 
+**Limit run size (optional):** process only the first *N* patient-level reports (stable order from the input loader):
+
+```bash
+MAX_REPORTS=30 python -m src.pipeline.run_pipeline
+```
+
+Unset `MAX_REPORTS` to process all reports. Values must be positive integers.
+
+**Optional SQLite append log** (CSV remains the canonical artifact):
+
+```bash
+ENABLE_SQLITE_LOGGING=true python -m src.pipeline.run_pipeline
+```
+
+Writes rows to `outputs/logs/prediction_run.sqlite` (see `src/pipeline/sqlite_logging.py`).
+
 ---
 
 ## Command order (recommended)
@@ -125,10 +141,16 @@ python -m src.analysis.run_error_review_export
 python -m src.analysis.run_keyword_analysis
 python -m src.analysis.run_field_signal_analysis
 python -m src.analysis.run_evidence_snippets_export
-python -m src.analysis.run_full_analysis_suite   # runs error review + keyword + field signal + evidence export
+python -m src.analysis.run_full_analysis_suite   # runs manual review export + keyword + field signal + evidence export
 ```
 
-Outputs land under `outputs/analysis/error_review/`, `keyword_analysis/`, `field_signal_analysis/`, and `analysis/evidence/tables/`.
+**One-shot validation helpers** (assumes structured baseline + predictions already exist where applicable):
+
+```bash
+python -m src.analysis.run_validation_suite
+```
+
+Outputs land under `outputs/analysis/manual_review/` (TP/TN/FP/FN samples for primary baselines), `keyword_analysis/`, `field_signal_analysis/`, `analysis/evidence/tables/`, and legacy `outputs/analysis/error_review/` (unused by the new manual review export).
 
 Optional: `python -m src.validation.validate_inputs`, `python -m src.analysis.run_exploration`, `python -m src.analysis.run_analysis`, `python -m src.analysis.run_false_negative_review`.
 
@@ -147,7 +169,9 @@ Optional: `python -m src.validation.validate_inputs`, `python -m src.analysis.ru
 | Data coverage | `outputs/analysis/data_coverage/` |
 | ICD vs ICDSC overlap | `outputs/analysis/icd_icdsc_overlap/` |
 | Field keyword / OR analysis | `outputs/analysis/field_delirium/` |
-| Error review (FP/FN per baseline) | `outputs/analysis/error_review/` |
+| Manual review (TP/TN/FP/FN samples, primary baselines) | `outputs/analysis/manual_review/` |
+| Legacy error-review directory | `outputs/analysis/error_review/` |
+| Optional SQLite prediction log | `outputs/logs/prediction_run.sqlite` |
 | Keyword / term stratification | `outputs/analysis/keyword_analysis/` |
 | Field signal vs model / baselines | `outputs/analysis/field_signal_analysis/` |
 | Evidence snippets (interpretability CSV) | `outputs/analysis/evidence/tables/` |

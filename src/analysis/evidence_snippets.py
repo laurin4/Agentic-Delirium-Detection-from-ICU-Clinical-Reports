@@ -6,9 +6,17 @@ Does not alter prediction logic; intended for downstream review CSVs only.
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+import logging
+from typing import Dict, List, Optional, Tuple
 
-from src.preprocessing.delirium_hint_keywords import DELIRIUM_HINT_KEYWORDS
+import pandas as pd
+
+from src.preprocessing.delirium_hint_keywords import (
+    DELIRIUM_HINT_KEYWORDS,
+    haystack_contains_delirium_hint,
+)
+
+LOGGER = logging.getLogger(__name__)
 
 # Mirrors berichte_mapper._SECTION_FIELDS headings used in stitched report_text
 _SECTION_MARKER_LABELS: Tuple[Tuple[str, str], ...] = (
@@ -103,3 +111,120 @@ def extract_evidence_snippets(
                 return separator.join(snippets)
 
     return separator.join(snippets)
+
+
+def _truncate(s: str, max_len: int) -> str:
+    s = s.replace("\n", " ").strip()
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 1] + "…"
+
+
+def _snippets_from_delir_signale(delir_signale: str, max_each: int = 120, max_parts: int = 5) -> str:
+    if not delir_signale or not str(delir_signale).strip():
+        return ""
+    parts = [p.strip() for p in str(delir_signale).split("|") if p.strip()]
+    if not parts:
+        return ""
+    out: List[str] = []
+    for p in parts[:max_parts]:
+        out.append(_truncate(f"[Treffer] {p}", max_each))
+    return " || ".join(out)
+
+
+def _snippet_from_kontext(kontext: str, max_len: int = 250) -> str:
+    if not kontext or not str(kontext).strip():
+        return ""
+    if not haystack_contains_delirium_hint(str(kontext)):
+        return ""
+    return _truncate(f"[Kontext] {kontext}", max_len)
+
+
+def compute_evidence_snippets_cell(
+    report_text: Optional[str],
+    delir_signale: Optional[str] = None,
+    kontext: Optional[str] = None,
+    *,
+    max_snippet_len: int = 250,
+) -> str:
+    """
+    Single CSV cell: keyword windows from report text, else short signal/context fallbacks.
+
+    Returns the literal ``[]`` when no interpretable evidence string was built.
+    """
+    from_text = extract_evidence_snippets(
+        report_text or "",
+        max_snippet_len=max_snippet_len,
+        max_snippets=12,
+    )
+    if from_text:
+        return from_text
+    from_sig = _snippets_from_delir_signale(str(delir_signale or ""), max_each=min(120, max_snippet_len))
+    if from_sig:
+        return from_sig
+    from_ctx = _snippet_from_kontext(str(kontext or ""), max_len=max_snippet_len)
+    if from_ctx:
+        return from_ctx
+    return "[]"
+
+
+def _patient_report_text_lookup() -> Dict[str, str]:
+    """Best-effort map PatientenID -> report_text from Berichte.csv (paths.py)."""
+    try:
+        from src.preprocessing.berichte_mapper import build_patient_level_berichte_reports
+    except ImportError as exc:  # pragma: no cover
+        LOGGER.debug("Berichte mapper unavailable: %s", exc)
+        return {}
+    try:
+        reports = build_patient_level_berichte_reports()
+    except FileNotFoundError as exc:
+        LOGGER.debug("Berichte CSV not available for evidence snippets: %s", exc)
+        return {}
+    if reports.empty:
+        return {}
+    out: Dict[str, str] = {}
+    for _, row in reports.iterrows():
+        pid = str(row.get("PatientenID", "") or "").strip()
+        if not pid:
+            continue
+        txt = row.get("report_text")
+        out[pid] = "" if txt is None or (isinstance(txt, float) and pd.isna(txt)) else str(txt)
+    return out
+
+
+def attach_evidence_snippets_to_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure column ``evidence_snippets`` exists; fill missing/empty from report text or signals.
+
+    Preserves non-empty existing ``evidence_snippets`` values from upstream (e.g. pipeline CSV).
+    """
+    out = df.copy()
+    if "evidence_snippets" not in out.columns:
+        out["evidence_snippets"] = ""
+
+    pid_text = _patient_report_text_lookup()
+
+    def _cell(row: pd.Series) -> str:
+        cur = row.get("evidence_snippets")
+        if cur is not None and not (isinstance(cur, float) and pd.isna(cur)):
+            s = str(cur).strip()
+            if s and s.lower() != "nan" and s != "[]":
+                return s
+        pid = str(row.get("PatientenID", "") or "").strip()
+        rt = row.get("report_text")
+        if rt is None or (isinstance(rt, float) and pd.isna(rt)):
+            text = ""
+        else:
+            text = str(rt)
+        if not text.strip() and pid:
+            text = pid_text.get(pid, "")
+        ds = row.get("delir_signale")
+        if ds is None or (isinstance(ds, float) and pd.isna(ds)):
+            ds = ""
+        kt = row.get("kontext")
+        if kt is None or (isinstance(kt, float) and pd.isna(kt)):
+            kt = ""
+        return compute_evidence_snippets_cell(text, str(ds), str(kt))
+
+    out["evidence_snippets"] = out.apply(_cell, axis=1)
+    return out

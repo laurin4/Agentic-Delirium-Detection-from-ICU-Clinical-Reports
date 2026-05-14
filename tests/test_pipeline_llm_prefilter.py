@@ -116,6 +116,7 @@ _EXPECTED_COLUMNS = (
     "llm_skipped_by_prefilter",
     "anzahl_treffer",
     "delir_signale",
+    "evidence_snippets",
     "signalstaerke",
     "kontext",
     "alternative_erklaerung",

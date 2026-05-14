@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 # Projektbasis
@@ -15,7 +16,39 @@ STRUCTURED_RAW_DIR = STRUCTURED_DIR / "raw"
 # Default production inputs (CSV unter data/raw fuer Ubuntu/local parity).
 # Set DATA_MODE = "synthetic" only for offline regression tests (CSV generator outputs).
 DATA_MODE = "real"  # allowed: "real", "synthetic"
-MAX_REPORTS = 25  # None = alle Berichte; int = nur erste N Berichte
+
+
+def parse_max_reports_env(raw: str | None = None) -> int | None:
+    """
+    Parse MAX_REPORTS limit from *raw* or from the MAX_REPORTS environment variable.
+
+    Returns None when unset/blank. Raises ValueError for non-positive or non-integer values.
+    """
+    if raw is None:
+        raw = os.environ.get("MAX_REPORTS", "")
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        n = int(raw)
+    except ValueError as exc:
+        raise ValueError("MAX_REPORTS must be a positive integer when set.") from exc
+    if n <= 0:
+        raise ValueError("MAX_REPORTS must be a positive integer when set.")
+    return n
+
+
+def _max_reports_from_environment() -> int | None:
+    """
+    Limit patient-level reports when MAX_REPORTS is set in the environment.
+
+    Example: MAX_REPORTS=30 python -m src.pipeline.run_pipeline
+    If unset or empty, all reports are processed (None).
+    """
+    return parse_max_reports_env()
+
+
+MAX_REPORTS = _max_reports_from_environment()
 
 # Outputs
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
@@ -94,6 +127,7 @@ VALIDATION_SUMMARY_TXT_PATH = VALIDATION_DIR / "validation_summary.txt"
 
 
 LLM_DEBUG_DIR = OUTPUTS_DIR / "logs" / "llm_debug"
+SQLITE_PREDICTIONS_DB_PATH = LOGS_DIR / "prediction_run.sqlite"
 
 # Field-level keyword analysis (Berichte.csv vs structured baselines)
 FIELD_DELIRIUM_ANALYSIS_DIR = ANALYSIS_DIR / "field_delirium"
@@ -105,10 +139,13 @@ DATA_COVERAGE_ANALYSIS_DIR = ANALYSIS_DIR / "data_coverage"
 DATA_COVERAGE_TABLES_DIR = DATA_COVERAGE_ANALYSIS_DIR / "tables"
 DATA_COVERAGE_PLOTS_DIR = DATA_COVERAGE_ANALYSIS_DIR / "plots"
 
-# Error review (FP/FN exports vs baselines)
+# Error review (legacy dir; manual review export uses MANUAL_REVIEW_DIR)
 ERROR_REVIEW_DIR = ANALYSIS_DIR / "error_review"
 ERROR_REVIEW_TABLES_DIR = ERROR_REVIEW_DIR / "tables"
 ERROR_REVIEW_PLOTS_DIR = ERROR_REVIEW_DIR / "plots"
+
+# Manual scientific review (TP/TN/FP/FN samples per primary baseline)
+MANUAL_REVIEW_DIR = ANALYSIS_DIR / "manual_review"
 
 # Keyword / term association with predictions and baselines
 KEYWORD_ANALYSIS_DIR = ANALYSIS_DIR / "keyword_analysis"
