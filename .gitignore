@@ -66,7 +66,7 @@ models/
 models_Qwen/
 models_Ollama/
 wheelhouse/
-wheelhouse_linux/
+
 wheelhouse_linux.zip
 *.tar.gz
 
