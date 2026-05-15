@@ -2,14 +2,17 @@ import logging
 import pandas as pd
 from src.pipeline.paths import ICD10_PATH, ICDSC_PATH, STRUCTURED_BASELINE_PATH
 from src.pipeline.tabular_io import read_tabular
+from src.pipeline.schema_normalize import (
+    SchemaValidationError,
+    assert_structured_baseline_columns,
+    normalize_icd10_source_columns,
+    normalize_icdsc_source_columns,
+    normalize_patient_id_columns,
+    require_icd10_source_columns,
+    require_icdsc_source_columns,
+)
 
 LOGGER = logging.getLogger(__name__)
-
-
-def _normalize_patient_column(df: pd.DataFrame) -> pd.DataFrame:
-    if "PatientID" in df.columns: 
-            df= df.rename(columns={"PatientID": "PatientenID"})
-    return df
 
 
 def load_data():
@@ -17,10 +20,18 @@ def load_data():
         raise FileNotFoundError(f"ICD10 input not found: {ICD10_PATH}")
     if not ICDSC_PATH.exists():
         raise FileNotFoundError(f"ICDSC input not found: {ICDSC_PATH}")
-    icd10 = _normalize_patient_column(read_tabular(ICD10_PATH))
-    icdsc = _normalize_patient_column(read_tabular(ICDSC_PATH))
+    icd10 = read_tabular(ICD10_PATH)
+    icdsc = read_tabular(ICDSC_PATH)
+    icd10 = normalize_patient_id_columns(icd10)
+    icdsc = normalize_patient_id_columns(icdsc)
+    icd10 = normalize_icd10_source_columns(icd10)
+    icdsc = normalize_icdsc_source_columns(icdsc)
+    try:
+        require_icd10_source_columns(icd10, context=f"ICD input ({ICD10_PATH.name})")
+        require_icdsc_source_columns(icdsc, context=f"ICDSC input ({ICDSC_PATH.name})")
+    except SchemaValidationError:
+        raise
     return icd10, icdsc
-
 
 
 def _ensure_column(df: pd.DataFrame, column: str, default_value):
@@ -37,8 +48,10 @@ def _is_valid_delir_code(code: str) -> bool:
 
 def prepare_icd10(icd10: pd.DataFrame) -> pd.DataFrame:
     icd10 = icd10.copy()
-    icd10 = _ensure_column(icd10, "PatientenID", "")
-    icd10 = _ensure_column(icd10, "Code", "")
+    icd10 = normalize_patient_id_columns(icd10)
+    icd10 = normalize_icd10_source_columns(icd10)
+    require_icd10_source_columns(icd10, context="prepare_icd10")
+
     icd10 = _ensure_column(icd10, "IsHauptDiagn", 0)
 
     icd10["PatientenID"] = icd10["PatientenID"].astype(str).str.strip()
@@ -78,9 +91,11 @@ def prepare_icd10(icd10: pd.DataFrame) -> pd.DataFrame:
 
 def prepare_icdsc(icdsc: pd.DataFrame) -> pd.DataFrame:
     icdsc = icdsc.copy()
-    icdsc = _ensure_column(icdsc, "PatientenID", "")
+    icdsc = normalize_patient_id_columns(icdsc)
+    icdsc = normalize_icdsc_source_columns(icdsc)
+    require_icdsc_source_columns(icdsc, context="prepare_icdsc")
+
     icdsc = _ensure_column(icdsc, "ICDSC_Time", None)
-    icdsc = _ensure_column(icdsc, "ICDSC_Value", 0)
     icdsc = _ensure_column(icdsc, "ICDSC_DelirFlag", 0)
 
     icdsc["PatientenID"] = icdsc["PatientenID"].astype(str).str.strip()
@@ -113,6 +128,7 @@ def add_binary_baselines(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(
             "Cannot generate binary baselines: missing required columns: "
             + ", ".join(missing_input_columns)
+            + f". Available columns: {list(df.columns)}"
         )
 
     df["has_delir_icd10"] = (
@@ -164,6 +180,7 @@ def main():
 
     merged = icd10_prepared.merge(icdsc_prepared, on="PatientenID", how="outer")
     merged = add_reference_class(merged)
+    assert_structured_baseline_columns(merged)
 
     merged.to_csv(STRUCTURED_BASELINE_PATH, index=False)
     print(f"Gespeichert: {STRUCTURED_BASELINE_PATH}")

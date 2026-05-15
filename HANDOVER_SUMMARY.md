@@ -88,6 +88,7 @@ python3 -m src.pipeline.evaluate_predictions
 python3 -m src.validation.validate_inputs
 python3 -m src.analysis.run_exploration
 python3 -m src.analysis.run_analysis
+python3 -m src.analysis.run_validation_suite
 ```
 
 ## Output Structure

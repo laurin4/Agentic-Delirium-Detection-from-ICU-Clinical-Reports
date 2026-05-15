@@ -10,6 +10,11 @@ from src.pipeline.paths import (
 )
 from src.analysis.evidence_snippets import attach_evidence_snippets_to_dataframe
 from src.pipeline.prepare_structured_data import add_reference_class
+from src.pipeline.schema_normalize import (
+    SchemaValidationError,
+    normalize_patient_id_columns,
+    require_columns,
+)
 
 REPORT_PREDICTIONS_PATH = PREDICTIONS_DIR / "agent1_agent2_agent3_results_prompt.csv"
 
@@ -102,8 +107,8 @@ def load_data(
             f"Prediction file not found: {predictions_path}. "
             "Run 'python -m src.pipeline.run_pipeline' first."
         )
-    baseline = pd.read_csv(baseline_path)
-    reports = pd.read_csv(predictions_path)
+    baseline = normalize_patient_id_columns(pd.read_csv(baseline_path))
+    reports = normalize_patient_id_columns(pd.read_csv(predictions_path))
     return baseline, reports
 
 
@@ -122,19 +127,22 @@ def run_compare(
 
     baseline, reports = load_data(baseline_path, predictions_path)
 
-    if "PatientenID" not in baseline.columns:
-        raise ValueError("In structured_baseline.csv fehlt die Spalte 'PatientenID'.")
-
-    if "PatientenID" not in reports.columns:
-        raise ValueError(
-            "In der Report-Prediction-CSV fehlt die Spalte 'PatientenID'. "
-            "Diese muss später aus den Berichten mitgeführt werden."
+    try:
+        require_columns(
+            baseline,
+            ("PatientenID",),
+            context=f"structured baseline ({baseline_path.name})",
         )
+        require_columns(
+            reports,
+            ("PatientenID",),
+            context=f"report predictions ({predictions_path.name})",
+        )
+    except SchemaValidationError as exc:
+        raise ValueError(str(exc)) from exc
 
     reports = reports.copy()
     baseline = baseline.copy()
-    reports["PatientenID"] = reports["PatientenID"].astype(str).str.strip()
-    baseline["PatientenID"] = baseline["PatientenID"].astype(str).str.strip()
 
     baseline_ids = _baseline_patient_ids(baseline)
     merged = reports.merge(baseline, on="PatientenID", how="left")
