@@ -27,6 +27,8 @@ Expected columns include:
 | `bername` | **Excluded** from model text |
 | `diag`, `epikrise`, `jetziges_leiden`, `prozedere` | Combined into **`report_text`** per patient (section blocks), sorted by `berdat` |
 
+**`Diagnosenliste.csv` is removed** from the active pipeline. Clinical text lives in **`Berichte.csv`** (`diag`, `epikrise`, `jetziges_leiden`, `prozedere` → section blocks in `report_text`).
+
 Legacy fallback (`INPUT_MODE` in `run_pipeline.py`): `diagnosis` (synthetic only) or `txt` — production uses **`berichte`** only.
 
 ---

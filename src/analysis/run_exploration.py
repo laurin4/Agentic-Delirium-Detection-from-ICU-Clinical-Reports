@@ -1,15 +1,24 @@
-"""EDA over diagnosis / ICD / ICDSC tables and optional prediction merges.
+"""EDA over Berichte / ICD / ICDSC and optional prediction merges.
 
-Production runs use `data/raw/Berichte.csv` as the primary report source (see README).
-This module still reads diagnosis + ICD files from `paths.py` for overlap and
-distribution summaries.
+Production inputs: `data/raw/Berichte.csv`, `ICD.csv`, `ICDSC.csv` (no Diagnosenliste.csv).
+Report sections ([Diagnosen], [Epikrise], …) come from Berichte columns or stitched report_text.
 """
 
+import logging
 import os
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
+
+LOGGER = logging.getLogger(__name__)
+
+BERICHTE_SECTION_COLUMNS = [
+    ("diag", "Diagnosen"),
+    ("epikrise", "Epikrise"),
+    ("jetziges_leiden", "Jetziges Leiden"),
+    ("prozedere", "Prozedere"),
+]
 
 _mpl_config = Path(__file__).resolve().parents[2] / "outputs" / ".mplconfig"
 _mpl_config.mkdir(parents=True, exist_ok=True)
@@ -24,16 +33,21 @@ import pandas as pd
 
 from src.pipeline.paths import (
     ANALYSIS_DIR,
+    BERICHTE_INPUT_PATH,
     DIAGNOSIS_INPUT_PATH,
-    PATIENT_LEVEL_REPORTS_PATH,
     EXPLORATION_PLOTS_DIR,
     EXPLORATION_TABLES_DIR,
-    REPORT_VS_BASELINE_PATH,
-    PREDICTIONS_DIR,
     ICD10_PATH,
     ICDSC_PATH,
+    LEGACY_DIAGNOSIS_INPUT_PATH,
+    PATIENT_LEVEL_REPORTS_PATH,
+    PREDICTIONS_DIR,
+    REPORT_VS_BASELINE_PATH,
+    STRUCTURED_BASELINE_PATH,
 )
+from src.pipeline.schema_normalize import normalize_icd10_source_columns, normalize_icdsc_source_columns
 from src.pipeline.tabular_io import read_tabular
+from src.preprocessing.berichte_mapper import build_patient_level_berichte_reports, load_berichte_dataframe
 from src.preprocessing.diagnosis_mapper import load_diagnosis_dataframe
 
 STOPWORDS = {
@@ -74,10 +88,50 @@ def _normalize_pid(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _safe_load(path: Path) -> pd.DataFrame:
-    if not path.exists():
+def _safe_load(path: Optional[Path]) -> pd.DataFrame:
+    if path is None or not path.exists():
         return pd.DataFrame()
     return _normalize_pid(read_tabular(path))
+
+
+def _warn_legacy_diagnosis_missing() -> None:
+    print(
+        "Note: Diagnosenliste.csv is deprecated/removed. "
+        "Exploration uses Berichte.csv report sections instead."
+    )
+
+
+def _load_reports_for_exploration() -> pd.DataFrame:
+    """Patient-level reports from Berichte.csv, with optional prepared CSV fallback."""
+    if BERICHTE_INPUT_PATH.exists():
+        try:
+            return _normalize_pid(build_patient_level_berichte_reports(BERICHTE_INPUT_PATH))
+        except Exception as exc:
+            LOGGER.warning("Could not build reports from Berichte.csv: %s", exc)
+    elif PATIENT_LEVEL_REPORTS_PATH.exists():
+        LOGGER.warning("Berichte.csv missing; using prepared patient_level_reports.csv.")
+        return _safe_load(PATIENT_LEVEL_REPORTS_PATH)
+    else:
+        print(f"Warning: no report input at {BERICHTE_INPUT_PATH}; report EDA will be limited.")
+    return pd.DataFrame(columns=["PatientenID", "bericht", "report_text"])
+
+
+def _load_legacy_diagnosis_optional() -> pd.DataFrame:
+    """Load legacy Diagnosenliste only when explicitly present (optional)."""
+    for candidate in (DIAGNOSIS_INPUT_PATH, LEGACY_DIAGNOSIS_INPUT_PATH):
+        if candidate is not None and candidate.exists():
+            print(f"Warning: using legacy diagnosis file {candidate} (deprecated).")
+            return _normalize_pid(load_diagnosis_dataframe(candidate))
+    return pd.DataFrame()
+
+
+def _load_raw_berichte_optional() -> pd.DataFrame:
+    if not BERICHTE_INPUT_PATH.exists():
+        return pd.DataFrame()
+    try:
+        return _normalize_pid(load_berichte_dataframe(BERICHTE_INPUT_PATH))
+    except FileNotFoundError:
+        return pd.DataFrame()
 
 
 def _missingness_table(name: str, df: pd.DataFrame) -> pd.DataFrame:
@@ -172,37 +226,47 @@ def _plot_delir_diagnoses(reports: pd.DataFrame, output_dir: Path) -> pd.DataFra
     return delir_df
 
 
-def _write_overview_tables(diag: pd.DataFrame, icd10: pd.DataFrame, icdsc: pd.DataFrame) -> None:
+def _write_overview_tables(
+    berichte: pd.DataFrame,
+    icd10: pd.DataFrame,
+    icdsc: pd.DataFrame,
+    baseline: pd.DataFrame,
+) -> None:
+    def _uniq(df: pd.DataFrame) -> int:
+        return int(df["PatientenID"].nunique()) if "PatientenID" in df.columns and not df.empty else 0
+
     overview = pd.DataFrame(
         [
-            {"dataset": "diagnosis", "rows": len(diag), "columns": len(diag.columns), "unique_patients": diag["PatientenID"].nunique() if "PatientenID" in diag.columns else 0},
-            {"dataset": "icd10", "rows": len(icd10), "columns": len(icd10.columns), "unique_patients": icd10["PatientenID"].nunique() if "PatientenID" in icd10.columns else 0},
-            {"dataset": "icdsc", "rows": len(icdsc), "columns": len(icdsc.columns), "unique_patients": icdsc["PatientenID"].nunique() if "PatientenID" in icdsc.columns else 0},
+            {"dataset": "berichte_reports", "rows": len(berichte), "columns": len(berichte.columns), "unique_patients": _uniq(berichte)},
+            {"dataset": "icd10", "rows": len(icd10), "columns": len(icd10.columns), "unique_patients": _uniq(icd10)},
+            {"dataset": "icdsc", "rows": len(icdsc), "columns": len(icdsc.columns), "unique_patients": _uniq(icdsc)},
+            {"dataset": "structured_baseline", "rows": len(baseline), "columns": len(baseline.columns), "unique_patients": _uniq(baseline)},
         ]
     )
     overview.to_csv(EXPLORATION_TABLES_DIR / "dataset_overview.csv", index=False)
 
     miss = pd.concat(
         [
-            _missingness_table("diagnosis", diag),
+            _missingness_table("berichte_reports", berichte),
             _missingness_table("icd10", icd10),
             _missingness_table("icdsc", icdsc),
+            _missingness_table("structured_baseline", baseline),
         ],
         ignore_index=True,
     )
     miss.to_csv(EXPLORATION_TABLES_DIR / "missingness_by_dataset.csv", index=False)
 
-    if "PatientenID" in diag.columns and "PatientenID" in icd10.columns and "PatientenID" in icdsc.columns:
-        diag_ids = set(diag["PatientenID"])
+    if "PatientenID" in berichte.columns and "PatientenID" in icd10.columns and "PatientenID" in icdsc.columns:
+        ber_ids = set(berichte["PatientenID"])
         icd10_ids = set(icd10["PatientenID"])
         icdsc_ids = set(icdsc["PatientenID"])
         set_rows = [
-            {"set_name": "diagnosis_only", "count": len(diag_ids - icd10_ids - icdsc_ids)},
-            {"set_name": "icd10_only", "count": len(icd10_ids - diag_ids - icdsc_ids)},
-            {"set_name": "icdsc_only", "count": len(icdsc_ids - diag_ids - icd10_ids)},
-            {"set_name": "intersection_all_three", "count": len(diag_ids & icd10_ids & icdsc_ids)},
-            {"set_name": "diag_not_in_icd10", "count": len(diag_ids - icd10_ids)},
-            {"set_name": "diag_not_in_icdsc", "count": len(diag_ids - icdsc_ids)},
+            {"set_name": "berichte_only", "count": len(ber_ids - icd10_ids - icdsc_ids)},
+            {"set_name": "icd10_only", "count": len(icd10_ids - ber_ids - icdsc_ids)},
+            {"set_name": "icdsc_only", "count": len(icdsc_ids - ber_ids - icd10_ids)},
+            {"set_name": "intersection_all_three", "count": len(ber_ids & icd10_ids & icdsc_ids)},
+            {"set_name": "berichte_not_in_icd10", "count": len(ber_ids - icd10_ids)},
+            {"set_name": "berichte_not_in_icdsc", "count": len(ber_ids - icdsc_ids)},
         ]
         pd.DataFrame(set_rows).to_csv(EXPLORATION_TABLES_DIR / "patient_set_overlap_summary.csv", index=False)
 
@@ -365,7 +429,45 @@ def _write_optional_token_frequency(reports: pd.DataFrame) -> pd.DataFrame:
     return token_df
 
 
+def _berichte_sections_exploration(raw_berichte: pd.DataFrame) -> None:
+    """Token/length summaries per Berichte section column ([Diagnosen], …)."""
+    if raw_berichte.empty:
+        return
+
+    section_rows: List[dict] = []
+    for col, label in BERICHTE_SECTION_COLUMNS:
+        if col not in raw_berichte.columns:
+            continue
+        texts = raw_berichte[col].fillna("").astype(str)
+        non_empty = texts[texts.str.strip().astype(bool)]
+        section_rows.append(
+            {
+                "section": label,
+                "column": col,
+                "non_empty_rows": int(len(non_empty)),
+                "mean_chars": float(non_empty.str.len().mean()) if len(non_empty) else 0.0,
+            }
+        )
+        term_counter = _tokenize(non_empty.tolist())
+        top_terms = pd.DataFrame(term_counter.most_common(30), columns=["term", "count"])
+        safe_name = col.replace(" ", "_")
+        top_terms.to_csv(EXPLORATION_TABLES_DIR / f"berichte_section_{safe_name}_top_terms.csv", index=False)
+
+    if section_rows:
+        pd.DataFrame(section_rows).to_csv(EXPLORATION_TABLES_DIR / "berichte_section_overview.csv", index=False)
+
+        fig, ax = plt.subplots(figsize=(9, 5))
+        sdf = pd.DataFrame(section_rows)
+        ax.barh(sdf["section"], sdf["non_empty_rows"], color="#355C7D")
+        ax.set_title("Berichte.csv: non-empty rows per report section")
+        ax.set_xlabel("Row count")
+        fig.tight_layout()
+        fig.savefig(EXPLORATION_PLOTS_DIR / "10_berichte_section_coverage.png", dpi=300)
+        plt.close(fig)
+
+
 def _diagnosis_exploration(diag: pd.DataFrame) -> None:
+    """Legacy Diagnosenliste EDA (only when legacy file is present)."""
     if diag.empty:
         return
     if "Value" in diag.columns:
@@ -403,6 +505,7 @@ def _diagnosis_exploration(diag: pd.DataFrame) -> None:
 def _icd10_exploration(icd10: pd.DataFrame) -> None:
     if icd10.empty:
         return
+    icd10 = normalize_icd10_source_columns(icd10)
     if "Code" in icd10.columns:
         codes = icd10["Code"].fillna("").astype(str).str.strip().str.upper()
         code_counts = codes.value_counts().rename_axis("Code").reset_index(name="count")
@@ -426,44 +529,34 @@ def _icd10_exploration(icd10: pd.DataFrame) -> None:
 def _icdsc_exploration(icdsc: pd.DataFrame) -> None:
     if icdsc.empty:
         return
+    icdsc = normalize_icdsc_source_columns(icdsc)
     out_rows = []
-    if "ICDSC_Value" in icdsc.columns:
-        vals = pd.to_numeric(icdsc["ICDSC_Value"], errors="coerce")
-        out_rows.append({"metric": "icdsc_value_count", "value": int(vals.notna().sum())})
-        out_rows.append({"metric": "icdsc_value_mean", "value": float(vals.mean()) if vals.notna().any() else 0.0})
-        out_rows.append({"metric": "icdsc_value_median", "value": float(vals.median()) if vals.notna().any() else 0.0})
-        out_rows.append({"metric": "icdsc_value_max", "value": float(vals.max()) if vals.notna().any() else 0.0})
+    score_col = "ICDSC_Max" if "ICDSC_Max" in icdsc.columns else None
+    if score_col:
+        vals = pd.to_numeric(icdsc[score_col], errors="coerce")
+        out_rows.append({"metric": "icdsc_max_count", "value": int(vals.notna().sum())})
+        out_rows.append({"metric": "icdsc_max_mean", "value": float(vals.mean()) if vals.notna().any() else 0.0})
+        out_rows.append({"metric": "icdsc_max_median", "value": float(vals.median()) if vals.notna().any() else 0.0})
+        out_rows.append({"metric": "icdsc_max_global_max", "value": float(vals.max()) if vals.notna().any() else 0.0})
 
         fig, ax = plt.subplots(figsize=(8, 4.5))
         ax.hist(vals.dropna(), bins=np.arange(-0.5, 9.5, 1), color="#C06C84", alpha=0.85, rwidth=0.9)
         ax.set_xticks(range(0, 9))
-        ax.set_xlabel("ICDSC_Value")
+        ax.set_xlabel("ICDSC_Max")
         ax.set_ylabel("Count")
-        ax.set_title("ICDSC Value Distribution")
+        ax.set_title("ICDSC_Max Distribution (patient-level)")
         ax.grid(axis="y", alpha=0.25)
         fig.tight_layout()
-        fig.savefig(EXPLORATION_PLOTS_DIR / "12_icdsc_value_histogram.png", dpi=300)
+        fig.savefig(EXPLORATION_PLOTS_DIR / "12_icdsc_max_histogram.png", dpi=300)
         plt.close(fig)
-
-    if "ICDSC_DelirFlag" in icdsc.columns:
-        flags = pd.to_numeric(icdsc["ICDSC_DelirFlag"], errors="coerce").fillna(0).astype(int)
-        flag_counts = flags.value_counts().sort_index().rename_axis("ICDSC_DelirFlag").reset_index(name="count")
-        flag_counts.to_csv(EXPLORATION_TABLES_DIR / "icdsc_flag_frequency.csv", index=False)
-        out_rows.append({"metric": "icdsc_delir_flag_rate", "value": float((flags == 1).mean())})
-
-    if "ICDSC_Time" in icdsc.columns:
-        ts = pd.to_datetime(icdsc["ICDSC_Time"], errors="coerce")
-        pd.DataFrame({"hour": ts.dt.hour}).value_counts().sort_index().rename_axis("hour").reset_index(name="count").to_csv(
-            EXPLORATION_TABLES_DIR / "icdsc_by_hour.csv", index=False
-        )
 
     if out_rows:
         pd.DataFrame(out_rows).to_csv(EXPLORATION_TABLES_DIR / "icdsc_summary_metrics.csv", index=False)
 
 
-def _patient_activity_tables(diag: pd.DataFrame, icd10: pd.DataFrame, icdsc: pd.DataFrame) -> None:
+def _patient_activity_tables(berichte: pd.DataFrame, icd10: pd.DataFrame, icdsc: pd.DataFrame) -> None:
     frames = []
-    for name, df in [("diagnosis", diag), ("icd10", icd10), ("icdsc", icdsc)]:
+    for name, df in [("berichte", berichte), ("icd10", icd10), ("icdsc", icdsc)]:
         if "PatientenID" in df.columns and not df.empty:
             c = df.groupby("PatientenID").size().reset_index(name=f"{name}_rows")
             frames.append(c)
@@ -489,30 +582,35 @@ def _patient_activity_tables(diag: pd.DataFrame, icd10: pd.DataFrame, icdsc: pd.
 
 
 def _write_exploration_summary(
-    diag: pd.DataFrame,
     icd10: pd.DataFrame,
     icdsc: pd.DataFrame,
+    baseline: pd.DataFrame,
     reports: pd.DataFrame,
     predictions: pd.DataFrame,
     top_terms: pd.DataFrame,
     top_diagnoses: pd.DataFrame,
     top_delir_diagnoses: pd.DataFrame,
     signal_freq: pd.DataFrame,
+    legacy_diag: pd.DataFrame,
 ) -> None:
     lines = []
     lines.append("Thesis-Level Input Data Exploration Report")
     lines.append("")
-    lines.append(f"Diagnosis rows: {len(diag)}")
-    lines.append(f"ICD10 rows: {len(icd10)}")
+    lines.append("Primary text source: data/raw/Berichte.csv (Diagnosenliste.csv deprecated).")
+    lines.append("")
+    lines.append(f"Berichte patient-level reports: {len(reports)}")
+    lines.append(f"ICD rows: {len(icd10)}")
     lines.append(f"ICDSC rows: {len(icdsc)}")
-    lines.append(f"Patient-level reports: {len(reports)}")
+    lines.append(f"Structured baseline patients: {len(baseline)}")
     lines.append(f"Prediction rows available: {len(predictions)}")
+    if not legacy_diag.empty:
+        lines.append(f"Legacy diagnosis rows (optional): {len(legacy_diag)}")
     lines.append("")
 
-    if "PatientenID" in diag.columns:
-        lines.append(f"Unique diagnosis patients: {diag['PatientenID'].nunique()}")
+    if "PatientenID" in reports.columns:
+        lines.append(f"Unique Berichte patients: {reports['PatientenID'].nunique()}")
     if "PatientenID" in icd10.columns:
-        lines.append(f"Unique ICD10 patients: {icd10['PatientenID'].nunique()}")
+        lines.append(f"Unique ICD patients: {icd10['PatientenID'].nunique()}")
     if "PatientenID" in icdsc.columns:
         lines.append(f"Unique ICDSC patients: {icdsc['PatientenID'].nunique()}")
 
@@ -552,17 +650,24 @@ def main() -> None:
     EXPLORATION_PLOTS_DIR.mkdir(parents=True, exist_ok=True)
     EXPLORATION_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    diagnosis = load_diagnosis_dataframe(DIAGNOSIS_INPUT_PATH)
+    _warn_legacy_diagnosis_missing()
+
+    reports = _load_reports_for_exploration()
+    raw_berichte = _load_raw_berichte_optional()
+    legacy_diag = _load_legacy_diagnosis_optional()
     icd10 = _safe_load(ICD10_PATH)
     icdsc = _safe_load(ICDSC_PATH)
-    reports = _safe_load(PATIENT_LEVEL_REPORTS_PATH)
+    baseline = _safe_load(STRUCTURED_BASELINE_PATH)
     predictions = _load_predictions()
 
-    _write_overview_tables(diagnosis, icd10, icdsc)
-    _diagnosis_exploration(diagnosis)
+    _write_overview_tables(reports, icd10, icdsc, baseline)
+    _berichte_sections_exploration(raw_berichte)
+    if not legacy_diag.empty:
+        _diagnosis_exploration(legacy_diag)
     _icd10_exploration(icd10)
     _icdsc_exploration(icdsc)
-    _patient_activity_tables(diagnosis, icd10, icdsc)
+    activity_berichte = raw_berichte if not raw_berichte.empty else reports
+    _patient_activity_tables(activity_berichte, icd10, icdsc)
     _plot_report_length_distribution(reports)
     top_terms = _plot_keyword_frequency_from_reports(reports)
     top_diagnoses = _plot_top_diagnoses(reports, EXPLORATION_TABLES_DIR)
@@ -571,15 +676,16 @@ def main() -> None:
     _plot_class_distribution_if_available(predictions)
     _write_optional_token_frequency(reports)
     _write_exploration_summary(
-        diagnosis,
         icd10,
         icdsc,
+        baseline,
         reports,
         predictions,
         top_terms,
         top_diagnoses,
         top_delir_diagnoses,
         signal_freq,
+        legacy_diag,
     )
 
     print(f"Exploration tables: {EXPLORATION_TABLES_DIR}")

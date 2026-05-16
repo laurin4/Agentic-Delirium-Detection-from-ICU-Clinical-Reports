@@ -58,7 +58,8 @@ Optional synthetic mode (`DATA_MODE = "synthetic"`):
 - **ICD-10 delirium** (`has_delir_icd10` / `baseline_icd10`): main diagnosis `icd_hd == 1` and code in `F05.0`, `F05.8`, `F05.9` (excludes `F05.1`).
 - **ICDSC** (`max_icdsc`): from `ICDSC_Max`; thresholds `baseline_icdsc_ge_*`, `baseline_icdsc_0`, `baseline_icdsc_1_to_3`, `baseline_icdsc_ge_4_grouped`.
 - **Legacy** multiclass `baseline_reference_class` may still be written; primary evaluation uses binary baselines.
-- **Legacy** diagnosis list: `src/preprocessing/diagnosis_mapper.py` (not used when `INPUT_MODE=berichte`).
+- **Deprecated:** `Diagnosenliste.csv` / `diagnosis_mapper` — not used in production. `Berichte.csv` columns `diag`, `epikrise`, `jetziges_leiden`, `prozedere` map to report sections `[Diagnosen]`, `[Epikrise]`, etc.
+- **Exploration** (`run_exploration.py`): Berichte + ICD + ICDSC + structured baseline + predictions; no crash when legacy diagnosis path is absent.
 
 ## Single Source of Path Truth
 - `src/pipeline/paths.py` is the central config.

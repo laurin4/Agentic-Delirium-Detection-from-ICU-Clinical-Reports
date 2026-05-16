@@ -2,8 +2,8 @@ from pathlib import Path
 import re
 import pandas as pd
 
-from src.pipeline.paths import OUTPUTS_DIR, DIAGNOSIS_INPUT_PATH, STRUCTURED_BASELINE_PATH
-from src.preprocessing.diagnosis_mapper import build_patient_level_reports
+from src.pipeline.paths import BERICHTE_INPUT_PATH, OUTPUTS_DIR, STRUCTURED_BASELINE_PATH
+from src.preprocessing.berichte_mapper import build_patient_level_berichte_reports
 
 
 OVERLAP_DIR = OUTPUTS_DIR / "analysis" / "overlap"
@@ -27,7 +27,12 @@ def _has_text_delir(text: str) -> bool:
 
 
 def _load_text_reports() -> pd.DataFrame:
-    df = build_patient_level_reports(DIAGNOSIS_INPUT_PATH).copy()
+    if not BERICHTE_INPUT_PATH.exists():
+        print(
+            f"Warning: Berichte.csv missing ({BERICHTE_INPUT_PATH}); text overlap analysis skipped."
+        )
+        return pd.DataFrame(columns=["PatientenID", "bericht", "report_text", "has_text_delir"])
+    df = build_patient_level_berichte_reports().copy()
     df["PatientenID"] = df["PatientenID"].astype(str).str.strip()
     df["has_text_delir"] = df["report_text"].apply(_has_text_delir)
     return df[["PatientenID", "bericht", "report_text", "has_text_delir"]]
@@ -37,7 +42,12 @@ def _load_baseline() -> pd.DataFrame:
     df = pd.read_csv(STRUCTURED_BASELINE_PATH).copy()
     df["PatientenID"] = df["PatientenID"].astype(str).str.strip()
 
-    df["has_icd10_delir"] = df["has_main_delir_icd10"].fillna(0).astype(int) == 1
+    if "has_delir_icd10" in df.columns:
+        df["has_icd10_delir"] = pd.to_numeric(df["has_delir_icd10"], errors="coerce").fillna(0).astype(int) == 1
+    elif "has_main_delir_icd10" in df.columns:
+        df["has_icd10_delir"] = df["has_main_delir_icd10"].fillna(0).astype(int) == 1
+    else:
+        df["has_icd10_delir"] = 0
     df["has_icdsc_delir"] = pd.to_numeric(df["max_icdsc"], errors="coerce").fillna(0) >= 4
 
     return df[["PatientenID", "has_icd10_delir", "has_icdsc_delir", "max_icdsc"]]

@@ -177,7 +177,13 @@ def _read_diagnosis_csv_manual(file_path: Path) -> pd.DataFrame:
     return pd.DataFrame(parsed_rows, columns=EXPECTED_COLUMNS)
 
 
-def _load_diagnosis_rows(input_path: Path) -> pd.DataFrame:
+def _load_diagnosis_rows(input_path: Optional[Path]) -> pd.DataFrame:
+    if input_path is None:
+        LOGGER.warning(
+            "Legacy diagnosis input path is None (Diagnosenliste.csv removed from production). "
+            "Use Berichte.csv via berichte_mapper instead."
+        )
+        return pd.DataFrame(columns=EXPECTED_COLUMNS)
     if not input_path.exists():
         LOGGER.warning("Diagnosis input path does not exist: %s", input_path)
         return pd.DataFrame(columns=EXPECTED_COLUMNS)
@@ -257,6 +263,20 @@ def build_patient_level_report_records(input_dir: Optional[Path] = None) -> List
     return df.to_dict(orient="records")
 
 
-def load_diagnosis_dataframe(path):
-    rows = _load_diagnosis_rows(path)
+def load_diagnosis_dataframe(path: Optional[Path] = None) -> pd.DataFrame:
+    """
+    Legacy loader for Diagnosenliste-style CSVs.
+
+    Returns an empty frame when *path* is None or missing (no crash).
+    Production exploration and pipeline use Berichte.csv instead.
+    """
+    resolved = path
+    if resolved is None:
+        LOGGER.warning(
+            "load_diagnosis_dataframe: no diagnosis path configured; returning empty DataFrame."
+        )
+        return pd.DataFrame(columns=EXPECTED_COLUMNS)
+    rows = _load_diagnosis_rows(resolved)
+    if rows.empty:
+        return pd.DataFrame(columns=EXPECTED_COLUMNS)
     return pd.DataFrame(rows)
