@@ -231,11 +231,32 @@ def _window_text(
     return chunk
 
 
+def _max_hits_per_keyword(etype: str) -> int:
+    if etype == "prophylaxis_or_risk":
+        return _int_env("EVIDENCE_MAX_HITS_PROPHYLAXIS", 2, minimum=1)
+    return _int_env("EVIDENCE_MAX_HITS_PER_KEYWORD", 3, minimum=1)
+
+
+def _cap_raw_matches(matches: List[Tuple[int, int, str, str]]) -> List[Tuple[int, int, str, str]]:
+    """Limit repeated identical keyword hits (e.g. many Delirprophylaxe lines)."""
+    counts: Dict[Tuple[str, str], int] = {}
+    out: List[Tuple[int, int, str, str]] = []
+    for item in matches:
+        phrase, etype = item[2], item[3]
+        key = (etype, phrase.lower())
+        counts[key] = counts.get(key, 0) + 1
+        if counts[key] > _max_hits_per_keyword(etype):
+            continue
+        out.append(item)
+    return out
+
+
 def _dedupe_snippets(snippets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     seen: set = set()
     out: List[Dict[str, Any]] = []
     for s in snippets:
-        key = (s.get("section"), s.get("evidence_type"), (s.get("text") or "")[:120].lower())
+        text_norm = re.sub(r"\s+", " ", (s.get("text") or "").strip().lower())[:200]
+        key = (s.get("section"), s.get("evidence_type"), s.get("keyword"), text_norm)
         if key in seen:
             continue
         seen.add(key)
@@ -367,6 +388,7 @@ def extract_delirium_evidence(report_text: str) -> Dict[str, Any]:
             start = i + max(1, pl)
 
     raw_matches.sort(key=lambda x: x[0])
+    raw_matches = _cap_raw_matches(raw_matches)
     hit_count = len(raw_matches)
 
     global_sents = _split_sentence_spans(src)

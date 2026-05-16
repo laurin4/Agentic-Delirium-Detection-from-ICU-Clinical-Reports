@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from src.agents.classification import classify_delirium
+from src.agents.clinical_guardrails import apply_clinical_decision_guardrails
 from src.agents.extraction import extract_passages
 from src.agents.interpretation import interpret_signals
 from src.agents.interpretation_llm import interpret_signals_llm
@@ -68,19 +69,34 @@ def _base_evidence_metadata(ev: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _guardrail_fields(guard: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "has_alternative_explanation": _bool_csv(bool(guard.get("has_alternative_explanation", False))),
+        "manual_review_candidate": _bool_csv(bool(guard.get("manual_review_candidate", False))),
+        "decision_rule_applied": str(guard.get("decision_rule_applied", "")),
+    }
+
+
 def _prediction_row_no_evidence(
     ev: Dict[str, Any],
     patient_id: str,
     report_name: str,
 ) -> Dict[str, Any]:
+    guard = apply_clinical_decision_guardrails(
+        {"signalstaerke": "niedrig", "kontext": NO_EVIDENCE_KONTEXT, "alternative_erklaerung": False, "begruendung": []},
+        {},
+        ev,
+        llm_skipped=True,
+    )
     return {
         "PatientenID": patient_id,
         "bericht": report_name,
         **_base_evidence_metadata(ev),
+        **_guardrail_fields(guard),
         "llm_skipped_by_prefilter": True,
         "anzahl_treffer": 0,
         "delir_signale": "",
-        "signalstaerke": "niedrig",
+        "signalstaerke": guard["signalstaerke"],
         "kontext": NO_EVIDENCE_KONTEXT,
         "alternative_erklaerung": False,
         "alternative_erklaerung_keywords": "",
@@ -204,13 +220,18 @@ def _compact_line(
     status: str,
     klasse: Any,
     signal: str,
+    manual_review: bool = False,
+    decision_rule: str = "",
 ) -> str:
     n_snip = len(ev.get("evidence_snippets") or [])
-    return (
+    line = (
         f"Patient {idx}/{total} | ID={patient_id} | evidence={n_snip} | "
         f"original={ev['original_report_text_length']} | llm={ev['llm_report_text_length']} | "
         f"method={ev['llm_text_reduction_method']} | klasse={klasse} | signal={signal} | status={status}"
     )
+    if manual_review:
+        line += f" | manual_review_candidate=True | rule={decision_rule}"
+    return line
 
 
 def _print_evidence_preview(ev: Dict[str, Any], limit: int = 3) -> None:
@@ -284,6 +305,21 @@ def _run_single_report(report: dict, idx: int, total: int) -> Tuple[dict, bool, 
             raise ValueError(f"Ungültiger INTERPRETATION_MODE: {INTERPRETATION_MODE}")
 
         classification = classify_delirium(interpretation)
+        guard = apply_clinical_decision_guardrails(
+            interpretation,
+            result,
+            ev,
+            llm_skipped=False,
+        )
+        final_klasse = int(guard["klasse"])
+        final_signal = str(guard["signalstaerke"])
+        final_kontext = str(guard.get("kontext") or interpretation.get("kontext", ""))
+        final_begr = list(guard.get("begruendung") or [])
+        klassifikation_begr_str = (
+            " | ".join(str(x) for x in final_begr)
+            if final_begr
+            else " | ".join(classification.get("begruendung", []))
+        )
 
         hits: List[str] = []
         for key in SIGNAL_KEYS:
@@ -304,8 +340,9 @@ def _run_single_report(report: dict, idx: int, total: int) -> Tuple[dict, bool, 
             print(f"    signalstaerke: {interpretation['signalstaerke']}")
             print(f"    kontext: {interpretation['kontext']}")
             print("  [classification]")
-            print(f"    klasse: {classification['klasse']}")
-            print(f"    klassifikation: {classification['klassifikation']}")
+            print(f"    klasse: {final_klasse}")
+            print(f"    klassifikation: {guard['klassifikation']}")
+            print(f"    decision_rule: {guard.get('decision_rule_applied')}")
             print()
         else:
             msg = _compact_line(
@@ -314,11 +351,13 @@ def _run_single_report(report: dict, idx: int, total: int) -> Tuple[dict, bool, 
                 patient_id,
                 ev,
                 status="success",
-                klasse=int(classification["klasse"]),
-                signal=str(interpretation.get("signalstaerke", "")),
+                klasse=final_klasse,
+                signal=final_signal,
+                manual_review=bool(guard.get("manual_review_candidate")),
+                decision_rule=str(guard.get("decision_rule_applied", "")),
             )
             print(msg)
-            if int(classification["klasse"]) == 1:
+            if final_klasse == 1:
                 _print_evidence_preview(ev)
             LOGGER.info(msg)
 
@@ -326,19 +365,20 @@ def _run_single_report(report: dict, idx: int, total: int) -> Tuple[dict, bool, 
             "PatientenID": patient_id,
             "bericht": report_name,
             **_base_evidence_metadata(ev),
+            **_guardrail_fields(guard),
             "llm_skipped_by_prefilter": False,
             "anzahl_treffer": len(hits),
             "delir_signale": " | ".join(hits),
-            "signalstaerke": interpretation["signalstaerke"],
-            "kontext": interpretation["kontext"],
-            "alternative_erklaerung": interpretation["alternative_erklaerung"],
+            "signalstaerke": final_signal,
+            "kontext": final_kontext,
+            "alternative_erklaerung": guard.get("alternative_erklaerung", interpretation["alternative_erklaerung"]),
             "alternative_erklaerung_keywords": " | ".join(
                 interpretation.get("alternative_erklaerung_keywords", [])
             ),
             "begruendung": " | ".join(interpretation.get("begruendung", [])),
-            "klasse": classification["klasse"],
-            "klassifikation": classification["klassifikation"],
-            "klassifikation_begruendung": " | ".join(classification.get("begruendung", [])),
+            "klasse": final_klasse,
+            "klassifikation": guard["klassifikation"],
+            "klassifikation_begruendung": klassifikation_begr_str,
         }
         return row, False, False
 
@@ -427,6 +467,9 @@ def main():
         "has_indirect_delir_evidence",
         "has_negated_delir_evidence",
         "has_prophylaxis_or_risk_only",
+        "has_alternative_explanation",
+        "manual_review_candidate",
+        "decision_rule_applied",
         "llm_skipped_by_prefilter",
         "anzahl_treffer",
         "delir_signale",

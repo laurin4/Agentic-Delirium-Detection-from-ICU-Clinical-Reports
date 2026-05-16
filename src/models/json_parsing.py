@@ -1,12 +1,19 @@
 import json
+import os
 import re
 from typing import Any, Dict
 
 
+def _debug_llm_output_enabled() -> bool:
+    """True when DEBUG_LLM_OUTPUT is set to 1/true/yes (default: off)."""
+    return os.environ.get("DEBUG_LLM_OUTPUT", "").strip().lower() in ("1", "true", "yes")
+
+
 def parse_llm_json_output(raw_output: str, context_name: str) -> Dict[str, Any]:
-    print(f"=== ROHE LLM-AUSGABE ({context_name}) START ===")
-    print(raw_output)
-    print(f"=== ROHE LLM-AUSGABE ({context_name}) ENDE ===")
+    if _debug_llm_output_enabled():
+        print(f"=== ROHE LLM-AUSGABE ({context_name}) START ===")
+        print(raw_output)
+        print(f"=== ROHE LLM-AUSGABE ({context_name}) ENDE ===")
 
     if not raw_output or not raw_output.strip():
         raise ValueError(f"Leere LLM-Antwort in {context_name}: Kein JSON-Inhalt vorhanden.")

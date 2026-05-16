@@ -51,6 +51,9 @@ DATA_COLUMN_ORDER: Sequence[str] = (
     "has_indirect_delir_evidence",
     "has_negated_delir_evidence",
     "has_prophylaxis_or_risk_only",
+    "has_alternative_explanation",
+    "manual_review_candidate",
+    "decision_rule_applied",
 )
 
 MANUAL_ANNOTATION_COLUMNS = (

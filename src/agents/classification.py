@@ -13,16 +13,11 @@ def classify_delirium(interpretation: Dict[str, Any]) -> Dict[str, Any]:
     alternative_erklaerung = bool(interpretation.get("alternative_erklaerung", False))
     begruendung: List[str] = list(interpretation.get("begruendung", []))
 
-    if signalstaerke == "hoch":
+    # Preliminary mapping; guardrails hard-exclude clear negatives and flag uncertain positives.
+    if signalstaerke in ("hoch", "mittel"):
         klasse = 1
         finale_begruendung = [
-            "Explizite oder sehr starke Delir-Signale vorhanden.",
-            *begruendung,
-        ]
-    elif signalstaerke == "mittel":
-        klasse = 1
-        finale_begruendung = [
-            "Indirekte Delir-Signale vorhanden.",
+            "Delir-Signale mit mittlerer oder hoher Stärke (vor Guardrails).",
             *begruendung,
         ]
     else:

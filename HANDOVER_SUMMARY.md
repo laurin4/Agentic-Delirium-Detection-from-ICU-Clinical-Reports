@@ -20,6 +20,7 @@
 - If **no** snippet qualifies for LLM review (i.e. nothing beyond negation-only), the LLM is **skipped**, `llm_text_reduction_method=no_evidence_prefilter_skip`, and **`klasse=0`**.
 - If actionable snippets exist, `llm_text_reduction_method=structured_evidence_extraction` and the LLM receives **`llm_report_text`**: labeled snippets + short instruction — **not** the full chart.
 - **Transparency**: describe this two-stage design (rules → LLM) in thesis/defense materials; CSV stores structured `evidence_snippets` (JSON list) plus boolean flags for audit.
+- **Clinical guardrails** (`src/agents/clinical_guardrails.py`, after Agent 2): hard-excludes only **no evidence**, **prophylaxis/risk-only**, and **negated delirium**. LLM positives from indirect symptoms or with alternative explanations are **kept as klasse=1** and flagged `manual_review_candidate=true` (not auto-downgraded).
 
 ### Environment (evidence + logging)
 | Variable | Default | Role |

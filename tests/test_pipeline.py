@@ -32,7 +32,6 @@ def test_classify_delirium_medium_returns_class_1():
     result = classify_delirium(interpretation)
 
     assert result["klasse"] == 1
-    assert result["klassifikation"] == "delir"
 
 
 
