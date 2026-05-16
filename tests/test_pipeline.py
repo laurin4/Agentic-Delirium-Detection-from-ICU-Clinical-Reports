@@ -109,8 +109,8 @@ def test_prepare_icd10_detects_delir_code_and_main_diagnosis():
     df = pd.DataFrame(
         {
             "PatientenID": [1001, 1001, 1002],
-            "Code": ["F05.0", "I10", "J44.1"],
-            "IsHauptDiagn": ["1", "NULL", "1"],
+            "Code": ["F05.0", "F05.0", "J44.1"],
+            "IsHauptDiagn": ["1", "0", "1"],
         }
     )
 
@@ -119,25 +119,17 @@ def test_prepare_icd10_detects_delir_code_and_main_diagnosis():
 
     assert result.loc[0, "PatientenID"] == "1001"
     assert result.loc[0, "has_delir_icd10"] == 1
-    assert result.loc[0, "has_main_delir_icd10"] == 1
     assert "F05.0" in result.loc[0, "delir_codes"]
 
     assert result.loc[1, "PatientenID"] == "1002"
     assert result.loc[1, "has_delir_icd10"] == 0
 
 
-
 def test_prepare_icdsc_aggregates_per_patient():
     df = pd.DataFrame(
         {
             "PatientenID": [1001, 1001, 1002],
-            "ICDSC_Time": [
-                "2026-01-01 08:00:00",
-                "2026-01-01 16:00:00",
-                "2026-01-02 08:00:00",
-            ],
-            "ICDSC_Value": [2, 5, 3],
-            "ICDSC_DelirFlag": [0, 1, 0],
+            "ICDSC_Max": [2, 5, 3],
         }
     )
 
@@ -146,12 +138,9 @@ def test_prepare_icdsc_aggregates_per_patient():
 
     assert result.loc[0, "PatientenID"] == "1001"
     assert result.loc[0, "max_icdsc"] == 5
-    assert result.loc[0, "any_delir_flag"] == 1
-    assert result.loc[0, "n_icdsc_measurements"] == 2
 
     assert result.loc[1, "PatientenID"] == "1002"
     assert result.loc[1, "max_icdsc"] == 3
-    assert result.loc[1, "any_delir_flag"] == 0
 
 
 def test_add_reference_class_uses_three_class_logic():

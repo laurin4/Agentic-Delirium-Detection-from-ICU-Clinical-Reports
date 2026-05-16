@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-"$ROOT_DIR/Ba_venv/bin/python"}"
 
-DATA_DIR="$ROOT_DIR/Data/Raw"
-DIAG_FILE="$DATA_DIR/Diagnosenliste.csv"
+DATA_DIR="$ROOT_DIR/data/raw"
+BERICHTE_FILE="$DATA_DIR/Berichte.csv"
 ICD_FILE="$DATA_DIR/ICD.csv"
 ICDSC_FILE="$DATA_DIR/ICDSC.csv"
 
@@ -20,26 +20,26 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   exit 1
 fi
 
-for file in "$DIAG_FILE" "$ICD_FILE" "$ICDSC_FILE"; do
+for file in "$BERICHTE_FILE" "$ICD_FILE" "$ICDSC_FILE"; do
   if [[ ! -f "$file" ]]; then
     echo "ERROR: Missing required input file: $file"
     exit 1
   fi
 done
 
-echo "[1/6] Quick input preview"
+echo "[1/6] Quick input preview (semicolon-separated)"
 "$PYTHON_BIN" - <<PY
 import pandas as pd
 from pathlib import Path
 
 files = [
-    Path("$DIAG_FILE"),
+    Path("$BERICHTE_FILE"),
     Path("$ICD_FILE"),
     Path("$ICDSC_FILE"),
 ]
 for path in files:
-    df = pd.read_csv(path)
-    print(f"{path.name}: rows={len(df)}, cols={list(df.columns)}")
+    df = pd.read_csv(path, sep=";", dtype=str, nrows=3)
+    print(f"{path.name}: cols={list(df.columns)}")
 PY
 echo
 
@@ -66,6 +66,7 @@ echo
 echo "Preflight completed successfully."
 echo "Check outputs under:"
 echo "  - outputs/predictions/"
+echo "  - outputs/baseline/"
 echo "  - outputs/comparisons/"
 echo "  - outputs/evaluation/"
 echo "  - outputs/validation/"

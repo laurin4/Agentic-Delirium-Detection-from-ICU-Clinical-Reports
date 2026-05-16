@@ -216,6 +216,12 @@ def _load_diagnosis_rows(input_path: Path) -> pd.DataFrame:
 
 def build_patient_level_reports(input_dir: Optional[Path] = None) -> pd.DataFrame:
     base_input = input_dir or DIAGNOSIS_INPUT_PATH
+    if base_input is None:
+        raise FileNotFoundError(
+            "Legacy diagnosis input is not configured (Diagnosenliste.csv removed from production). "
+            "Use INPUT_MODE='berichte' with data/raw/Berichte.csv, or DATA_MODE='synthetic' for "
+            "synthetic_diagnoses.csv."
+        )
     rows = _load_diagnosis_rows(base_input)
     if rows.empty:
         return pd.DataFrame(columns=["PatientenID", "bericht", "report_text"])

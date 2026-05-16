@@ -1,25 +1,34 @@
 """
 Normalize heterogeneous column names in structured baseline source CSVs.
 
+Final production schema (semicolon-separated):
+- ICD.csv: PatientID; icd_hd; icd_code
+- ICDSC.csv: PatientID; ICDSC_Max  (patient-level maximum, one row per patient typical)
+
 Canonical internal names:
-- PatientenID (from PatientID or PatientenID)
-- max_icdsc (output of prepare_icdsc; sources may use ICDSC_Max / ICDSC_Value)
-- Code, IsHauptDiagn (ICD sources may use icd_code / icd_hd)
+- PatientenID
+- Code, IsHauptDiagn (from icd_code, icd_hd)
+- ICDSC_Max (source) → max_icdsc (baseline output)
 """
 
 from __future__ import annotations
 
-from typing import Iterable, Sequence
+from typing import Sequence
 
 import pandas as pd
-
-# Working names used inside prepare_icdsc before patient-level aggregation.
-ICDSC_VALUE_ALIASES: tuple[str, ...] = ("ICDSC_Value", "ICDSC_Max", "max_icdsc")
 
 ICD10_COLUMN_ALIASES: dict[str, str] = {
     "icd_code": "Code",
     "icd_hd": "IsHauptDiagn",
 }
+
+# Legacy long-format ICDSC column names (synthetic / old exports).
+ICDSC_LEGACY_VALUE_ALIASES: tuple[str, ...] = ("ICDSC_Value",)
+
+ICDSC_MAX_ALIASES: tuple[str, ...] = ("ICDSC_Max", "max_icdsc")
+
+VALID_DELIR_ICD10_CODES: frozenset[str] = frozenset({"F05.0", "F05.8", "F05.9"})
+EXCLUDED_DELIR_ICD10_CODE = "F05.1"
 
 
 class SchemaValidationError(ValueError):
@@ -74,32 +83,60 @@ def normalize_icd10_source_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def normalize_icdsc_source_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Map ICDSC.csv schema variants to working column ``ICDSC_Value``.
+    Ensure patient-level ICDSC score column ``ICDSC_Max`` exists.
 
-    ``ICDSC_Max`` and ``max_icdsc`` are treated as per-row score columns before aggregation.
+    Legacy long-format ``ICDSC_Value`` is renamed to ``ICDSC_Max`` for downstream max().
     """
     out = df.copy()
-    if "ICDSC_Value" in out.columns:
+    if "ICDSC_Max" in out.columns:
         return out
-    for alias in ("ICDSC_Max", "max_icdsc"):
+    for alias in ICDSC_LEGACY_VALUE_ALIASES:
         if alias in out.columns:
-            return out.rename(columns={alias: "ICDSC_Value"})
+            return out.rename(columns={alias: "ICDSC_Max"})
+    for alias in ICDSC_MAX_ALIASES:
+        if alias in out.columns and alias != "ICDSC_Max":
+            return out.rename(columns={alias: "ICDSC_Max"})
     return out
+
+
+def is_main_diagnosis_flag(value: object) -> bool:
+    """Treat icd_hd / IsHauptDiagn == 1 as main diagnosis."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return False
+    s = str(value).strip()
+    if not s or s.lower() in ("nan", "null", "none"):
+        return False
+    try:
+        return int(float(s)) == 1
+    except (TypeError, ValueError):
+        return s in ("1", "True", "true", "JA", "Ja", "ja")
+
+
+def normalize_icd_code(code: object) -> str:
+    return str(code or "").strip().upper()
+
+
+def is_valid_delir_icd10_code(code: object) -> bool:
+    """F05.0 / F05.8 / F05.9 only; excludes alcohol delirium F05.1."""
+    normalized = normalize_icd_code(code)
+    if normalized == EXCLUDED_DELIR_ICD10_CODE:
+        return False
+    return normalized in VALID_DELIR_ICD10_CODES
 
 
 def require_icd10_source_columns(df: pd.DataFrame, context: str = "ICD input") -> None:
     """Validate ICD source after patient + column alias normalization."""
-    require_columns(df, ("PatientenID", "Code"), context)
+    require_columns(df, ("PatientenID", "Code", "IsHauptDiagn"), context)
 
 
 def require_icdsc_source_columns(df: pd.DataFrame, context: str = "ICDSC input") -> None:
     """Validate ICDSC source after patient + column alias normalization."""
-    require_columns(df, ("PatientenID", "ICDSC_Value"), context)
+    require_columns(df, ("PatientenID", "ICDSC_Max"), context)
 
 
 def structured_baseline_output_columns() -> tuple[str, ...]:
     """Standard columns written to structured_baseline.csv (excluding reference-class extras)."""
-    base = (
+    return (
         "PatientenID",
         "has_delir_icd10",
         "max_icdsc",
@@ -113,7 +150,6 @@ def structured_baseline_output_columns() -> tuple[str, ...]:
         "baseline_icdsc_1_to_3",
         "baseline_icdsc_ge_4_grouped",
     )
-    return base
 
 
 def assert_structured_baseline_columns(df: pd.DataFrame, context: str = "structured baseline") -> None:

@@ -6,9 +6,11 @@ Assume project root: `delirium_project/`.
 
 1. Python 3.9+ and virtualenv (recommended).
 2. `pip install -r requirements.txt`
-3. Place inputs under **`data/raw/`** (see `src/pipeline/paths.py`):
-   - `Berichte.csv` (primary reports)
-   - `ICD.csv`, `ICDSC.csv` (baselines)
+3. Place inputs under **`data/raw/`** (semicolon-separated; see `src/pipeline/paths.py`):
+   - `Berichte.csv` — `PatientID` + clinical text fields
+   - `ICD.csv` — `PatientID; icd_hd; icd_code`
+   - `ICDSC.csv` — `PatientID; ICDSC_Max`
+   - No `Diagnosenliste.csv` in the active pipeline (legacy only).
 4. Start the **USZ LLM** HTTP service so `USZ_LLM_URL` is reachable (default `http://localhost:8100/generate`).
 
 ## Environment — primary (USZ)

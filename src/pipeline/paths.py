@@ -80,22 +80,27 @@ ANALYSIS_EVALUATION_PLOTS_DIR = ANALYSIS_EVALUATION_DIR / "plots"
 PREPARED_DATA_DIR = OUTPUTS_DIR / "prepared"
 LOGS_DIR = OUTPUTS_DIR / "logs"
 
+# Final production raw inputs (DATA_MODE=real): Berichte.csv, ICD.csv, ICDSC.csv only.
+# Legacy Diagnosenliste.csv is not used in the active pipeline (see LEGACY_DIAGNOSIS_INPUT_PATH).
+
 # Input paths per mode (single source of truth; no duplicated path logic)
 _MODE_INPUTS = {
     "real": {
         "icd10": REAL_RAW_DIR / "ICD.csv",
         "icdsc": REAL_RAW_DIR / "ICDSC.csv",
-        "diagnosis": REAL_RAW_DIR / "Diagnosenliste.csv",
-        # Primary text input (CSV, semicolon-separated; not in repo on secure setups).
         "berichte_csv": REAL_RAW_DIR / "Berichte.csv",
     },
     "synthetic": {
         "icd10": STRUCTURED_RAW_DIR / "synthetic_icd10.csv",
         "icdsc": STRUCTURED_RAW_DIR / "synthetic_icdsc.csv",
-        "diagnosis": DIAGNOSIS_EXAMPLES_DIR / "synthetic_diagnoses.csv",
         "berichte_csv": STRUCTURED_RAW_DIR / "synthetic_berichte.csv",
+        # Legacy text source for offline regression only (INPUT_MODE=diagnosis).
+        "diagnosis": DIAGNOSIS_EXAMPLES_DIR / "synthetic_diagnoses.csv",
     },
 }
+
+# Legacy path (not required for production). Former Diagnosenliste.csv location.
+LEGACY_DIAGNOSIS_INPUT_PATH = REAL_RAW_DIR / "Diagnosenliste.csv"
 
 if DATA_MODE not in _MODE_INPUTS:
     raise ValueError(
@@ -105,9 +110,9 @@ if DATA_MODE not in _MODE_INPUTS:
 _paths = _MODE_INPUTS[DATA_MODE]
 ICD10_PATH = _paths["icd10"]
 ICDSC_PATH = _paths["icdsc"]
-DIAGNOSIS_INPUT_PATH = _paths["diagnosis"]
-# Same logical path constant as REAL_RAW_DIR / "Berichte.csv" in DATA_MODE=="real".
 BERICHTE_INPUT_PATH = _paths["berichte_csv"]
+# Legacy diagnosis list — only defined in synthetic mode; use Berichte.csv in production.
+DIAGNOSIS_INPUT_PATH = _paths.get("diagnosis")
 REPORT_ID_MAPPING_PATH = STRUCTURED_DIR / "report_patient_ids.csv"
 
 STRUCTURED_BASELINE_PATH = BASELINE_DIR / "structured_baseline.csv"

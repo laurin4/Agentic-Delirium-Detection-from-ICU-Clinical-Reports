@@ -43,24 +43,22 @@
 Centralized in `src/pipeline/paths.py`.
 
 - `DATA_MODE = "real"` (default)
-- Real input files:
-  - `Data/Raw/Diagnosenliste.csv`
-  - `Data/Raw/ICD.csv`
-  - `Data/Raw/ICDSC.csv`
+- **Final production raw inputs** (semicolon-separated under `data/raw/`):
+  - `Berichte.csv` — primary text (`PatientID`, clinical fields → `report_text`)
+  - `ICD.csv` — `PatientID; icd_hd; icd_code`
+  - `ICDSC.csv` — `PatientID; ICDSC_Max` (patient-level maximum score)
+- **No** `Diagnosenliste.csv` in the active pipeline (`LEGACY_DIAGNOSIS_INPUT_PATH` only for documentation).
 
-Optional synthetic mode:
-- set `DATA_MODE = "synthetic"` in `paths.py`
-- uses:
-  - `data/structured/raw/synthetic_icd10.csv`
-  - `data/structured/raw/synthetic_icdsc.csv`
-  - `data/anonymized/beispiele/synthetic_diagnoses.csv`
+Optional synthetic mode (`DATA_MODE = "synthetic"`):
+  - `data/structured/raw/synthetic_icd10.csv`, `synthetic_icdsc.csv`, `synthetic_berichte.csv`
+  - Legacy: `data/anonymized/beispiele/synthetic_diagnoses.csv` (INPUT_MODE=diagnosis only)
 
 ## Important Logic
-- Diagnosis preprocessing: builds one patient-level report per patient from diagnosis rows (`src/preprocessing/diagnosis_mapper.py`).
-- Baseline classes (operational reference):
-  - Class 2: valid F05* (excluding F05.1) **and** ICDSC delir flag = 1
-  - Class 1: not class 2, but at least one of valid ICD10 / delir flag / max ICDSC >= 4
-  - Class 0: none of the above
+- **Baseline construction** (`prepare_structured_data`): ICD + ICDSC only → `structured_baseline.csv`.
+- **ICD-10 delirium** (`has_delir_icd10` / `baseline_icd10`): main diagnosis `icd_hd == 1` and code in `F05.0`, `F05.8`, `F05.9` (excludes `F05.1`).
+- **ICDSC** (`max_icdsc`): from `ICDSC_Max`; thresholds `baseline_icdsc_ge_*`, `baseline_icdsc_0`, `baseline_icdsc_1_to_3`, `baseline_icdsc_ge_4_grouped`.
+- **Legacy** multiclass `baseline_reference_class` may still be written; primary evaluation uses binary baselines.
+- **Legacy** diagnosis list: `src/preprocessing/diagnosis_mapper.py` (not used when `INPUT_MODE=berichte`).
 
 ## Single Source of Path Truth
 - `src/pipeline/paths.py` is the central config.
@@ -128,8 +126,9 @@ docker run --rm -it \
 
 ## Quick Troubleshooting
 - No reports processed (`Anzahl Berichte: 0`):
-  - Check `Data/Raw/Diagnosenliste.csv` exists and has rows.
-- Baseline empty:
-  - Check `Data/Raw/ICD.csv` and `Data/Raw/ICDSC.csv` have rows and expected columns.
+  - Check `data/raw/Berichte.csv` exists and has rows with `PatientID`.
+- Baseline empty or wrong joins:
+  - Re-run `python -m src.pipeline.prepare_structured_data`.
+  - Check `data/raw/ICD.csv` (`PatientID; icd_hd; icd_code`) and `data/raw/ICDSC.csv` (`PatientID; ICDSC_Max`).
 - Format issues:
   - Reader supports `.csv`, `.xlsx`, `.xls` via `src/pipeline/tabular_io.py`.

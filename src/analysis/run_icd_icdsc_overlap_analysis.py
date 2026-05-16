@@ -20,11 +20,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from src.pipeline.paths import OUTPUTS_DIR, PROJECT_ROOT
+from src.pipeline.paths import ICD10_PATH, ICDSC_PATH, OUTPUTS_DIR
 
 
-ICD_PATH = PROJECT_ROOT / "data" / "raw" / "ICD.csv"
-ICDSC_PATH = PROJECT_ROOT / "data" / "raw" / "ICDSC.csv"
+ICD_PATH = ICD10_PATH
+ICDSC_PATH = ICDSC_PATH
 
 ANALYSIS_DIR = OUTPUTS_DIR / "analysis" / "icd_icdsc_overlap"
 TABLES_DIR = ANALYSIS_DIR / "tables"
@@ -47,7 +47,9 @@ def normalize_patient_id(series: pd.Series) -> pd.Series:
 def _load_input(path: Path, label: str) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"{label} missing: {path}")
-    return pd.read_csv(path, sep=";", dtype=str)
+    df = pd.read_csv(path, sep=";", dtype=str)
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
 
 
 def _extract_patient_ids(df: pd.DataFrame, label: str) -> pd.Series:
@@ -229,6 +231,7 @@ def _report_lines(metrics: Dict[str, float]) -> List[str]:
         f"  ICD unique PatientIDs: {icd_unique}",
         f"  ICDSC total rows: {icdsc_rows}",
         f"  ICDSC unique PatientIDs: {icdsc_unique}",
+        f"  ICDSC column ICDSC_Max present: {metrics.get('icdsc_has_icdsc_max', 0):.0f}",
         "",
         "Overlap",
         f"  overlap patients: {overlap}",
@@ -273,6 +276,7 @@ def main() -> None:
         icd_only=icd_only_ids,
         icdsc_only=icdsc_only_ids,
     )
+    metrics["icdsc_has_icdsc_max"] = float("ICDSC_Max" in icdsc_df.columns)
 
     summary_df = pd.DataFrame(
         [{"metric": key, "value": value} for key, value in metrics.items()],

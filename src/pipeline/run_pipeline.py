@@ -38,7 +38,7 @@ SIGNAL_KEYS = [
 ]
 
 INTERPRETATION_MODE = "prompt"  # "rule" oder "prompt"
-INPUT_MODE = "berichte"  # "berichte" | "diagnosis" | "txt"
+INPUT_MODE = "berichte"  # "berichte" (production) | "diagnosis" (legacy) | "txt"
 
 LOGGER = logging.getLogger(__name__)
 
@@ -142,12 +142,12 @@ def _get_report_records():
         if not BERICHTE_INPUT_PATH.exists():
             raise FileNotFoundError(
                 f"Primary report input missing: {BERICHTE_INPUT_PATH}. "
-                "Expected external CSV (semicolon-separated) with anonymized texts. "
-                "Place Berichte.csv on the server under data/raw/, or set INPUT_MODE='diagnosis' "
-                "to fall back to Diagnosenliste.csv."
+                "Expected data/raw/Berichte.csv (semicolon-separated). "
+                "Legacy INPUT_MODE='diagnosis' requires synthetic DATA_MODE and synthetic_diagnoses.csv."
             )
         report_records = build_patient_level_berichte_report_records()
     elif INPUT_MODE == "diagnosis":
+        # Legacy: Diagnosenliste-style CSV (synthetic mode only).
         report_records = build_patient_level_report_records()
     elif INPUT_MODE == "txt":
         report_records = _load_txt_reports()

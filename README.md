@@ -27,13 +27,20 @@ Expected columns include:
 | `bername` | **Excluded** from model text |
 | `diag`, `epikrise`, `jetziges_leiden`, `prozedere` | Combined into **`report_text`** per patient (section blocks), sorted by `berdat` |
 
-Fallback inputs (`INPUT_MODE` in `run_pipeline.py`): diagnosis list or TXT bundles — see code comments; production assumes **Berichte**.
+Legacy fallback (`INPUT_MODE` in `run_pipeline.py`): `diagnosis` (synthetic only) or `txt` — production uses **`berichte`** only.
 
 ---
 
 ## Structured baselines (`outputs/baseline/structured_baseline.csv`)
 
-Produced by `prepare_structured_data` from **`data/raw/ICD.csv`** and **`data/raw/ICDSC.csv`** (paths from `paths.py`).
+Produced by `prepare_structured_data` from **`data/raw/ICD.csv`** and **`data/raw/ICDSC.csv`** only (semicolon-separated).
+
+| File | Columns |
+|------|---------|
+| `ICD.csv` | `PatientID`, `icd_hd`, `icd_code` |
+| `ICDSC.csv` | `PatientID`, `ICDSC_Max` (patient-level maximum) |
+
+`PatientID` is normalized internally to `PatientenID` in the baseline artifact.
 
 **Binary baseline columns** (all included in primary evaluation):
 
@@ -43,7 +50,9 @@ Produced by `prepare_structured_data` from **`data/raw/ICD.csv`** and **`data/ra
 - `baseline_icdsc_ge_4_grouped`
 - `baseline_icd10`
 
-**ICD-10 delirium definition:** codes **`F05.0`**, **`F05.8`**, **`F05.9`** only — **`F05.1` excluded**.
+**ICD-10 delirium definition:** main diagnosis **`icd_hd == 1`** and codes **`F05.0`**, **`F05.8`**, **`F05.9`** only — **`F05.1` excluded**.
+
+**ICDSC:** `max_icdsc` = `ICDSC_Max`; binary columns derived from thresholds (e.g. `baseline_icdsc_ge_4` ⇔ `ICDSC_Max >= 4`).
 
 **Legacy:** `baseline_reference_class` (0/1/2) may still be written for backward compatibility; it is **not** the primary evaluation target. Use binary baselines and `evaluate_predictions`.
 
