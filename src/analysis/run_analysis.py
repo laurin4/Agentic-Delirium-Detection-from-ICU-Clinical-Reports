@@ -6,6 +6,9 @@ LEGACY: Earlier versions of this script produced 3-class confusion matrices agai
 is binary (see `src.pipeline.evaluate_predictions` and baseline columns below).
 
 This module writes supplementary tables/plots under outputs/analysis/evaluation/.
+
+Pre-model cohort / data-coverage plots (Berichte vs structured_baseline) live in
+`src.analysis.run_data_coverage_analysis` — not here.
 """
 
 import os

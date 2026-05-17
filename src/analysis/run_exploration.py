@@ -45,6 +45,7 @@ from src.pipeline.paths import (
     REPORT_VS_BASELINE_PATH,
     STRUCTURED_BASELINE_PATH,
 )
+from src.analysis.cohort_counts import load_and_compute_current_cohort_counts, print_current_cohort_counts
 from src.pipeline.schema_normalize import normalize_icd10_source_columns, normalize_icdsc_source_columns
 from src.pipeline.tabular_io import read_tabular
 from src.preprocessing.berichte_mapper import build_patient_level_berichte_reports, load_berichte_dataframe
@@ -92,6 +93,15 @@ def _safe_load(path: Optional[Path]) -> pd.DataFrame:
     if path is None or not path.exists():
         return pd.DataFrame()
     return _normalize_pid(read_tabular(path))
+
+
+def _load_structured_baseline_for_exploration() -> pd.DataFrame:
+    """Patient-level baseline from outputs/baseline/structured_baseline.csv (deduplicated)."""
+    if not STRUCTURED_BASELINE_PATH.exists():
+        return pd.DataFrame()
+    from src.analysis.cohort_counts import load_structured_baseline_rows
+
+    return _normalize_pid(load_structured_baseline_rows(STRUCTURED_BASELINE_PATH))
 
 
 def _warn_legacy_diagnosis_missing() -> None:
@@ -657,8 +667,15 @@ def main() -> None:
     legacy_diag = _load_legacy_diagnosis_optional()
     icd10 = _safe_load(ICD10_PATH)
     icdsc = _safe_load(ICDSC_PATH)
-    baseline = _safe_load(STRUCTURED_BASELINE_PATH)
+    baseline = _load_structured_baseline_for_exploration()
     predictions = _load_predictions()
+
+    if BERICHTE_INPUT_PATH.exists() and STRUCTURED_BASELINE_PATH.exists():
+        try:
+            _, _, cohort_counts, b_path, m_path = load_and_compute_current_cohort_counts()
+            print_current_cohort_counts(cohort_counts, berichte_path=b_path, baseline_path=m_path)
+        except Exception as exc:
+            LOGGER.warning("Could not compute Berichte/baseline cohort counts: %s", exc)
 
     _write_overview_tables(reports, icd10, icdsc, baseline)
     _berichte_sections_exploration(raw_berichte)
