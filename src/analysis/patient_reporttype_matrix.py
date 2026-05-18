@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from src.pipeline.schema_normalize import normalize_patient_id_column
 from src.preprocessing.berichte_filters import REPORT_TYPES_FOR_MATRIX, is_dokumentationsblatt, normalize_bertyp
 
 REPORT_TYPE_COLUMNS = REPORT_TYPES_FOR_MATRIX
@@ -62,18 +63,16 @@ def build_patient_reporttype_matrix(
     baseline: pd.DataFrame,
 ) -> pd.DataFrame:
     """Aggregate report-level predictions to one row per PatientenID."""
-    pred = predictions.copy()
+    pred = normalize_patient_id_column(predictions)
     if "PatientenID" not in pred.columns:
         raise ValueError("Predictions must contain PatientenID")
-    pred["PatientenID"] = pred["PatientenID"].astype(str).str.strip()
     if "bertyp" not in pred.columns:
         pred["bertyp"] = ""
     pred["bertyp"] = pred["bertyp"].map(normalize_bertyp)
     pred = pred[~pred["bertyp"].map(is_dokumentationsblatt)].copy()
     pred["klasse"] = _bin_klasse(pred["klasse"])
 
-    base = baseline.copy()
-    base["PatientenID"] = base["PatientenID"].astype(str).str.strip()
+    base = normalize_patient_id_column(baseline)
     base = base.drop_duplicates(subset=["PatientenID"], keep="first")
 
     patient_ids = sorted(set(pred["PatientenID"].unique()) | set(base["PatientenID"].unique()))

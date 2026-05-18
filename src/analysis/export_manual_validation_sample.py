@@ -10,6 +10,11 @@ from typing import Dict, List
 
 import pandas as pd
 
+from src.pipeline.schema_normalize import (
+    assert_patientenid_column,
+    log_patientenid_dtype_if_debug,
+    normalize_patient_id_column,
+)
 from src.pipeline.paths import (
     MANUAL_VALIDATION_DIR,
     MANUAL_VALIDATION_SAMPLE_PATH,
@@ -67,7 +72,10 @@ def build_validation_sample(
     *,
     target_size: int = TARGET_SAMPLE_SIZE,
 ) -> pd.DataFrame:
-    m = matrix.copy()
+    m = normalize_patient_id_column(matrix)
+    assert_patientenid_column(m, "patient_reporttype_matrix")
+    log_patientenid_dtype_if_debug(m, "matrix")
+
     m["validation_sampling_category"] = m.apply(_assign_validation_category, axis=1)
 
     priority = [
@@ -96,18 +104,33 @@ def build_validation_sample(
                 break
 
     selected_ids = selected_ids[:target_size]
-    sample = m[m["PatientenID"].astype(str).isin(selected_ids)].copy()
+    sample = m[m["PatientenID"].isin(selected_ids)].copy()
+    sample = normalize_patient_id_column(sample)
 
-    pred = predictions.copy()
-    if not pred.empty and "PatientenID" in pred.columns:
-        pred["PatientenID"] = pred["PatientenID"].astype(str).str.strip()
-    if not pred.empty and "evidence_snippets" in pred.columns:
+    if predictions.empty or "PatientenID" not in predictions.columns:
+        sample["evidence_snippets"] = ""
+        return sample
+
+    pred = normalize_patient_id_column(predictions)
+    assert_patientenid_column(pred, "predictions")
+    log_patientenid_dtype_if_debug(pred, "predictions")
+
+    if "evidence_snippets" in pred.columns:
         ev = (
             pred.groupby("PatientenID")["evidence_snippets"]
             .apply(lambda s: " || ".join(str(x) for x in s if str(x).strip()))
             .reset_index(name="evidence_snippets")
         )
+        ev = normalize_patient_id_column(ev)
+        log_patientenid_dtype_if_debug(ev, "evidence_aggregate")
+        n_before = len(sample)
         sample = sample.merge(ev, on="PatientenID", how="left")
+        if len(sample) != n_before:
+            LOGGER.warning(
+                "Evidence merge changed row count %d -> %d; check duplicate PatientenID keys.",
+                n_before,
+                len(sample),
+            )
     else:
         sample["evidence_snippets"] = ""
 
@@ -124,8 +147,12 @@ def main(
             f"Patient matrix missing: {matrix_path}. "
             "Run python -m src.analysis.create_patient_reporttype_matrix first."
         )
-    matrix = pd.read_csv(matrix_path)
-    preds = pd.read_csv(predictions_path) if predictions_path.exists() else pd.DataFrame()
+    matrix = normalize_patient_id_column(pd.read_csv(matrix_path))
+    preds = (
+        normalize_patient_id_column(pd.read_csv(predictions_path))
+        if predictions_path.exists()
+        else pd.DataFrame()
+    )
 
     sample = build_validation_sample(matrix, preds)
     MANUAL_VALIDATION_DIR.mkdir(parents=True, exist_ok=True)

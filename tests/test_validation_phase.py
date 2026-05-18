@@ -131,6 +131,56 @@ def test_validation_sampling_mixed_categories():
     assert len(sample["validation_sampling_category"].unique()) >= 2
 
 
+def test_clean_patient_id_value_no_float_artifact():
+    from src.pipeline.schema_normalize import clean_patient_id_value
+
+    assert clean_patient_id_value(12345) == "12345"
+    assert clean_patient_id_value(12345.0) == "12345"
+    assert clean_patient_id_value(" 99 ") == "99"
+    assert clean_patient_id_value(float("nan")) == ""
+
+
+def test_manual_validation_merge_int64_vs_object():
+    from src.analysis.export_manual_validation_sample import build_validation_sample
+
+    matrix = pd.DataFrame(
+        {
+            "PatientenID": [100, 200],
+            "baseline_composite": [0, 1],
+            "model_patient_positive": [1, 0],
+            "any_manual_review_candidate": [0, 0],
+            "any_direct_delir_evidence": [0, 0],
+            "any_indirect_delir_evidence": [0, 0],
+        }
+    )
+    matrix["PatientenID"] = matrix["PatientenID"].astype("int64")
+    preds = pd.DataFrame(
+        {
+            "PatientenID": ["100", "200"],
+            "evidence_snippets": ["[a]", "[b]"],
+            "klasse": [1, 0],
+        }
+    )
+    sample = build_validation_sample(matrix, preds, target_size=2)
+    assert len(sample) == 2
+    assert sample["PatientenID"].dtype == object
+    assert set(sample["PatientenID"]) == {"100", "200"}
+    assert sample["evidence_snippets"].notna().all()
+
+
+def test_normalize_patient_id_column_merge_count_preserved():
+    from src.pipeline.schema_normalize import normalize_patient_id_column
+
+    left = pd.DataFrame({"PatientenID": [1, 2], "x": [10, 20]})
+    left["PatientenID"] = left["PatientenID"].astype("int64")
+    right = pd.DataFrame({"PatientenID": ["1", "2"], "y": [100, 200]})
+    merged = normalize_patient_id_column(left).merge(
+        normalize_patient_id_column(right), on="PatientenID", how="left"
+    )
+    assert len(merged) == 2
+    assert merged["y"].tolist() == [100, 200]
+
+
 def test_create_patient_matrix_module(tmp_path, monkeypatch):
     pred = tmp_path / "pred.csv"
     base = tmp_path / "base.csv"

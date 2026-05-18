@@ -13,9 +13,13 @@ Canonical internal names:
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Sequence
 
 import pandas as pd
+
+LOGGER = logging.getLogger(__name__)
 
 ICD10_COLUMN_ALIASES: dict[str, str] = {
     "icd_code": "Code",
@@ -33,6 +37,41 @@ EXCLUDED_DELIR_ICD10_CODE = "F05.1"
 
 class SchemaValidationError(ValueError):
     """Raised when a required column is missing after alias normalization."""
+
+
+def _debug_patient_id_enabled() -> bool:
+    raw = os.environ.get("DEBUG_PATIENT_ID", os.environ.get("DEBUG_LLM_OUTPUT", ""))
+    return raw.strip().lower() in ("1", "true", "yes")
+
+
+def clean_patient_id_value(value: object) -> str:
+    """
+    Normalize one patient identifier to a stripped string without float artifacts.
+
+    Examples: 12345 -> "12345", 12345.0 -> "12345", NaN -> "".
+    """
+    if value is None:
+        return ""
+    if isinstance(value, float) and pd.isna(value):
+        return ""
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        try:
+            if value == int(value):
+                return str(int(value))
+        except (TypeError, ValueError, OverflowError):
+            pass
+    s = str(value).strip()
+    if not s or s.lower() in ("nan", "none", "null"):
+        return ""
+    if s.endswith(".0"):
+        head = s[:-2]
+        if head.isdigit() or (head.startswith("-") and head[1:].isdigit()):
+            return head
+    return s
 
 
 def normalize_patient_id_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -53,8 +92,43 @@ def normalize_patient_id_columns(df: pd.DataFrame) -> pd.DataFrame:
         out = out.rename(columns={"PatientID": "PatientenID"})
 
     if "PatientenID" in out.columns:
-        out["PatientenID"] = out["PatientenID"].astype(str).str.strip()
+        out["PatientenID"] = out["PatientenID"].map(clean_patient_id_value)
     return out
+
+
+def normalize_patient_id_column(df: pd.DataFrame, column: str = "PatientenID") -> pd.DataFrame:
+    """
+    Return a copy with canonical ``PatientenID`` as clean strings (merge-safe).
+
+    Renames ``PatientID`` when needed, then applies :func:`clean_patient_id_value`.
+    """
+    out = normalize_patient_id_columns(df)
+    if column in out.columns:
+        out[column] = out[column].map(clean_patient_id_value)
+    return out
+
+
+def assert_patientenid_column(df: pd.DataFrame, context: str = "dataframe") -> None:
+    """Raise if ``PatientenID`` is missing (after alias normalization)."""
+    if df.empty:
+        return
+    if "PatientenID" not in df.columns and "PatientID" not in df.columns:
+        raise SchemaValidationError(
+            f"{context}: missing required column 'PatientenID'. "
+            f"Available columns: {list(df.columns)}"
+        )
+
+
+def log_patientenid_dtype_if_debug(df: pd.DataFrame, context: str) -> None:
+    """Log ``PatientenID`` dtype when DEBUG_PATIENT_ID or DEBUG_LLM_OUTPUT is set."""
+    if not _debug_patient_id_enabled() or df.empty or "PatientenID" not in df.columns:
+        return
+    LOGGER.info(
+        "%s PatientenID dtype=%s sample=%s",
+        context,
+        df["PatientenID"].dtype,
+        df["PatientenID"].head(3).tolist(),
+    )
 
 
 def require_columns(

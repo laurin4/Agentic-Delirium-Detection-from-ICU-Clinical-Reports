@@ -17,6 +17,7 @@ from src.pipeline.paths import (
     STRUCTURED_BASELINE_PATH,
 )
 from src.analysis.cohort_counts import load_structured_baseline_rows
+from src.pipeline.schema_normalize import normalize_patient_id_column
 
 LOGGER = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ def main(
         raise FileNotFoundError(
             f"Predictions missing: {predictions_path}. Run python -m src.pipeline.run_pipeline first."
         )
-    preds = pd.read_csv(predictions_path)
+    preds = normalize_patient_id_column(pd.read_csv(predictions_path))
     baseline = load_structured_baseline_rows(baseline_path)
     matrix = build_patient_reporttype_matrix(preds, baseline)
 

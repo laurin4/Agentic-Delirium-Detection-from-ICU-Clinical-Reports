@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional, Set, Tuple
 import pandas as pd
 
 from src.pipeline.paths import BERICHTE_INPUT_PATH, STRUCTURED_BASELINE_PATH
+from src.pipeline.schema_normalize import clean_patient_id_value, normalize_patient_id_column
 from src.preprocessing.berichte_filters import exclude_dokumentationsblatt
 
 CURRENT_COHORT_METRIC_NAMES: Tuple[str, ...] = (
@@ -30,7 +31,7 @@ PLOT_TITLE_SUFFIX = (
 
 
 def normalize_patient_id_series(series: pd.Series) -> pd.Series:
-    return series.astype(str).str.strip()
+    return series.map(clean_patient_id_value)
 
 
 def _filter_valid_ids(series: pd.Series) -> pd.Series:
@@ -84,11 +85,9 @@ def load_structured_baseline_rows(path: Optional[Path] = None) -> pd.DataFrame:
             "Run: python -m src.pipeline.prepare_structured_data"
         )
 
-    df = pd.read_csv(resolved, dtype=str)
-    df.columns = [str(c).strip() for c in df.columns]
-    if "PatientenID" not in df.columns:
-        raise ValueError(f"structured_baseline.csv must contain 'PatientenID'. Found: {list(df.columns)}")
-    out = df.copy()
+    out = normalize_patient_id_column(pd.read_csv(resolved))
+    if "PatientenID" not in out.columns:
+        raise ValueError(f"structured_baseline.csv must contain 'PatientenID'. Found: {list(out.columns)}")
     out["PatientenID"] = _filter_valid_ids(out["PatientenID"])
     if out["PatientenID"].duplicated().any():
         out = out.drop_duplicates(subset=["PatientenID"], keep="first")
