@@ -164,6 +164,12 @@ MANUAL_REVIEW_DIR = ANALYSIS_DIR / "manual_review"
 # Patient-level validation aggregation (report-level predictions → patient matrix)
 PATIENT_LEVEL_ANALYSIS_DIR = ANALYSIS_DIR / "patient_level"
 PATIENT_REPORTTYPE_MATRIX_PATH = PATIENT_LEVEL_ANALYSIS_DIR / "patient_reporttype_matrix.csv"
+PATIENT_REPORTTYPE_MATRIX_PREVIEW_PNG = (
+    PATIENT_LEVEL_ANALYSIS_DIR / "patient_reporttype_matrix_preview.png"
+)
+PATIENT_REPORTTYPE_MATRIX_PREVIEW_PDF = (
+    PATIENT_LEVEL_ANALYSIS_DIR / "patient_reporttype_matrix_preview.pdf"
+)
 
 # Mixed manual validation sample (~100 patients)
 MANUAL_VALIDATION_DIR = ANALYSIS_DIR / "manual_validation"

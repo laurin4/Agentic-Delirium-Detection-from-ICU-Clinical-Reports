@@ -10,9 +10,12 @@ from pathlib import Path
 import pandas as pd
 
 from src.analysis.patient_reporttype_matrix import build_patient_reporttype_matrix
+from src.analysis.plot_patient_reporttype_matrix import plot_patient_reporttype_matrix_preview
 from src.pipeline.paths import (
     PATIENT_LEVEL_ANALYSIS_DIR,
     PATIENT_REPORTTYPE_MATRIX_PATH,
+    PATIENT_REPORTTYPE_MATRIX_PREVIEW_PDF,
+    PATIENT_REPORTTYPE_MATRIX_PREVIEW_PNG,
     PREDICTIONS_DIR,
     STRUCTURED_BASELINE_PATH,
 )
@@ -42,7 +45,14 @@ def main(
 
     n_pat = len(matrix)
     n_disc = int(matrix["discrepancy_model_vs_baseline"].sum()) if "discrepancy_model_vs_baseline" in matrix.columns else 0
+    preview_png = plot_patient_reporttype_matrix_preview(
+        matrix,
+        png_path=PATIENT_REPORTTYPE_MATRIX_PREVIEW_PNG,
+        pdf_path=PATIENT_REPORTTYPE_MATRIX_PREVIEW_PDF,
+    )
+
     print(f"Wrote patient report-type matrix: {output_path}")
+    print(f"Wrote matrix preview plot: {preview_png}")
     print(f"patient_count={n_pat} discrepancy_model_vs_baseline={n_disc}")
     print("Dokumentationsblatt rows excluded from aggregation (not in predictions).")
 

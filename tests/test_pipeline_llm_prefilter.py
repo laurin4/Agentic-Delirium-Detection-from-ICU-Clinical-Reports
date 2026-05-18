@@ -168,6 +168,8 @@ def test_prefilter_csv_schema_stable(monkeypatch, tmp_path):
     run_pipeline.main()
     df = pd.read_csv(pred_dir / "agent1_agent2_agent3_results_prompt.csv")
     assert tuple(df.columns) == _EXPECTED_COLUMNS
+    assert "bertyp" in df.columns
+    assert df["bertyp"].iloc[0] == "Verlaufseintrag"
 
 
 def test_haystack_hint_case_insensitive_delirium():

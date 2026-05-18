@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import traceback
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -21,6 +22,7 @@ from src.pipeline.paths import (
     SQLITE_PREDICTIONS_DB_PATH,
 )
 from src.agents.delirium_probability import delirium_probability_estimate
+from src.preprocessing.berichte_filters import normalize_bertyp
 from src.preprocessing.berichte_mapper import build_report_level_berichte_records
 from src.preprocessing.diagnosis_mapper import build_patient_level_report_records
 from src.preprocessing.evidence_extraction import (
@@ -50,6 +52,59 @@ NO_EVIDENCE_KONTEXT = "LLM übersprungen: keine regelbasierten Delir-Hinweise im
 NO_EVIDENCE_BE = "Kein Delir-Hinweis in regelbasierter Volltextsuche."
 
 _KLASSE_NULL_BE = "Keine ausreichenden Hinweise für ein dokumentiertes Delir."
+
+UNKNOWN_BERTYP = "unknown"
+
+
+def resolve_bertyp(report: dict) -> str:
+    """Normalized bertyp label for logging/CSV; empty/missing → ``unknown``."""
+    label = normalize_bertyp(report.get("bertyp", ""))
+    return label if label else UNKNOWN_BERTYP
+
+
+def _normalize_report_record_bertyp(record: dict) -> dict:
+    """Ensure each report dict carries a string ``bertyp`` field."""
+    out = dict(record)
+    out["bertyp"] = resolve_bertyp(out)
+    return out
+
+
+def _new_bertyp_stats() -> Dict[str, Dict[str, int]]:
+    return {"total": 0, "skipped": 0, "sent_to_llm": 0, "positives": 0}
+
+
+def accumulate_bertyp_stat(
+    stats: Dict[str, Dict[str, int]],
+    bertyp: str,
+    *,
+    skipped: bool,
+    failed: bool,
+    klasse: int,
+) -> None:
+    """Update per-bertyp counters for one processed report."""
+    key = bertyp or UNKNOWN_BERTYP
+    bucket = stats[key]
+    bucket["total"] += 1
+    if skipped:
+        bucket["skipped"] += 1
+    elif not failed:
+        bucket["sent_to_llm"] += 1
+    if int(klasse) == 1:
+        bucket["positives"] += 1
+
+
+def format_bertyp_summary_lines(stats: Dict[str, Dict[str, int]]) -> List[str]:
+    """Human-readable report-type summary lines for stdout."""
+    if not stats:
+        return ["Report type summary:", "  (no reports processed)"]
+    lines = ["Report type summary:"]
+    for bertyp in sorted(stats.keys()):
+        c = stats[bertyp]
+        lines.append(
+            f"  {bertyp}: total={c['total']}, sent_to_llm={c['sent_to_llm']}, "
+            f"skipped={c['skipped']}, positives={c['positives']}"
+        )
+    return lines
 
 
 def _bool_csv(b: bool) -> str:
@@ -158,6 +213,7 @@ def _load_txt_reports():
             {
                 "PatientenID": report_path.stem,
                 "bericht": report_path.name,
+                "bertyp": UNKNOWN_BERTYP,
                 "report_text": load_report(str(report_path)),
             }
         )
@@ -178,7 +234,9 @@ def _get_report_records():
         LOGGER.info("excluded_dokumentationsblatt_count=%d", excluded_db)
     elif INPUT_MODE == "diagnosis":
         # Legacy: Diagnosenliste-style CSV (synthetic mode only).
-        report_records = build_patient_level_report_records()
+        report_records = [
+            _normalize_report_record_bertyp(r) for r in build_patient_level_report_records()
+        ]
     elif INPUT_MODE == "txt":
         report_records = _load_txt_reports()
     else:
@@ -194,7 +252,7 @@ def _get_report_records():
         else:
             raise ValueError("MAX_REPORTS muss None oder eine positive Ganzzahl sein.")
 
-    return report_records
+    return [_normalize_report_record_bertyp(r) for r in report_records]
 
 
 def _get_output_path() -> Path:
@@ -231,6 +289,7 @@ def _compact_line(
     patient_id: str,
     ev: Dict[str, Any],
     *,
+    bertyp: str,
     status: str,
     klasse: Any,
     signal: str,
@@ -238,8 +297,9 @@ def _compact_line(
     decision_rule: str = "",
 ) -> str:
     n_snip = len(ev.get("evidence_snippets") or [])
+    bertyp_disp = bertyp or UNKNOWN_BERTYP
     line = (
-        f"Patient {idx}/{total} | ID={patient_id} | evidence={n_snip} | "
+        f"Patient {idx}/{total} | ID={patient_id} | bertyp={bertyp_disp} | evidence={n_snip} | "
         f"original={ev['original_report_text_length']} | llm={ev['llm_report_text_length']} | "
         f"method={ev['llm_text_reduction_method']} | klasse={klasse} | signal={signal} | status={status}"
     )
@@ -275,14 +335,16 @@ def _run_single_report(report: dict, idx: int, total: int) -> Tuple[dict, bool, 
         f"berichte_{patient_id}.txt" if INPUT_MODE == "berichte" else f"diagnosis_{patient_id}.txt"
     )
     report_name = str(report.get("bericht", default_bericht) or "").strip()
-    bertyp = str(report.get("bertyp", "") or "").strip()
+    bertyp = resolve_bertyp(report)
 
     ev = extract_delirium_evidence(full_report_text)
     snippets = ev.get("evidence_snippets") or []
 
     if not llm_should_receive_evidence(snippets):
         row = _prediction_row_no_evidence(ev, patient_id, report_name, bertyp=bertyp)
-        msg = _compact_line(idx, total, patient_id, ev, status="skipped", klasse=0, signal="niedrig")
+        msg = _compact_line(
+            idx, total, patient_id, ev, bertyp=bertyp, status="skipped", klasse=0, signal="niedrig"
+        )
         if DEBUG_VERBOSE:
             print(msg)
         else:
@@ -293,7 +355,9 @@ def _run_single_report(report: dict, idx: int, total: int) -> Tuple[dict, bool, 
     llm_text = ev["llm_report_text"]
 
     if DEBUG_VERBOSE:
-        print(_compact_line(idx, total, patient_id, ev, status="llm", klasse="n/a", signal="…"))
+        print(
+            _compact_line(idx, total, patient_id, ev, bertyp=bertyp, status="llm", klasse="n/a", signal="…")
+        )
         print("\n=== DEBUG LLM input (evidence bundle) ===")
         print(f"Patient: {patient_id} | len={len(llm_text)}")
         print(llm_text[:4000])
@@ -365,6 +429,7 @@ def _run_single_report(report: dict, idx: int, total: int) -> Tuple[dict, bool, 
                 total,
                 patient_id,
                 ev,
+                bertyp=bertyp,
                 status="success",
                 klasse=final_klasse,
                 signal=final_signal,
@@ -411,7 +476,7 @@ def _run_single_report(report: dict, idx: int, total: int) -> Tuple[dict, bool, 
         err = f"{type(exc).__name__}: {exc}"
         row = _prediction_row_pipeline_error(ev, patient_id, report_name, err, bertyp=bertyp)
         msg = _compact_line(
-            idx, total, patient_id, ev, status="failed", klasse=0, signal="niedrig"
+            idx, total, patient_id, ev, bertyp=bertyp, status="failed", klasse=0, signal="niedrig"
         )
         print(msg)
         if DEBUG_VERBOSE:
@@ -435,10 +500,18 @@ def main():
     n_k0 = n_k1 = 0
     sig_counts: Dict[str, int] = {}
     sum_orig = sum_llm = 0
+    bertyp_stats: Dict[str, Dict[str, int]] = defaultdict(_new_bertyp_stats)
 
     for i, report in enumerate(report_records, start=1):
         row_dict, skipped, failed = _run_single_report(report, i, total)
         rows.append(row_dict)
+        accumulate_bertyp_stat(
+            bertyp_stats,
+            str(row_dict.get("bertyp") or UNKNOWN_BERTYP),
+            skipped=skipped,
+            failed=failed,
+            klasse=int(row_dict.get("klasse") or 0),
+        )
         sum_orig += int(row_dict.get("original_report_text_length") or 0)
         sum_llm += int(row_dict.get("llm_report_text_length") or 0)
         k = int(row_dict.get("klasse") or 0)
@@ -477,6 +550,8 @@ def main():
     print(f"signalstaerke: {sig_counts}")
     print(f"avg_original_length={avg_orig:.1f}")
     print(f"avg_llm_input_length={avg_llm:.1f}")
+    for line in format_bertyp_summary_lines(dict(bertyp_stats)):
+        print(line)
 
     _assert_binary_klassen(rows)
 

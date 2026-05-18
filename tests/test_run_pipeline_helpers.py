@@ -5,7 +5,12 @@ undefined names (which compileall does not catch, but a runtime call does).
 """
 
 from src.pipeline.run_pipeline import (
+    UNKNOWN_BERTYP,
     _assert_binary_klassen,
+    _compact_line,
+    accumulate_bertyp_stat,
+    format_bertyp_summary_lines,
+    resolve_bertyp,
     _get_model_named_output_path,
     _get_output_path,
     _sanitize_provider_model_slug,
@@ -40,3 +45,40 @@ def test_assert_binary_klassen_rejects_invalid():
         _assert_binary_klassen([{"klasse": 2}])
     with pytest.raises(ValueError):
         _assert_binary_klassen([{"klasse": "abc"}])
+
+
+def test_resolve_bertyp_unknown_when_missing():
+    assert resolve_bertyp({}) == UNKNOWN_BERTYP
+    assert resolve_bertyp({"bertyp": ""}) == UNKNOWN_BERTYP
+    assert resolve_bertyp({"bertyp": "  Verlaufseintrag  "}) == "Verlaufseintrag"
+
+
+def test_compact_line_includes_bertyp():
+    ev = {
+        "evidence_snippets": [],
+        "original_report_text_length": 100,
+        "llm_report_text_length": 0,
+        "llm_text_reduction_method": "no_evidence_prefilter_skip",
+    }
+    line = _compact_line(
+        1, 3, "p1", ev, bertyp="Austrittsbericht", status="skipped", klasse=0, signal="niedrig"
+    )
+    assert "bertyp=Austrittsbericht" in line
+    assert "ID=p1" in line
+
+
+def test_bertyp_summary_counts():
+    from collections import defaultdict
+
+    from src.pipeline.run_pipeline import _new_bertyp_stats
+
+    stats = defaultdict(_new_bertyp_stats)
+    accumulate_bertyp_stat(stats, "Verlaufseintrag", skipped=True, failed=False, klasse=0)
+    accumulate_bertyp_stat(stats, "Verlaufseintrag", skipped=False, failed=False, klasse=1)
+    accumulate_bertyp_stat(stats, "Austrittsbericht", skipped=False, failed=False, klasse=1)
+    accumulate_bertyp_stat(stats, "Austrittsbericht", skipped=False, failed=True, klasse=0)
+
+    lines = format_bertyp_summary_lines(dict(stats))
+    text = "\n".join(lines)
+    assert "Verlaufseintrag: total=2, sent_to_llm=1, skipped=1, positives=1" in text
+    assert "Austrittsbericht: total=2, sent_to_llm=1, skipped=0, positives=1" in text

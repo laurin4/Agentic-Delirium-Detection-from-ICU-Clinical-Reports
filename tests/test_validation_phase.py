@@ -212,8 +212,13 @@ def test_create_patient_matrix_module(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "PATIENT_REPORTTYPE_MATRIX_PATH", out)
     monkeypatch.setattr(mod, "PATIENT_LEVEL_ANALYSIS_DIR", tmp_path)
 
+    png = tmp_path / "matrix_preview.png"
+    monkeypatch.setattr(mod, "PATIENT_REPORTTYPE_MATRIX_PREVIEW_PNG", png)
+    monkeypatch.setenv("MATRIX_PREVIEW_PDF", "0")
+
     mod.main(predictions_path=pred, baseline_path=base, output_path=out)
     assert out.exists()
+    assert png.exists()
     df = pd.read_csv(out)
     assert "discrepancy_model_vs_baseline" in df.columns
     assert int(df.loc[0, "discrepancy_model_vs_baseline"]) == 1
