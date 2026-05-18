@@ -98,11 +98,13 @@ python3 -m src.analysis.run_analysis
 python3 -m src.analysis.run_validation_suite
 python3 -m src.analysis.create_patient_reporttype_matrix
 python3 -m src.analysis.export_manual_validation_sample
+python3 -m src.analysis.export_manual_annotation_sheet
 ```
 
 ## Validation outputs (patient-level)
 - `outputs/analysis/patient_level/patient_reporttype_matrix.csv` — per-patient report-type positives + `baseline_composite` discrepancies.
 - `outputs/analysis/manual_validation/manual_validation_sample.csv` — ~100 mixed patients for manual review (binary `manual_ground_truth`).
+- `outputs/analysis/manual_validation/manual_annotation_sheet.csv` — one row per report for report-level manual GT (`manual_report_ground_truth`); see `manual_annotation_sheet_report.txt`.
 - Exploratory: `delir_probability_estimate` (0–100) in predictions CSV; not used for final `klasse`.
 
 ## Output Structure

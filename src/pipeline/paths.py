@@ -174,6 +174,10 @@ PATIENT_REPORTTYPE_MATRIX_PREVIEW_PDF = (
 # Mixed manual validation sample (~100 patients)
 MANUAL_VALIDATION_DIR = ANALYSIS_DIR / "manual_validation"
 MANUAL_VALIDATION_SAMPLE_PATH = MANUAL_VALIDATION_DIR / "manual_validation_sample.csv"
+MANUAL_ANNOTATION_SHEET_PATH = MANUAL_VALIDATION_DIR / "manual_annotation_sheet.csv"
+MANUAL_ANNOTATION_SHEET_REPORT_PATH = (
+    MANUAL_VALIDATION_DIR / "manual_annotation_sheet_report.txt"
+)
 
 # Keyword / term association with predictions and baselines
 KEYWORD_ANALYSIS_DIR = ANALYSIS_DIR / "keyword_analysis"
