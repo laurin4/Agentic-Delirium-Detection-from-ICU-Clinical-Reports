@@ -24,6 +24,7 @@ def _minimal_baseline_row(pid: str) -> dict:
         "baseline_icdsc_0": 1,
         "baseline_icdsc_1_to_3": 0,
         "baseline_icdsc_ge_4_grouped": 0,
+        "baseline_composite": 0,
     }
 
 

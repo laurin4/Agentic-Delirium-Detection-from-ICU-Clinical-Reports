@@ -10,6 +10,8 @@
 - **Agent 1**: extraction (`src/agents/extraction.py`) — JSON signal buckets from the **evidence bundle** (not the full report).
 - **Agent 2**: interpretation (rule/prompt; default prompt) (`src/agents/interpretation.py`, `src/agents/interpretation_llm.py`) — assigns **signalstaerke** (`niedrig` / `mittel` / `hoch`).
 - **Agent 3**: classification (`src/agents/classification.py`) — **binary** `klasse` 0/1 from signal strength (`mittel`/`hoch` → 1, `niedrig` → 0).
+- **Prediction unit**: one row per **report** in `Berichte.csv` (report-level). Patient-level validation uses `patient_reporttype_matrix.csv`.
+- **Excluded from processing** (raw CSV unchanged): `bertyp == Dokumentationsblatt` — logged as `excluded_dokumentationsblatt_count`.
 
 ## Evidence extraction (scientific / scalability)
 - **Binary output only**: `klasse` ∈ {0, 1}. There is **no** multiclass prediction head.
@@ -58,7 +60,8 @@ Optional synthetic mode (`DATA_MODE = "synthetic"`):
 - **Baseline construction** (`prepare_structured_data`): ICD + ICDSC only → `structured_baseline.csv`.
 - **ICD-10 delirium** (`has_delir_icd10` / `baseline_icd10`): main diagnosis `icd_hd == 1` and code in `F05.0`, `F05.8`, `F05.9` (excludes `F05.1`).
 - **ICDSC** (`max_icdsc`): from `ICDSC_Max`; thresholds `baseline_icdsc_ge_*`, `baseline_icdsc_0`, `baseline_icdsc_1_to_3`, `baseline_icdsc_ge_4_grouped`.
-- **Legacy** multiclass `baseline_reference_class` may still be written; primary evaluation uses binary baselines.
+- **Primary validation baseline** `baseline_composite` = `(baseline_icdsc_ge_4 == 1) OR (baseline_icd10 == 1)`.
+- **Legacy** multiclass `baseline_reference_class` may still be written; primary evaluation uses binary baselines including `baseline_composite`.
 - **Deprecated:** `Diagnosenliste.csv` / `diagnosis_mapper` — not used in production. `Berichte.csv` columns `diag`, `epikrise`, `jetziges_leiden`, `prozedere` map to report sections `[Diagnosen]`, `[Epikrise]`, etc.
 - **Exploration** (`run_exploration.py`): Berichte + ICD + ICDSC + structured baseline + predictions; no crash when legacy diagnosis path is absent.
 
@@ -93,7 +96,14 @@ python3 -m src.validation.validate_inputs
 python3 -m src.analysis.run_exploration
 python3 -m src.analysis.run_analysis
 python3 -m src.analysis.run_validation_suite
+python3 -m src.analysis.create_patient_reporttype_matrix
+python3 -m src.analysis.export_manual_validation_sample
 ```
+
+## Validation outputs (patient-level)
+- `outputs/analysis/patient_level/patient_reporttype_matrix.csv` — per-patient report-type positives + `baseline_composite` discrepancies.
+- `outputs/analysis/manual_validation/manual_validation_sample.csv` — ~100 mixed patients for manual review (binary `manual_ground_truth`).
+- Exploratory: `delir_probability_estimate` (0–100) in predictions CSV; not used for final `klasse`.
 
 ## Output Structure
 - `outputs/baseline/` → structured baseline tables

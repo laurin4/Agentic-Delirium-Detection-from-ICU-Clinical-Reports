@@ -161,6 +161,14 @@ ERROR_REVIEW_PLOTS_DIR = ERROR_REVIEW_DIR / "plots"
 # Manual scientific review (TP/TN/FP/FN samples per primary baseline)
 MANUAL_REVIEW_DIR = ANALYSIS_DIR / "manual_review"
 
+# Patient-level validation aggregation (report-level predictions → patient matrix)
+PATIENT_LEVEL_ANALYSIS_DIR = ANALYSIS_DIR / "patient_level"
+PATIENT_REPORTTYPE_MATRIX_PATH = PATIENT_LEVEL_ANALYSIS_DIR / "patient_reporttype_matrix.csv"
+
+# Mixed manual validation sample (~100 patients)
+MANUAL_VALIDATION_DIR = ANALYSIS_DIR / "manual_validation"
+MANUAL_VALIDATION_SAMPLE_PATH = MANUAL_VALIDATION_DIR / "manual_validation_sample.csv"
+
 # Keyword / term association with predictions and baselines
 KEYWORD_ANALYSIS_DIR = ANALYSIS_DIR / "keyword_analysis"
 KEYWORD_ANALYSIS_TABLES_DIR = KEYWORD_ANALYSIS_DIR / "tables"

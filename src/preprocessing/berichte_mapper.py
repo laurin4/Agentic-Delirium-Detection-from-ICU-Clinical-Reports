@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
 from src.pipeline.paths import BERICHTE_INPUT_PATH
+from src.preprocessing.berichte_filters import exclude_dokumentationsblatt, normalize_bertyp
 
 LOGGER = logging.getLogger(__name__)
 
@@ -86,6 +87,7 @@ def build_patient_level_berichte_reports(input_path: Optional[Path] = None) -> p
     csv_path = input_path if input_path is not None else BERICHTE_INPUT_PATH
 
     df = load_berichte_dataframe(csv_path)
+    df, _ = exclude_dokumentationsblatt(df)
 
     if "PatientID" not in df.columns:
         raise ValueError(f"Berichte.csv must contain column 'PatientID'. Found columns: {list(df.columns)}")
@@ -142,3 +144,59 @@ def build_patient_level_berichte_reports(input_path: Optional[Path] = None) -> p
 def build_patient_level_berichte_report_records(input_path: Optional[Path] = None) -> List[dict]:
     df = build_patient_level_berichte_reports(input_path)
     return df.to_dict(orient="records")
+
+
+def build_report_level_berichte_records(
+    input_path: Optional[Path] = None,
+    *,
+    apply_dokumentationsblatt_exclusion: bool = True,
+) -> Tuple[List[dict], int]:
+    """
+    One pipeline record per Berichte.csv row (report-level prediction).
+
+    Excludes ``bertyp == Dokumentationsblatt`` when *apply_dokumentationsblatt_exclusion* is True.
+    Returns (records, excluded_dokumentationsblatt_count).
+    """
+    csv_path = input_path if input_path is not None else BERICHTE_INPUT_PATH
+    df = load_berichte_dataframe(csv_path)
+
+    if "PatientID" not in df.columns:
+        raise ValueError(f"Berichte.csv must contain column 'PatientID'. Found columns: {list(df.columns)}")
+
+    excluded_count = 0
+    if apply_dokumentationsblatt_exclusion:
+        df, excluded_count = exclude_dokumentationsblatt(df)
+
+    for name in OPTIONAL_COLUMNS:
+        if name not in df.columns:
+            df[name] = ""
+
+    df["PatientID"] = df["PatientID"].astype(str).str.strip()
+    df["bertyp"] = df["bertyp"].map(normalize_bertyp) if "bertyp" in df.columns else ""
+
+    records: List[dict] = []
+    for idx, row in df.iterrows():
+        pid = _normalize_str(row.get("PatientID", ""))
+        if not pid or pid.lower() == "nan":
+            continue
+        row_dict = {c: row.get(c, "") for c in df.columns}
+        blk = _row_blocks(row_dict)
+        if not blk:
+            continue
+        bername = _normalize_str(row.get("bername", ""))
+        bertyp = normalize_bertyp(row.get("bertyp", ""))
+        if bername:
+            bericht_id = bername
+        else:
+            bericht_id = f"{bertyp or 'bericht'}_{pid}_{idx}"
+
+        records.append(
+            {
+                "PatientenID": pid,
+                "bericht": bericht_id,
+                "bertyp": bertyp,
+                "report_text": blk,
+            }
+        )
+
+    return records, excluded_count

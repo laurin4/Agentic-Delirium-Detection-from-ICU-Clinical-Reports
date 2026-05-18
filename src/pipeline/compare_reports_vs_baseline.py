@@ -21,6 +21,7 @@ REPORT_PREDICTIONS_PATH = PREDICTIONS_DIR / "agent1_agent2_agent3_results_prompt
 # Columns that must be present on every evaluable merged row (from structured baseline).
 # Missing values indicate no baseline row or incomplete baseline data for that PatientenID.
 REQUIRED_BASELINE_COLUMNS = [
+    "baseline_composite",
     "has_delir_icd10",
     "max_icdsc",
     "baseline_icd10",
@@ -178,6 +179,13 @@ def run_compare(
 
     evaluable["baseline_icd10"] = pd.to_numeric(evaluable["baseline_icd10"], errors="coerce").fillna(0).astype(int)
     evaluable["agreement_report_vs_baseline_icd10"] = evaluable["prediction_binary"] == evaluable["baseline_icd10"]
+    if "baseline_composite" in evaluable.columns:
+        evaluable["baseline_composite"] = (
+            pd.to_numeric(evaluable["baseline_composite"], errors="coerce").fillna(0).astype(int)
+        )
+        evaluable["agreement_report_vs_baseline_composite"] = (
+            evaluable["prediction_binary"] == evaluable["baseline_composite"]
+        )
 
     # Legacy columns kept for backwards compatibility with older analyses.
     evaluable["agreement_report_vs_icdsc"] = evaluable["agreement_report_vs_baseline_icdsc_ge_4"]

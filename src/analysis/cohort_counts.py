@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional, Set, Tuple
 import pandas as pd
 
 from src.pipeline.paths import BERICHTE_INPUT_PATH, STRUCTURED_BASELINE_PATH
+from src.preprocessing.berichte_filters import exclude_dokumentationsblatt
 
 CURRENT_COHORT_METRIC_NAMES: Tuple[str, ...] = (
     "berichte_rows",
@@ -61,6 +62,11 @@ def load_berichte_rows(path: Optional[Path] = None) -> pd.DataFrame:
         raise ValueError(f"Berichte.csv must contain 'PatientID'. Found: {list(df.columns)}")
     out = df.copy()
     out["PatientID"] = _filter_valid_ids(out["PatientID"])
+    out, excluded = exclude_dokumentationsblatt(out)
+    if excluded:
+        import logging
+
+        logging.getLogger(__name__).info("excluded_dokumentationsblatt_count=%d", excluded)
     return out
 
 

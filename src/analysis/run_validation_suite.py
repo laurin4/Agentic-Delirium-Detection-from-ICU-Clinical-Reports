@@ -29,6 +29,8 @@ def _run_module(mod: str) -> None:
 def main() -> None:
     _run_module("src.pipeline.compare_reports_vs_baseline")
     _run_module("src.pipeline.evaluate_predictions")
+    _run_module("src.analysis.create_patient_reporttype_matrix")
+    _run_module("src.analysis.export_manual_validation_sample")
     _run_module("src.analysis.run_error_review_export")
 
 

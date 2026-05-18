@@ -20,6 +20,12 @@ from src.pipeline.schema_normalize import (
 )
 
 
+def test_baseline_composite_icdsc_ge4_or_icd10():
+    df = pd.DataFrame({"has_delir_icd10": [0, 1, 0], "max_icdsc": [0, 2, 5]})
+    out = add_binary_baselines(df)
+    assert list(out["baseline_composite"]) == [0, 1, 1]
+
+
 def test_icdsc_patient_level_icdsc_max_and_thresholds():
     df = pd.DataFrame({"PatientID": ["p1", "p2", "p3"], "ICDSC_Max": [0, 3, 5]})
     out = prepare_icdsc(df).sort_values("PatientenID").reset_index(drop=True)

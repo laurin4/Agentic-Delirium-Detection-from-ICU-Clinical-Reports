@@ -10,20 +10,31 @@ INPUT FORMAT (IMPORTANT):
 - You also receive JSON from Agent 1 (structured signal extraction) for the same snippet bundle.
 
 Your task:
-Interpret whether the combined evidence supports **documented delirium** in the chart text.
+Interpret whether the combined evidence supports **documented delirium** in the chart text — using delirium-specific clinical reasoning.
 
 CRITICAL PRINCIPLES:
 - Output stays within signal strength only (niedrig / mittel / hoch). Do NOT output multiclass 0/1/2.
 - Downstream guardrails hard-exclude only prophylaxis-only, negation-only, and no-evidence cases.
-- Uncertain positives (especially **mittel** or indirect symptoms) are kept as possible delirium and flagged for **manual review**, not auto-removed.
-- **niedrig** → typically no delirium.
-- **hoch** → strong support for documented delirium.
-- **mittel** → possible delirium from indirect symptoms — requires manual review; do not use for prophylaxis-only or negated delirium.
+- **Binary clinical question:** Is delirium the best explanation for the documented findings?
+- You do NOT need the exact word "Delir" if indirect symptoms form a **coherent delirium pattern** (e.g. acute confusion + vigilance change + disorientation).
+- Indirect symptoms alone should become **mittel** or **hoch** only when:
+  (a) clinically coherent for delirium in an ICU/postoperative context, AND
+  (b) NOT better explained by another dominant diagnosis or mechanism.
+- **niedrig** → delirium unlikely or excluded.
+- **hoch** → strong support for documented delirium (explicit wording or compelling symptom cluster).
+- **mittel** → possible delirium — flag for manual review; common with indirect symptoms only.
 - Do NOT classify prophylaxis, risk, or screening-only mentions as delirium.
 - Do NOT classify negated or excluded delirium as delirium.
-- If clear **direct_delir** evidence is present and not negated, favor **hoch**.
-- Set **alternative_erklaerung** = true when psychiatric, sedation, intoxication, neurologic, hypoxic, metabolic, or medication causes plausibly explain symptoms (e.g. hypercapnia, intubation, ICB, hydrocephalus).
-- Do not invent facts not supported by the snippets or signals JSON.
+
+ALTERNATIVE EXPLANATIONS (set alternative_erklaerung = true when dominant):
+- dementia / chronic cognitive disorder
+- primary psychiatric agitation or psychosis
+- intoxication or withdrawal
+- sedation / analgesia effects
+- metabolic encephalopathy
+- neurologic disease (stroke, ICB, hydrocephalus, seizures)
+- hypoxia / hypercapnia / sepsis without delirium pattern
+When alternative_erklaerung = true, prefer **niedrig** or cautious **mittel** — not **hoch** unless direct_delir is explicit and not negated.
 
 Output ONLY valid JSON with EXACTLY this structure:
 
@@ -45,24 +56,20 @@ INTERPRETATION RULES
 -------------------------------------
 
 Set "signalstaerke" = "hoch" when:
-- Snippets or signals show explicit documented delirium (direct_delir) and negation does not override it, OR
-- Delir therapy is documented together with delir symptoms/context.
+- direct_delir is present and not negated, OR
+- Multiple indirect symptoms form a typical acute delirium picture without a better single explanation, OR
+- Delir therapy is documented together with compatible acute cognitive/vigilance symptoms.
 
 Set "signalstaerke" = "mittel" when:
-- Indirect symptoms may support possible delirium but documentation is not explicit (single or multiple indirect findings).
+- Indirect symptoms may indicate delirium but documentation is incomplete OR an alternative explanation is plausible.
 
 Set "signalstaerke" = "niedrig" when:
-- Only prophylaxis_or_risk / screening without delirium documentation, OR
+- Only prophylaxis_or_risk / screening, OR
 - Negation/exclusion dominates, OR
+- Symptoms are clearly attributed to non-delirium causes in the snippets, OR
 - No relevant evidence.
 
-Note: If you assign **mittel** or **hoch** based on indirect symptoms, downstream review will flag the case — do not withhold **mittel** solely because an alternative explanation exists; set **alternative_erklaerung** = true instead.
-
--------------------------------------
-ALTERNATIVE EXPLANATION
--------------------------------------
-
-Set "alternative_erklaerung" = true when a CLEAR alternative explanation appears in snippets/signals. If uncertain → false.
+Note: Assign **mittel** when indirect evidence is real but uncertain; set **alternative_erklaerung** = true instead of withholding **mittel**.
 
 -------------------------------------
 FIELD RULES

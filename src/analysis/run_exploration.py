@@ -41,6 +41,7 @@ from src.pipeline.paths import (
     ICDSC_PATH,
     LEGACY_DIAGNOSIS_INPUT_PATH,
     PATIENT_LEVEL_REPORTS_PATH,
+    PATIENT_REPORTTYPE_MATRIX_PATH,
     PREDICTIONS_DIR,
     REPORT_VS_BASELINE_PATH,
     STRUCTURED_BASELINE_PATH,
@@ -48,6 +49,7 @@ from src.pipeline.paths import (
 from src.analysis.cohort_counts import load_and_compute_current_cohort_counts, print_current_cohort_counts
 from src.pipeline.schema_normalize import normalize_icd10_source_columns, normalize_icdsc_source_columns
 from src.pipeline.tabular_io import read_tabular
+from src.preprocessing.berichte_filters import exclude_dokumentationsblatt, normalize_bertyp
 from src.preprocessing.berichte_mapper import build_patient_level_berichte_reports, load_berichte_dataframe
 from src.preprocessing.diagnosis_mapper import load_diagnosis_dataframe
 
@@ -139,7 +141,11 @@ def _load_raw_berichte_optional() -> pd.DataFrame:
     if not BERICHTE_INPUT_PATH.exists():
         return pd.DataFrame()
     try:
-        return _normalize_pid(load_berichte_dataframe(BERICHTE_INPUT_PATH))
+        df = _normalize_pid(load_berichte_dataframe(BERICHTE_INPUT_PATH))
+        df, excluded = exclude_dokumentationsblatt(df)
+        if excluded:
+            print(f"excluded_dokumentationsblatt_count={excluded}")
+        return df
     except FileNotFoundError:
         return pd.DataFrame()
 
@@ -652,7 +658,67 @@ def _write_exploration_summary(
     lines.append("Artifacts")
     lines.append(f"- tables: {EXPLORATION_TABLES_DIR}")
     lines.append(f"- plots: {EXPLORATION_PLOTS_DIR}")
+    lines.append("")
+    lines.append("Processing note: bertyp == Dokumentationsblatt excluded from exploration counts/plots.")
     EXPLORATION_REPORT_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _plot_validation_exploration_charts(
+    raw_berichte: pd.DataFrame,
+    baseline: pd.DataFrame,
+    predictions: pd.DataFrame,
+) -> None:
+    """Report-type and baseline distributions for validation-oriented exploration."""
+    if not raw_berichte.empty and "bertyp" in raw_berichte.columns:
+        vc = raw_berichte["bertyp"].map(normalize_bertyp).value_counts()
+        fig, ax = plt.subplots(figsize=(9, 5))
+        ax.bar(vc.index.astype(str), vc.values.astype(int), color="#2563eb")
+        ax.set_title("Report type distribution (Dokumentationsblatt excluded)")
+        ax.set_ylabel("Row count")
+        ax.tick_params(axis="x", rotation=25)
+        fig.tight_layout()
+        fig.savefig(EXPLORATION_PLOTS_DIR / "report_type_distribution.png", dpi=120)
+        plt.close(fig)
+
+    if not predictions.empty and "bertyp" in predictions.columns and "klasse" in predictions.columns:
+        pred = predictions.copy()
+        pred["bertyp"] = pred["bertyp"].map(normalize_bertyp)
+        pred["klasse"] = pd.to_numeric(pred["klasse"], errors="coerce").fillna(0).astype(int)
+        rates = pred.groupby("bertyp")["klasse"].mean().sort_values(ascending=False)
+        fig, ax = plt.subplots(figsize=(9, 5))
+        ax.bar(rates.index.astype(str), (rates * 100).values, color="#16a34a")
+        ax.set_title("Positive klasse rate by report type (report-level)")
+        ax.set_ylabel("Percent klasse=1")
+        ax.tick_params(axis="x", rotation=25)
+        fig.tight_layout()
+        fig.savefig(EXPLORATION_PLOTS_DIR / "report_type_positive_rates.png", dpi=120)
+        plt.close(fig)
+
+    if not baseline.empty and "baseline_composite" in baseline.columns:
+        vc = pd.to_numeric(baseline["baseline_composite"], errors="coerce").fillna(0).astype(int).value_counts()
+        fig, ax = plt.subplots(figsize=(5, 4))
+        ax.bar(["0", "1"], [int(vc.get(0, 0)), int(vc.get(1, 0))], color=["#64748b", "#dc2626"])
+        ax.set_title("Composite baseline distribution (patient-level)")
+        ax.set_ylabel("Patients")
+        fig.tight_layout()
+        fig.savefig(EXPLORATION_PLOTS_DIR / "composite_baseline_distribution.png", dpi=120)
+        plt.close(fig)
+
+    if not predictions.empty and "manual_review_candidate" in predictions.columns:
+        s = predictions["manual_review_candidate"].astype(str).str.strip().str.lower()
+        n_yes = int(s.isin(("1", "true", "yes")).sum())
+        n_no = len(s) - n_yes
+        fig, ax = plt.subplots(figsize=(5, 4))
+        ax.bar(["no", "yes"], [n_no, n_yes], color=["#94a3b8", "#f59e0b"])
+        ax.set_title("manual_review_candidate (report-level)")
+        ax.set_ylabel("Reports")
+        fig.tight_layout()
+        fig.savefig(EXPLORATION_PLOTS_DIR / "manual_review_candidate_distribution.png", dpi=120)
+        plt.close(fig)
+
+    if PATIENT_REPORTTYPE_MATRIX_PATH.exists():
+        matrix = pd.read_csv(PATIENT_REPORTTYPE_MATRIX_PATH)
+        matrix.to_csv(EXPLORATION_TABLES_DIR / "patient_reporttype_matrix_summary.csv", index=False)
 
 
 def main() -> None:
@@ -691,6 +757,7 @@ def main() -> None:
     top_delir_diagnoses = _plot_delir_diagnoses(reports, EXPLORATION_TABLES_DIR)
     signal_freq = _plot_signal_category_frequencies(predictions, EXPLORATION_TABLES_DIR)
     _plot_class_distribution_if_available(predictions)
+    _plot_validation_exploration_charts(raw_berichte, baseline, predictions)
     _write_optional_token_frequency(reports)
     _write_exploration_summary(
         icd10,

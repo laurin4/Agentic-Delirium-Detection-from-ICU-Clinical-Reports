@@ -20,7 +20,8 @@ from src.pipeline.paths import (
     MAX_REPORTS,
     SQLITE_PREDICTIONS_DB_PATH,
 )
-from src.preprocessing.berichte_mapper import build_patient_level_berichte_report_records
+from src.agents.delirium_probability import delirium_probability_estimate
+from src.preprocessing.berichte_mapper import build_report_level_berichte_records
 from src.preprocessing.diagnosis_mapper import build_patient_level_report_records
 from src.preprocessing.evidence_extraction import (
     evidence_snippets_json_for_csv,
@@ -81,6 +82,7 @@ def _prediction_row_no_evidence(
     ev: Dict[str, Any],
     patient_id: str,
     report_name: str,
+    bertyp: str = "",
 ) -> Dict[str, Any]:
     guard = apply_clinical_decision_guardrails(
         {"signalstaerke": "niedrig", "kontext": NO_EVIDENCE_KONTEXT, "alternative_erklaerung": False, "begruendung": []},
@@ -88,10 +90,17 @@ def _prediction_row_no_evidence(
         ev,
         llm_skipped=True,
     )
+    prob = delirium_probability_estimate(
+        "niedrig",
+        0,
+        decision_rule_applied=str(guard.get("decision_rule_applied", "")),
+    )
     return {
         "PatientenID": patient_id,
         "bericht": report_name,
+        "bertyp": bertyp,
         **_base_evidence_metadata(ev),
+        "delir_probability_estimate": prob,
         **_guardrail_fields(guard),
         "llm_skipped_by_prefilter": True,
         "anzahl_treffer": 0,
@@ -112,11 +121,14 @@ def _prediction_row_pipeline_error(
     patient_id: str,
     report_name: str,
     err: str,
+    bertyp: str = "",
 ) -> Dict[str, Any]:
     return {
         "PatientenID": patient_id,
         "bericht": report_name,
+        "bertyp": bertyp,
         **_base_evidence_metadata(ev),
+        "delir_probability_estimate": 0,
         "llm_skipped_by_prefilter": False,
         "anzahl_treffer": 0,
         "delir_signale": "",
@@ -161,7 +173,9 @@ def _get_report_records():
                 "Expected data/raw/Berichte.csv (semicolon-separated). "
                 "Legacy INPUT_MODE='diagnosis' requires synthetic DATA_MODE and synthetic_diagnoses.csv."
             )
-        report_records = build_patient_level_berichte_report_records()
+        report_records, excluded_db = build_report_level_berichte_records()
+        print(f"excluded_dokumentationsblatt_count={excluded_db}")
+        LOGGER.info("excluded_dokumentationsblatt_count=%d", excluded_db)
     elif INPUT_MODE == "diagnosis":
         # Legacy: Diagnosenliste-style CSV (synthetic mode only).
         report_records = build_patient_level_report_records()
@@ -261,12 +275,13 @@ def _run_single_report(report: dict, idx: int, total: int) -> Tuple[dict, bool, 
         f"berichte_{patient_id}.txt" if INPUT_MODE == "berichte" else f"diagnosis_{patient_id}.txt"
     )
     report_name = str(report.get("bericht", default_bericht) or "").strip()
+    bertyp = str(report.get("bertyp", "") or "").strip()
 
     ev = extract_delirium_evidence(full_report_text)
     snippets = ev.get("evidence_snippets") or []
 
     if not llm_should_receive_evidence(snippets):
-        row = _prediction_row_no_evidence(ev, patient_id, report_name)
+        row = _prediction_row_no_evidence(ev, patient_id, report_name, bertyp=bertyp)
         msg = _compact_line(idx, total, patient_id, ev, status="skipped", klasse=0, signal="niedrig")
         if DEBUG_VERBOSE:
             print(msg)
@@ -361,15 +376,24 @@ def _run_single_report(report: dict, idx: int, total: int) -> Tuple[dict, bool, 
                 _print_evidence_preview(ev)
             LOGGER.info(msg)
 
+        prob = delirium_probability_estimate(
+            final_signal,
+            final_klasse,
+            manual_review_candidate=bool(guard.get("manual_review_candidate")),
+            decision_rule_applied=str(guard.get("decision_rule_applied", "")),
+            has_direct_delir_evidence=bool(ev.get("has_direct_delir_evidence")),
+        )
         row: Dict[str, Any] = {
             "PatientenID": patient_id,
             "bericht": report_name,
+            "bertyp": bertyp,
             **_base_evidence_metadata(ev),
             **_guardrail_fields(guard),
             "llm_skipped_by_prefilter": False,
             "anzahl_treffer": len(hits),
             "delir_signale": " | ".join(hits),
             "signalstaerke": final_signal,
+            "delir_probability_estimate": prob,
             "kontext": final_kontext,
             "alternative_erklaerung": guard.get("alternative_erklaerung", interpretation["alternative_erklaerung"]),
             "alternative_erklaerung_keywords": " | ".join(
@@ -385,7 +409,7 @@ def _run_single_report(report: dict, idx: int, total: int) -> Tuple[dict, bool, 
     except Exception as exc:
         LOGGER.exception("Pipeline failure patient=%s", patient_id)
         err = f"{type(exc).__name__}: {exc}"
-        row = _prediction_row_pipeline_error(ev, patient_id, report_name, err)
+        row = _prediction_row_pipeline_error(ev, patient_id, report_name, err, bertyp=bertyp)
         msg = _compact_line(
             idx, total, patient_id, ev, status="failed", klasse=0, signal="niedrig"
         )
@@ -459,6 +483,7 @@ def main():
     fieldnames = [
         "PatientenID",
         "bericht",
+        "bertyp",
         "original_report_text_length",
         "llm_report_text_length",
         "llm_text_reduction_method",
@@ -475,6 +500,7 @@ def main():
         "delir_signale",
         "evidence_snippets",
         "signalstaerke",
+        "delir_probability_estimate",
         "kontext",
         "alternative_erklaerung",
         "alternative_erklaerung_keywords",

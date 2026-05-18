@@ -117,6 +117,7 @@ def test_prefilter_calls_llm_when_delirium_present(monkeypatch, tmp_path):
 _EXPECTED_COLUMNS = (
     "PatientenID",
     "bericht",
+    "bertyp",
     "original_report_text_length",
     "llm_report_text_length",
     "llm_text_reduction_method",
@@ -133,6 +134,7 @@ _EXPECTED_COLUMNS = (
     "delir_signale",
     "evidence_snippets",
     "signalstaerke",
+    "delir_probability_estimate",
     "kontext",
     "alternative_erklaerung",
     "alternative_erklaerung_keywords",
@@ -158,6 +160,7 @@ def test_prefilter_csv_schema_stable(monkeypatch, tmp_path):
             {
                 "PatientenID": "p_s",
                 "bericht": "z.txt",
+                "bertyp": "Verlaufseintrag",
                 "report_text": "Unauffälliger Verlauf.",
             }
         ],

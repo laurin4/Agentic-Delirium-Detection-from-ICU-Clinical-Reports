@@ -767,6 +767,7 @@ def main() -> None:
 
     report_lines = [
         "Data coverage analysis (pre-model, current final data)",
+        "  Dokumentationsblatt (bertyp) rows excluded from Berichte counts; raw CSV unchanged.",
         "",
         f"Berichte path: {berichte_path.resolve()}",
         f"Baseline path: {baseline_path.resolve()}",

@@ -143,6 +143,9 @@ def add_binary_baselines(df: pd.DataFrame) -> pd.DataFrame:
         (df["max_icdsc"] >= 1) & (df["max_icdsc"] <= 3)
     ).astype(int)
     df["baseline_icdsc_ge_4_grouped"] = (df["max_icdsc"] >= 4).astype(int)
+    df["baseline_composite"] = (
+        (df["baseline_icdsc_ge_4"] == 1) | (df["baseline_icd10"] == 1)
+    ).astype(int)
     return df
 
 

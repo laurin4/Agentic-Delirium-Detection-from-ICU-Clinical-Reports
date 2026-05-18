@@ -18,7 +18,11 @@ from src.pipeline.paths import MANUAL_REVIEW_DIR, REPORT_VS_BASELINE_PATH
 
 LOGGER = logging.getLogger(__name__)
 
-PRIMARY_BASELINES: Tuple[str, ...] = ("baseline_icd10", "baseline_icdsc_ge_4")
+PRIMARY_BASELINES: Tuple[str, ...] = (
+    "baseline_composite",
+    "baseline_icd10",
+    "baseline_icdsc_ge_4",
+)
 
 # Source columns in stable order (subset present in comparison CSV)
 DATA_COLUMN_ORDER: Sequence[str] = (

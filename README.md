@@ -148,11 +148,13 @@ From the project root (`delirium_project/`):
 
 ```bash
 python -m src.pipeline.prepare_structured_data
-python -m src.analysis.run_data_coverage_analysis
+python -m src.analysis.run_data_coverage_analysis   # Berichte vs baseline; Dokumentationsblatt excluded from counts
 python -m src.analysis.run_icd_icdsc_overlap_analysis
-python -m src.pipeline.run_pipeline
+python -m src.pipeline.run_pipeline              # report-level predictions (excludes bertyp=Dokumentationsblatt)
 python -m src.pipeline.compare_reports_vs_baseline
-python -m src.pipeline.evaluate_predictions
+python -m src.pipeline.evaluate_predictions      # primary baseline: baseline_composite
+python -m src.analysis.create_patient_reporttype_matrix
+python -m src.analysis.export_manual_validation_sample
 python -m src.analysis.run_field_delirium_analysis
 ```
 

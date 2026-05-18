@@ -26,12 +26,14 @@ from src.pipeline.prepare_structured_data import add_binary_baselines
 
 
 BASELINE_COLUMNS = [
+    "baseline_composite",
+    "baseline_icd10",
+    "baseline_icdsc_ge_4",
     "baseline_icdsc_ge_1",
     "baseline_icdsc_ge_2",
     "baseline_icdsc_ge_3",
     "baseline_icdsc_ge_4",
     "baseline_icdsc_ge_5",
-    "baseline_icd10",
     "baseline_icdsc_0",
     "baseline_icdsc_1_to_3",
     "baseline_icdsc_ge_4_grouped",
