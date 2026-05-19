@@ -1,4 +1,4 @@
-"""Clinical decision guardrails (less aggressive: preserve uncertain positives)."""
+"""Clinical decision guardrails (indirect symptoms + alternative explanation downgrade)."""
 
 import pytest
 
@@ -20,12 +20,23 @@ def _ev(**kwargs):
     return base
 
 
-def _interp(signal="mittel", alt=False):
+def _interp(signal="mittel", alt=False, kontext="test"):
     return {
         "signalstaerke": signal,
-        "kontext": "test",
+        "kontext": kontext,
         "alternative_erklaerung": alt,
         "begruendung": [],
+    }
+
+
+def _agitation_only_signals():
+    return {
+        "hyperaktivitaet_agitation": ["agitiert"],
+        "delir_explizit": [],
+        "desorientierung": [],
+        "vigilanz": [],
+        "delir_therapie": [],
+        "delir_prophylaxe": [],
     }
 
 
@@ -42,6 +53,24 @@ def test_hypoaktives_delir_klasse_1_no_manual_review():
     assert g["klasse"] == 1
     assert g["decision_rule_applied"] == "direct_delir_positive"
     assert g["manual_review_candidate"] is False
+
+
+def test_direct_delir_with_alternative_still_klasse_1():
+    signals = {
+        "delir_explizit": ["Delir"],
+        "desorientierung": [],
+        "hyperaktivitaet_agitation": ["unruhig"],
+        "vigilanz": [],
+        "delir_therapie": [],
+        "delir_prophylaxe": [],
+    }
+    g = apply_clinical_decision_guardrails(
+        _interp("hoch", alt=True),
+        signals,
+        _ev(has_direct_delir_evidence=True, has_indirect_delir_evidence=True),
+    )
+    assert g["klasse"] == 1
+    assert g["decision_rule_applied"] == "direct_delir_positive"
 
 
 def test_delirprophylaxe_only_klasse_0():
@@ -68,18 +97,10 @@ def test_kein_delir_klasse_0():
     assert g["decision_rule_applied"] == "negated_delir_not_positive"
 
 
-def test_agitation_only_llm_positive_keeps_klasse_1_with_review():
-    signals = {
-        "hyperaktivitaet_agitation": ["agitiert"],
-        "delir_explizit": [],
-        "desorientierung": [],
-        "vigilanz": [],
-        "delir_therapie": [],
-        "delir_prophylaxe": [],
-    }
+def test_agitation_only_without_alternative_keeps_klasse_1_with_review():
     g = apply_clinical_decision_guardrails(
         _interp("mittel"),
-        signals,
+        _agitation_only_signals(),
         _ev(has_indirect_delir_evidence=True),
     )
     assert g["klasse"] == 1
@@ -87,26 +108,37 @@ def test_agitation_only_llm_positive_keeps_klasse_1_with_review():
     assert g["decision_rule_applied"] == "indirect_symptoms_positive_review_needed"
 
 
-def test_alternative_explanation_llm_positive_keeps_klasse_1_with_review():
-    signals = {
-        "hyperaktivitaet_agitation": ["unruhig"],
-        "delir_explizit": [],
-        "desorientierung": [],
-        "vigilanz": [],
-        "delir_therapie": [],
-        "delir_prophylaxe": [],
-    }
+@pytest.mark.parametrize(
+    "kontext",
+    [
+        "Agitation im Kontext von Suizidalität und Borderline-Persönlichkeitsstörung.",
+        "Unruhe nach Sedierung und Intoxikation.",
+        "Selbstverletzendes Verhalten mit psychiatrischer Dekompensation.",
+    ],
+)
+def test_agitation_with_psychiatric_context_alt_downgrades(kontext):
     g = apply_clinical_decision_guardrails(
-        _interp("hoch", alt=True),
-        signals,
+        _interp("hoch", alt=True, kontext=kontext),
+        _agitation_only_signals(),
         _ev(has_indirect_delir_evidence=True),
     )
-    assert g["klasse"] == 1
+    assert g["klasse"] == 0
     assert g["manual_review_candidate"] is True
-    assert g["decision_rule_applied"] == "positive_with_alternative_explanation_review_needed"
+    assert g["decision_rule_applied"] == "alternative_explanation_downgrade"
+    assert g["signalstaerke"] in ("niedrig", "mittel")
 
 
-def test_signalstaerke_mittel_positive_manual_review():
+def test_alternative_explanation_downgrade_caps_hoch_to_mittel():
+    g = apply_clinical_decision_guardrails(
+        _interp("hoch", alt=True),
+        _agitation_only_signals(),
+        _ev(has_indirect_delir_evidence=True),
+    )
+    assert g["klasse"] == 0
+    assert g["signalstaerke"] == "mittel"
+
+
+def test_signalstaerke_mittel_indirect_positive_manual_review():
     signals = {
         "desorientierung": ["desorientiert"],
         "delir_explizit": [],
@@ -122,6 +154,7 @@ def test_signalstaerke_mittel_positive_manual_review():
     )
     assert g["klasse"] == 1
     assert g["manual_review_candidate"] is True
+    assert g["decision_rule_applied"] == "indirect_symptoms_positive_review_needed"
 
 
 def test_no_evidence_klasse_0():

@@ -1,9 +1,10 @@
 """
 Deterministic post-LLM clinical decision guardrails.
 
-Hard-excludes only clear non-delirium cases (no evidence, prophylaxis-only,
-negation-only). Uncertain LLM positives (indirect symptoms, alternative
-explanations) are preserved as klasse=1 and flagged for manual review.
+Hard-excludes clear non-delirium cases (no evidence, prophylaxis-only,
+negation-only). Downgrades indirect-symptom positives when a strong
+alternative explanation is present; other uncertain indirect positives stay
+klasse=1 with manual review.
 """
 
 from __future__ import annotations
@@ -54,9 +55,27 @@ def _has_indirect_signals(signals: Dict[str, Any], evidence_metadata: Dict[str, 
     )
 
 
+def _has_alternative_explanation(
+    interpretation: Dict[str, Any],
+    evidence_metadata: Dict[str, Any],
+) -> bool:
+    if bool(interpretation.get("alternative_erklaerung", False)):
+        return True
+    return _bool_meta(evidence_metadata, "has_alternative_explanation")
+
+
 def _llm_suggests_delirium(signal: str) -> bool:
     """mittel/hoch = LLM supports possible/documented delirium (subject to hard excludes)."""
     return signal in ("mittel", "hoch")
+
+
+def _cap_signal_for_alt_downgrade(signal: str) -> str:
+    """After alternative-explanation downgrade, keep signal at niedrig or mittel."""
+    if signal == "hoch":
+        return "mittel"
+    if signal in ("niedrig", "mittel"):
+        return signal
+    return "niedrig"
 
 
 def apply_clinical_decision_guardrails(
@@ -70,8 +89,9 @@ def apply_clinical_decision_guardrails(
     """
     Apply transparent rules after Agent 2.
 
-    Only forces klasse=0 for no evidence, prophylaxis-only, or negation-only.
-    Other LLM positives are kept and flagged for manual review when uncertain.
+    Forces klasse=0 for no evidence, prophylaxis-only, negation-only, and
+    indirect-only positives with alternative explanation. Other indirect LLM
+    positives remain klasse=1 with manual review.
     """
     signals = {k: _safe_list(extraction_signals, k) for k in SIGNAL_KEYS}
 
@@ -82,7 +102,7 @@ def apply_clinical_decision_guardrails(
     has_negated = _bool_meta(evidence_metadata, "has_negated_delir_evidence")
     prophy_only = _bool_meta(evidence_metadata, "has_prophylaxis_or_risk_only") and not has_direct and not has_indirect
 
-    alt = bool(interpretation.get("alternative_erklaerung", False))
+    has_alt = _has_alternative_explanation(interpretation, evidence_metadata)
     signal = str(interpretation.get("signalstaerke", "niedrig") or "niedrig").strip().lower()
     if signal not in ("niedrig", "mittel", "hoch"):
         signal = "niedrig"
@@ -99,7 +119,7 @@ def apply_clinical_decision_guardrails(
             begruendung=begruendung,
             manual_review=False,
             rule="no_evidence_prefilter_skip",
-            alt=alt,
+            alt=has_alt,
         )
 
     # --- Hard exclude: prophylaxis / screening / risk only ---
@@ -111,7 +131,7 @@ def apply_clinical_decision_guardrails(
             begruendung=begruendung + ["Nur Prophylaxe/Risiko — kein Delirnachweis."],
             manual_review=False,
             rule="prophylaxis_only_not_positive",
-            alt=alt,
+            alt=has_alt,
         )
 
     # --- Hard exclude: negation only (no separate explicit positive) ---
@@ -123,14 +143,14 @@ def apply_clinical_decision_guardrails(
             begruendung=begruendung + ["Negierter Delirhinweis — nicht als Delir gewertet."],
             manual_review=False,
             rule="negated_delir_not_positive",
-            alt=alt,
+            alt=has_alt,
         )
 
     therapy_with_context = _has_delir_therapy(signals) and (
         has_direct or has_indirect or _has_explicit_delir_signals(signals)
     )
 
-    # --- Strong positive: direct delir (not negated without explicit counter-evidence) ---
+    # --- Strong positive: direct delir (kept unless explicitly negated without explicit term) ---
     if has_direct and not (has_negated and not _has_explicit_delir_signals(signals)):
         new_signal = signal if signal in ("hoch", "mittel") else "hoch"
         return _finalize(
@@ -140,7 +160,7 @@ def apply_clinical_decision_guardrails(
             begruendung=begruendung + ["Expliziter Delirnachweis (Guardrail)."],
             manual_review=False,
             rule="direct_delir_positive",
-            alt=alt,
+            alt=has_alt,
         )
 
     if therapy_with_context:
@@ -152,40 +172,60 @@ def apply_clinical_decision_guardrails(
             begruendung=begruendung + ["Delirtherapie + Symptomkontext (Guardrail)."],
             manual_review=False,
             rule="direct_delir_positive",
-            alt=alt,
+            alt=has_alt,
         )
 
-    # --- Preserve LLM positives; flag uncertain cases for manual review ---
-    if _llm_suggests_delirium(signal):
-        manual_review = True
-        rule = "llm_classification"
+    # --- Indirect only + alternative explanation: downgrade LLM positive to klasse=0 ---
+    if (
+        has_indirect
+        and not has_direct
+        and has_alt
+        and _llm_suggests_delirium(signal)
+    ):
+        down_signal = _cap_signal_for_alt_downgrade(signal)
+        return _finalize(
+            signalstaerke=down_signal,
+            klasse=0,
+            kontext=kontext
+            or "Indirekte Symptome mit plausibler alternativer Erklärung — nicht als Delir gewertet.",
+            begruendung=begruendung
+            + [
+                "Indirekte Symptome mit alternativer Erklärung (z. B. psychiatrisch, "
+                "Intoxikation, Sedierung) — manuelle Prüfung empfohlen."
+            ],
+            manual_review=True,
+            rule="alternative_explanation_downgrade",
+            alt=has_alt,
+        )
 
-        if alt:
-            rule = "positive_with_alternative_explanation_review_needed"
-            begruendung = begruendung + [
-                "Positiv trotz alternativer Erklärung — manuelle Prüfung empfohlen."
-            ]
-        elif has_indirect and not has_direct:
-            rule = "indirect_symptoms_positive_review_needed"
-            begruendung = begruendung + [
-                "Indirekte Symptome mit LLM-positiver Bewertung — manuelle Prüfung empfohlen."
-            ]
-
-        if signal == "mittel":
-            manual_review = True
-            if rule == "llm_classification":
-                begruendung = begruendung + [
-                    "Signalstärke mittel — manuelle Prüfung empfohlen."
-                ]
-
+    # --- Indirect only, LLM positive, no alternative explanation: keep positive, flag review ---
+    if has_indirect and not has_direct and _llm_suggests_delirium(signal):
         return _finalize(
             signalstaerke=signal,
             klasse=1,
             kontext=kontext,
-            begruendung=begruendung,
+            begruendung=begruendung
+            + ["Indirekte Symptome mit LLM-positiver Bewertung — manuelle Prüfung empfohlen."],
+            manual_review=True,
+            rule="indirect_symptoms_positive_review_needed",
+            alt=has_alt,
+        )
+
+    # --- Other LLM positives (mittel/hoch) ---
+    if _llm_suggests_delirium(signal):
+        manual_review = signal == "mittel"
+        rule = "llm_classification"
+        extra_begr: List[str] = []
+        if signal == "mittel":
+            extra_begr = ["Signalstärke mittel — manuelle Prüfung empfohlen."]
+        return _finalize(
+            signalstaerke=signal,
+            klasse=1,
+            kontext=kontext,
+            begruendung=begruendung + extra_begr,
             manual_review=manual_review,
             rule=rule,
-            alt=alt,
+            alt=has_alt,
         )
 
     # --- Default: LLM niedrig or no positive support ---
@@ -196,7 +236,7 @@ def apply_clinical_decision_guardrails(
         begruendung=begruendung,
         manual_review=False,
         rule="llm_classification",
-        alt=alt,
+        alt=has_alt,
     )
 
 

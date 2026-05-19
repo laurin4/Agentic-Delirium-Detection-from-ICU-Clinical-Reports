@@ -22,7 +22,7 @@
 - If **no** snippet qualifies for LLM review (i.e. nothing beyond negation-only), the LLM is **skipped**, `llm_text_reduction_method=no_evidence_prefilter_skip`, and **`klasse=0`**.
 - If actionable snippets exist, `llm_text_reduction_method=structured_evidence_extraction` and the LLM receives **`llm_report_text`**: labeled snippets + short instruction — **not** the full chart.
 - **Transparency**: describe this two-stage design (rules → LLM) in thesis/defense materials; CSV stores structured `evidence_snippets` (JSON list) plus boolean flags for audit.
-- **Clinical guardrails** (`src/agents/clinical_guardrails.py`, after Agent 2): hard-excludes only **no evidence**, **prophylaxis/risk-only**, and **negated delirium**. LLM positives from indirect symptoms or with alternative explanations are **kept as klasse=1** and flagged `manual_review_candidate=true` (not auto-downgraded).
+- **Clinical guardrails** (`src/agents/clinical_guardrails.py`, after Agent 2): hard-excludes **no evidence**, **prophylaxis/risk-only**, and **negated delirium**. **Direct delir** stays `klasse=1`. **Indirect symptoms + alternative explanation** (e.g. agitation with psychiatric/intoxication/sedation context) are downgraded to `klasse=0` with `decision_rule_applied=alternative_explanation_downgrade` and `manual_review_candidate=true`. **Indirect-only LLM positives without alternative explanation** stay `klasse=1` and are flagged `indirect_symptoms_positive_review_needed`.
 
 ### Environment (evidence + logging)
 | Variable | Default | Role |
@@ -32,6 +32,8 @@
 | `EVIDENCE_WINDOW_SENTENCES` | 1 | Sentences before/after the hit sentence in each window. |
 | `EVIDENCE_MAX_SNIPPET_CHARS` | 400 | Max characters per snippet `text` field. |
 | `DEBUG_LLM_OUTPUT` | false | If true, print verbose per-agent debug (full previews, raw LLM). |
+| `LLM_TEMPERATURE` | (provider default) | Recommended **0** for reproducible extraction/interpretation. |
+| `LLM_TOP_P` | (provider default) | Recommended **1** with `LLM_TEMPERATURE=0`. |
 
 ## Pipeline stages
 1. Prepare structured baseline (`src/pipeline/prepare_structured_data.py`)

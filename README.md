@@ -86,8 +86,8 @@ export OLLAMA_MODEL=qwen2.5:7b
 ### Shared generation settings (both backends)
 
 ```bash
-export LLM_TEMPERATURE=0.1
-export LLM_TOP_P=0.9
+export LLM_TEMPERATURE=0
+export LLM_TOP_P=1
 export LLM_MAX_TOKENS=1000
 export LLM_TIMEOUT=120
 export LLM_LONG_INPUT_WARNING_CHARS=12000

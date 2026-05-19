@@ -19,8 +19,8 @@ Assume project root: `delirium_project/`.
 export LLM_PROVIDER=usz_api
 export USZ_LLM_URL=http://localhost:8100/generate
 export LLM_MODEL_LABEL=gemma4_26b_usz
-export LLM_TEMPERATURE=0.1
-export LLM_TOP_P=0.9
+export LLM_TEMPERATURE=0
+export LLM_TOP_P=1
 export LLM_MAX_TOKENS=1000
 export LLM_TIMEOUT=120
 export LLM_LONG_INPUT_WARNING_CHARS=12000
