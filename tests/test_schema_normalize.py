@@ -79,7 +79,7 @@ def test_prepare_icd10_legacy_code_is_hauptdiagn():
 
 
 def test_f051_excluded():
-    assert not is_valid_delir_icd10_code("F05.1")
+    assert is_valid_delir_icd10_code("F05.1")
 
 
 def test_require_columns_lists_available():

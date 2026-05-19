@@ -60,7 +60,7 @@ Optional synthetic mode (`DATA_MODE = "synthetic"`):
 
 ## Important Logic
 - **Baseline construction** (`prepare_structured_data`): ICD + ICDSC only → `structured_baseline.csv`.
-- **ICD-10 delirium** (`has_delir_icd10` / `baseline_icd10`): main diagnosis `icd_hd == 1` and code in `F05.0`, `F05.8`, `F05.9` (excludes `F05.1`).
+- **ICD-10 delirium** (`has_delir_icd10` / `baseline_icd10`): main diagnosis `icd_hd == 1` and valid F05 code via `is_valid_delir_icd10_code`. **Temporary presentation mode** (`INCLUDE_ALL_F05_PRESENTATION_MODE = True` in `paths.py`): all codes starting with `F05` (includes `F05.1`). Revert to thesis set `F05.0` / `F05.8` / `F05.9` only after demo.
 - **ICDSC** (`max_icdsc`): from `ICDSC_Max`; thresholds `baseline_icdsc_ge_*`, `baseline_icdsc_0`, `baseline_icdsc_1_to_3`, `baseline_icdsc_ge_4_grouped`.
 - **Primary validation baseline** `baseline_composite` = `(baseline_icdsc_ge_4 == 1) OR (baseline_icd10 == 1)`.
 - **Legacy** multiclass `baseline_reference_class` may still be written; primary evaluation uses binary baselines including `baseline_composite`.
@@ -101,6 +101,7 @@ python3 -m src.analysis.run_validation_suite
 python3 -m src.analysis.create_patient_reporttype_matrix
 python3 -m src.analysis.export_manual_validation_sample
 python3 -m src.analysis.export_manual_annotation_sheet
+python3 -m src.analysis.export_presentation_examples
 ```
 
 ## Validation outputs (patient-level)
@@ -108,6 +109,7 @@ python3 -m src.analysis.export_manual_annotation_sheet
 - `outputs/analysis/manual_validation/manual_validation_sample.csv` — ~100 mixed patients for manual review (binary `manual_ground_truth`).
 - `outputs/analysis/manual_validation/manual_annotation_sheet.csv` — one row per report for report-level manual GT (`manual_report_ground_truth`); see `manual_annotation_sheet_report.txt`.
 - Exploratory: `delir_probability_estimate` (0–100) in predictions CSV; not used for final `klasse`.
+- `outputs/analysis/presentation_examples/` — CSV + Markdown examples for slides (excerpt → keywords → evidence → LLM → prediction).
 
 ## Output Structure
 - `outputs/baseline/` → structured baseline tables

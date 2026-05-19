@@ -59,6 +59,11 @@ def _max_reports_from_environment() -> int | None:
 
 MAX_REPORTS = _max_reports_from_environment()
 
+# TEMPORARY PRESENTATION MODE (revert after internal demo):
+# When True, all ICD-10 codes starting with F05 count toward has_delir_icd10 / baseline_icd10
+# (still requires icd_hd == 1). Broader than the thesis ICD-10 delirium definition.
+INCLUDE_ALL_F05_PRESENTATION_MODE = True
+
 # Outputs
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 PREDICTIONS_DIR = OUTPUTS_DIR / "predictions"
@@ -177,6 +182,14 @@ MANUAL_VALIDATION_SAMPLE_PATH = MANUAL_VALIDATION_DIR / "manual_validation_sampl
 MANUAL_ANNOTATION_SHEET_PATH = MANUAL_VALIDATION_DIR / "manual_annotation_sheet.csv"
 MANUAL_ANNOTATION_SHEET_REPORT_PATH = (
     MANUAL_VALIDATION_DIR / "manual_annotation_sheet_report.txt"
+)
+
+# Presentation slide examples (report flow: excerpt → keywords → evidence → LLM → prediction)
+PRESENTATION_EXAMPLES_DIR = ANALYSIS_DIR / "presentation_examples"
+PRESENTATION_EXAMPLES_CSV_PATH = PRESENTATION_EXAMPLES_DIR / "presentation_examples.csv"
+PRESENTATION_EXAMPLES_MD_PATH = PRESENTATION_EXAMPLES_DIR / "presentation_examples.md"
+PRESENTATION_EXAMPLES_REPORT_PATH = (
+    PRESENTATION_EXAMPLES_DIR / "presentation_examples_report.txt"
 )
 
 # Keyword / term association with predictions and baselines

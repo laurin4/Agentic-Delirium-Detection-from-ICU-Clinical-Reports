@@ -191,8 +191,25 @@ def normalize_icd_code(code: object) -> str:
 
 
 def is_valid_delir_icd10_code(code: object) -> bool:
-    """F05.0 / F05.8 / F05.9 only; excludes alcohol delirium F05.1."""
+    """
+    Return whether an ICD-10 code counts toward delirium baseline (main diagnosis applied separately).
+
+    When ``INCLUDE_ALL_F05_PRESENTATION_MODE`` is True (temporary demo), any code starting with
+    ``F05`` is accepted. Otherwise only F05.0 / F05.8 / F05.9 (F05.1 excluded).
+    """
+    from src.pipeline.paths import INCLUDE_ALL_F05_PRESENTATION_MODE
+
     normalized = normalize_icd_code(code)
+    if not normalized:
+        return False
+
+    if INCLUDE_ALL_F05_PRESENTATION_MODE:
+        # TEMPORARY PRESENTATION MODE:
+        # Includes all F05 ICD10 codes for simplified presentation/demo baseline.
+        # Methodologically broader than thesis definition.
+        # Revert after presentation validation/demo.
+        return normalized.startswith("F05")
+
     if normalized == EXCLUDED_DELIR_ICD10_CODE:
         return False
     return normalized in VALID_DELIR_ICD10_CODES

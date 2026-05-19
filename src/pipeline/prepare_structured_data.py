@@ -12,7 +12,12 @@ import logging
 
 import pandas as pd
 
-from src.pipeline.paths import ICD10_PATH, ICDSC_PATH, STRUCTURED_BASELINE_PATH
+from src.pipeline.paths import (
+    ICD10_PATH,
+    ICDSC_PATH,
+    INCLUDE_ALL_F05_PRESENTATION_MODE,
+    STRUCTURED_BASELINE_PATH,
+)
 from src.pipeline.schema_normalize import (
     SchemaValidationError,
     assert_structured_baseline_columns,
@@ -53,7 +58,7 @@ def prepare_icd10(icd10: pd.DataFrame) -> pd.DataFrame:
     Patient-level ICD-10 delirium flag.
 
     Counts delirium only when icd_hd indicates main diagnosis (== 1) and
-    icd_code is F05.0, F05.8, or F05.9 (F05.1 excluded).
+    icd_code passes :func:`is_valid_delir_icd10_code` (see ``INCLUDE_ALL_F05_PRESENTATION_MODE``).
     """
     icd10 = icd10.copy()
     icd10 = normalize_patient_id_columns(icd10)
@@ -184,6 +189,9 @@ def build_structured_baseline(icd10: pd.DataFrame, icdsc: pd.DataFrame) -> pd.Da
 
 
 def main() -> None:
+    if INCLUDE_ALL_F05_PRESENTATION_MODE:
+        print("[Presentation Mode]")
+        print("Including all F05 ICD10 codes in ICD baseline.")
     STRUCTURED_BASELINE_PATH.parent.mkdir(parents=True, exist_ok=True)
     icd10, icdsc = load_data()
     merged = build_structured_baseline(icd10, icdsc)
