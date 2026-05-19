@@ -22,7 +22,7 @@
 - If **no** snippet qualifies for LLM review (i.e. nothing beyond negation-only), the LLM is **skipped**, `llm_text_reduction_method=no_evidence_prefilter_skip`, and **`klasse=0`**.
 - If actionable snippets exist, `llm_text_reduction_method=structured_evidence_extraction` and the LLM receives **`llm_report_text`**: labeled snippets + short instruction — **not** the full chart.
 - **Transparency**: describe this two-stage design (rules → LLM) in thesis/defense materials; CSV stores structured `evidence_snippets` (JSON list) plus boolean flags for audit.
-- **Clinical guardrails** (`src/agents/clinical_guardrails.py`, after Agent 2): hard-excludes **no evidence**, **prophylaxis/risk-only**, and **negated delirium**. **Direct delir** stays `klasse=1`. **Indirect symptoms + alternative explanation** (e.g. agitation with psychiatric/intoxication/sedation context) are downgraded to `klasse=0` with `decision_rule_applied=alternative_explanation_downgrade` and `manual_review_candidate=true`. **Indirect-only LLM positives without alternative explanation** stay `klasse=1` and are flagged `indirect_symptoms_positive_review_needed`.
+- **Clinical guardrails** (`src/agents/clinical_guardrails.py`, after Agent 2): hard-excludes **no evidence**, **prophylaxis/conditional-only**, **negated delirium**, and **isolated weak indirect symptoms** (single agitation/vigilance/GCS-only). **Direct delir** and **delirium-compatible symptom clusters** (≥2 indirect dimensions or therapy+symptoms) may stay `klasse=1`; clusters with `alternative_erklaerung` are flagged for review. **Isolated indirect + dominant alternative** → `klasse=0`, `alternative_explanation_downgrade`.
 
 ### Environment (evidence + logging)
 | Variable | Default | Role |

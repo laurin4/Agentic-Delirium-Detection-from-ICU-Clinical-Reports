@@ -19,7 +19,7 @@ DATA_MODE = "real"  # allowed: "real", "synthetic"
 
 
 # Default cap (matches historical paths.py): avoids accidentally running the full corpus.
-DEFAULT_MAX_REPORTS = 30
+DEFAULT_MAX_REPORTS = 60
 
 
 def parse_max_reports_env(raw: str | None = None) -> int | None:

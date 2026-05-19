@@ -1,15 +1,14 @@
 """
 Deterministic post-LLM clinical decision guardrails.
 
-Hard-excludes clear non-delirium cases (no evidence, prophylaxis-only,
-negation-only). Downgrades indirect-symptom positives when a strong
-alternative explanation is present; other uncertain indirect positives stay
-klasse=1 with manual review.
+Hard-excludes no evidence, prophylaxis-only, negation-only, and isolated weak
+indirect symptoms. Supports delirium-compatible symptom clusters; downgrades
+isolated indirect positives with dominant alternative explanations.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 SIGNAL_KEYS = (
     "desorientierung",
@@ -18,6 +17,12 @@ SIGNAL_KEYS = (
     "vigilanz",
     "delir_therapie",
     "delir_prophylaxe",
+)
+
+INDIRECT_DIMENSION_KEYS: Tuple[str, ...] = (
+    "desorientierung",
+    "hyperaktivitaet_agitation",
+    "vigilanz",
 )
 
 
@@ -48,11 +53,29 @@ def _has_delir_therapy(signals: Dict[str, Any]) -> bool:
 def _has_indirect_signals(signals: Dict[str, Any], evidence_metadata: Dict[str, Any]) -> bool:
     if _bool_meta(evidence_metadata, "has_indirect_delir_evidence"):
         return True
-    return bool(
-        _safe_list(signals, "desorientierung")
-        or _safe_list(signals, "hyperaktivitaet_agitation")
-        or _safe_list(signals, "vigilanz")
-    )
+    return bool(any(_safe_list(signals, k) for k in INDIRECT_DIMENSION_KEYS))
+
+
+def _indirect_dimension_count(signals: Dict[str, Any]) -> int:
+    return sum(1 for k in INDIRECT_DIMENSION_KEYS if _safe_list(signals, k))
+
+
+def _has_symptom_cluster(signals: Dict[str, Any], evidence_metadata: Dict[str, Any]) -> bool:
+    """Two+ indirect dimensions, or delir therapy with compatible symptoms."""
+    if _has_delir_therapy(signals) and (
+        _has_indirect_signals(signals, evidence_metadata) or _has_explicit_delir_signals(signals)
+    ):
+        return True
+    return _indirect_dimension_count(signals) >= 2
+
+
+def _is_isolated_indirect_only(signals: Dict[str, Any], evidence_metadata: Dict[str, Any]) -> bool:
+    """Exactly one indirect symptom dimension and no direct delir evidence."""
+    if not _has_indirect_signals(signals, evidence_metadata):
+        return False
+    if _has_explicit_delir_signals(signals) or _bool_meta(evidence_metadata, "has_direct_delir_evidence"):
+        return False
+    return _indirect_dimension_count(signals) == 1
 
 
 def _has_alternative_explanation(
@@ -89,9 +112,9 @@ def apply_clinical_decision_guardrails(
     """
     Apply transparent rules after Agent 2.
 
-    Forces klasse=0 for no evidence, prophylaxis-only, negation-only, and
-    indirect-only positives with alternative explanation. Other indirect LLM
-    positives remain klasse=1 with manual review.
+    Symptom clusters without dominant alternatives may remain klasse=1 (flagged).
+    Isolated indirect symptoms are not auto-positive; clear alternative without
+    cluster is downgraded to klasse=0 with manual review.
     """
     signals = {k: _safe_list(extraction_signals, k) for k in SIGNAL_KEYS}
 
@@ -99,6 +122,8 @@ def apply_clinical_decision_guardrails(
         signals
     )
     has_indirect = _has_indirect_signals(signals, evidence_metadata)
+    has_cluster = _has_symptom_cluster(signals, evidence_metadata)
+    isolated_indirect = _is_isolated_indirect_only(signals, evidence_metadata)
     has_negated = _bool_meta(evidence_metadata, "has_negated_delir_evidence")
     prophy_only = _bool_meta(evidence_metadata, "has_prophylaxis_or_risk_only") and not has_direct and not has_indirect
 
@@ -122,13 +147,13 @@ def apply_clinical_decision_guardrails(
             alt=has_alt,
         )
 
-    # --- Hard exclude: prophylaxis / screening / risk only ---
+    # --- Hard exclude: prophylaxis / screening / risk / conditional only ---
     if prophy_only and not has_direct:
         return _finalize(
             signalstaerke="niedrig",
             klasse=0,
-            kontext="Nur Delirprophylaxe/Screening/Risiko ohne dokumentiertes Delir.",
-            begruendung=begruendung + ["Nur Prophylaxe/Risiko — kein Delirnachweis."],
+            kontext="Nur Delirprophylaxe/Screening/Risiko/Bei-Delir ohne dokumentiertes Delir.",
+            begruendung=begruendung + ["Nur Prophylaxe/Risiko/Bei-Delir — kein Delirnachweis."],
             manual_review=False,
             rule="prophylaxis_only_not_positive",
             alt=has_alt,
@@ -150,7 +175,7 @@ def apply_clinical_decision_guardrails(
         has_direct or has_indirect or _has_explicit_delir_signals(signals)
     )
 
-    # --- Strong positive: direct delir (kept unless explicitly negated without explicit term) ---
+    # --- Strong positive: direct delir (kept unless clearly negated without explicit term) ---
     if has_direct and not (has_negated and not _has_explicit_delir_signals(signals)):
         new_signal = signal if signal in ("hoch", "mittel") else "hoch"
         return _finalize(
@@ -170,35 +195,73 @@ def apply_clinical_decision_guardrails(
             klasse=1,
             kontext=kontext or "Delirtherapie mit kompatiblem klinischem Kontext.",
             begruendung=begruendung + ["Delirtherapie + Symptomkontext (Guardrail)."],
-            manual_review=False,
-            rule="direct_delir_positive",
+            manual_review=has_alt,
+            rule="delir_therapy_with_compatible_symptoms",
             alt=has_alt,
         )
 
-    # --- Indirect only + alternative explanation: downgrade LLM positive to klasse=0 ---
-    if (
-        has_indirect
-        and not has_direct
-        and has_alt
-        and _llm_suggests_delirium(signal)
-    ):
+    # --- Isolated single indirect dimension: do not auto-call positive ---
+    if isolated_indirect and _llm_suggests_delirium(signal):
+        down_signal = _cap_signal_for_alt_downgrade(signal)
+        return _finalize(
+            signalstaerke=down_signal,
+            klasse=0,
+            kontext=kontext or "Isoliertes indirektes Symptom ohne Delir-Cluster.",
+            begruendung=begruendung
+            + ["Isoliertes schwaches indirektes Symptom — nicht als Delir gewertet; manuelle Prüfung."],
+            manual_review=True,
+            rule="isolated_indirect_not_positive",
+            alt=has_alt,
+        )
+
+    # --- Alternative explanation without coherent cluster: downgrade LLM positive ---
+    if has_indirect and not has_direct and has_alt and not has_cluster and _llm_suggests_delirium(signal):
         down_signal = _cap_signal_for_alt_downgrade(signal)
         return _finalize(
             signalstaerke=down_signal,
             klasse=0,
             kontext=kontext
-            or "Indirekte Symptome mit plausibler alternativer Erklärung — nicht als Delir gewertet.",
+            or "Indirekte Symptome mit dominanter alternativer Erklärung ohne Delir-Cluster.",
             begruendung=begruendung
             + [
-                "Indirekte Symptome mit alternativer Erklärung (z. B. psychiatrisch, "
-                "Intoxikation, Sedierung) — manuelle Prüfung empfohlen."
+                "Alternative Erklärung ohne Delir-Cluster — nicht als Delir gewertet; "
+                "manuelle Prüfung empfohlen."
             ],
             manual_review=True,
             rule="alternative_explanation_downgrade",
             alt=has_alt,
         )
 
-    # --- Indirect only, LLM positive, no alternative explanation: keep positive, flag review ---
+    # --- Symptom cluster with alternative (plausible but not definitive): keep positive, review ---
+    if has_cluster and has_alt and _llm_suggests_delirium(signal):
+        return _finalize(
+            signalstaerke=signal,
+            klasse=1,
+            kontext=kontext or "Delir-kompatibles Symptomcluster trotz alternativer Erklärung.",
+            begruendung=begruendung
+            + [
+                "Symptomcluster mit alternativer Erklärung — Delir möglich; "
+                "manuelle Prüfung empfohlen."
+            ],
+            manual_review=True,
+            rule="symptom_cluster_with_alternative_review_needed",
+            alt=has_alt,
+        )
+
+    # --- Symptom cluster without dominant alternative: positive with review ---
+    if has_cluster and not has_direct and _llm_suggests_delirium(signal):
+        return _finalize(
+            signalstaerke=signal,
+            klasse=1,
+            kontext=kontext or "Delir-kompatibles Symptomcluster in den Evidenz-Snippets.",
+            begruendung=begruendung
+            + ["Symptomcluster mit LLM-positiver Bewertung — manuelle Prüfung empfohlen."],
+            manual_review=True,
+            rule="symptom_cluster_positive_review_needed",
+            alt=has_alt,
+        )
+
+    # --- Residual indirect LLM positive (multi-dimension but not caught above) ---
     if has_indirect and not has_direct and _llm_suggests_delirium(signal):
         return _finalize(
             signalstaerke=signal,
@@ -234,7 +297,7 @@ def apply_clinical_decision_guardrails(
         klasse=0,
         kontext=kontext or "Keine ausreichenden Hinweise für ein dokumentiertes Delir.",
         begruendung=begruendung,
-        manual_review=False,
+        manual_review=isolated_indirect or has_alt,
         rule="llm_classification",
         alt=has_alt,
     )

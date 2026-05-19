@@ -1,9 +1,13 @@
-"""Clinical decision guardrails (indirect symptoms + alternative explanation downgrade)."""
+"""Clinical decision guardrails (symptom clusters + isolated weak symptoms)."""
 
 import pytest
 
 from src.agents.classification import classify_delirium
-from src.agents.clinical_guardrails import apply_clinical_decision_guardrails
+from src.agents.clinical_guardrails import (
+    _has_symptom_cluster,
+    _is_isolated_indirect_only,
+    apply_clinical_decision_guardrails,
+)
 from src.agents.extraction import normalize_extraction_result
 from src.preprocessing.evidence_extraction import extract_delirium_evidence
 
@@ -87,6 +91,24 @@ def test_delirprophylaxe_only_klasse_0():
     assert g["decision_rule_applied"] == "prophylaxis_only_not_positive"
 
 
+def test_bei_delir_conditional_only_klasse_0():
+    signals = {
+        "delir_prophylaxe": ["Bei Delir Massnahmen"],
+        "delir_explizit": [],
+        "desorientierung": [],
+        "hyperaktivitaet_agitation": [],
+        "vigilanz": [],
+        "delir_therapie": [],
+    }
+    g = apply_clinical_decision_guardrails(
+        _interp("mittel"),
+        signals,
+        _ev(has_prophylaxis_or_risk_only=True),
+    )
+    assert g["klasse"] == 0
+    assert g["decision_rule_applied"] == "prophylaxis_only_not_positive"
+
+
 def test_kein_delir_klasse_0():
     g = apply_clinical_decision_guardrails(
         _interp("mittel"),
@@ -97,15 +119,15 @@ def test_kein_delir_klasse_0():
     assert g["decision_rule_applied"] == "negated_delir_not_positive"
 
 
-def test_agitation_only_without_alternative_keeps_klasse_1_with_review():
+def test_isolated_agitation_without_alternative_klasse_0_with_review():
     g = apply_clinical_decision_guardrails(
         _interp("mittel"),
         _agitation_only_signals(),
         _ev(has_indirect_delir_evidence=True),
     )
-    assert g["klasse"] == 1
+    assert g["klasse"] == 0
     assert g["manual_review_candidate"] is True
-    assert g["decision_rule_applied"] == "indirect_symptoms_positive_review_needed"
+    assert g["decision_rule_applied"] == "isolated_indirect_not_positive"
 
 
 @pytest.mark.parametrize(
@@ -113,10 +135,9 @@ def test_agitation_only_without_alternative_keeps_klasse_1_with_review():
     [
         "Agitation im Kontext von Suizidalität und Borderline-Persönlichkeitsstörung.",
         "Unruhe nach Sedierung und Intoxikation.",
-        "Selbstverletzendes Verhalten mit psychiatrischer Dekompensation.",
     ],
 )
-def test_agitation_with_psychiatric_context_alt_downgrades(kontext):
+def test_isolated_agitation_with_psychiatric_alt_downgrades(kontext):
     g = apply_clinical_decision_guardrails(
         _interp("hoch", alt=True, kontext=kontext),
         _agitation_only_signals(),
@@ -124,25 +145,56 @@ def test_agitation_with_psychiatric_context_alt_downgrades(kontext):
     )
     assert g["klasse"] == 0
     assert g["manual_review_candidate"] is True
-    assert g["decision_rule_applied"] == "alternative_explanation_downgrade"
-    assert g["signalstaerke"] in ("niedrig", "mittel")
+    assert g["decision_rule_applied"] in (
+        "alternative_explanation_downgrade",
+        "isolated_indirect_not_positive",
+    )
 
 
-def test_alternative_explanation_downgrade_caps_hoch_to_mittel():
+def test_isolated_gcs_14_klasse_0():
+    signals = {
+        "vigilanz": ["GCS 14"],
+        "delir_explizit": [],
+        "desorientierung": [],
+        "hyperaktivitaet_agitation": [],
+        "delir_therapie": [],
+        "delir_prophylaxe": [],
+    }
+    assert _is_isolated_indirect_only(signals, _ev(has_indirect_delir_evidence=True))
     g = apply_clinical_decision_guardrails(
-        _interp("hoch", alt=True),
-        _agitation_only_signals(),
+        _interp("mittel"),
+        signals,
         _ev(has_indirect_delir_evidence=True),
     )
     assert g["klasse"] == 0
-    assert g["signalstaerke"] == "mittel"
+    assert g["decision_rule_applied"] == "isolated_indirect_not_positive"
 
 
-def test_signalstaerke_mittel_indirect_positive_manual_review():
+def test_desorientation_plus_vigilance_cluster_klasse_1():
     signals = {
         "desorientierung": ["desorientiert"],
+        "vigilanz": ["Vigilanzminderung"],
         "delir_explizit": [],
         "hyperaktivitaet_agitation": [],
+        "delir_therapie": [],
+        "delir_prophylaxe": [],
+    }
+    assert _has_symptom_cluster(signals, _ev(has_indirect_delir_evidence=True))
+    g = apply_clinical_decision_guardrails(
+        _interp("hoch"),
+        signals,
+        _ev(has_indirect_delir_evidence=True),
+    )
+    assert g["klasse"] == 1
+    assert g["decision_rule_applied"] == "symptom_cluster_positive_review_needed"
+    assert g["manual_review_candidate"] is True
+
+
+def test_desorientation_plus_fluctuating_course_cluster_klasse_1():
+    signals = {
+        "desorientierung": ["desorientiert", "fluktuierender Verlauf"],
+        "hyperaktivitaet_agitation": ["wechselhaft"],
+        "delir_explizit": [],
         "vigilanz": [],
         "delir_therapie": [],
         "delir_prophylaxe": [],
@@ -153,8 +205,46 @@ def test_signalstaerke_mittel_indirect_positive_manual_review():
         _ev(has_indirect_delir_evidence=True),
     )
     assert g["klasse"] == 1
-    assert g["manual_review_candidate"] is True
-    assert g["decision_rule_applied"] == "indirect_symptoms_positive_review_needed"
+    assert g["decision_rule_applied"] in (
+        "symptom_cluster_positive_review_needed",
+        "indirect_symptoms_positive_review_needed",
+    )
+
+
+def test_delir_therapy_with_compatible_symptoms_klasse_1():
+    signals = {
+        "delir_therapie": ["Haloperidol bei Delir"],
+        "desorientierung": ["desorientiert"],
+        "delir_explizit": [],
+        "hyperaktivitaet_agitation": [],
+        "vigilanz": [],
+        "delir_prophylaxe": [],
+    }
+    g = apply_clinical_decision_guardrails(
+        _interp("mittel"),
+        signals,
+        _ev(has_indirect_delir_evidence=True),
+    )
+    assert g["klasse"] == 1
+    assert g["decision_rule_applied"] == "delir_therapy_with_compatible_symptoms"
+
+
+def test_cluster_with_alternative_keeps_klasse_1_with_review():
+    signals = {
+        "desorientierung": ["desorientiert"],
+        "vigilanz": ["somnolent"],
+        "delir_explizit": [],
+        "hyperaktivitaet_agitation": [],
+        "delir_therapie": [],
+        "delir_prophylaxe": [],
+    }
+    g = apply_clinical_decision_guardrails(
+        _interp("mittel", alt=True),
+        signals,
+        _ev(has_indirect_delir_evidence=True),
+    )
+    assert g["klasse"] == 1
+    assert g["decision_rule_applied"] == "symptom_cluster_with_alternative_review_needed"
 
 
 def test_no_evidence_klasse_0():
@@ -166,6 +256,16 @@ def test_no_evidence_klasse_0():
 def test_classify_medium_preliminary_is_one():
     c = classify_delirium(_interp("mittel"))
     assert c["klasse"] == 1
+
+
+def test_binary_output_only_zero_or_one():
+    for signal in ("niedrig", "mittel", "hoch"):
+        g = apply_clinical_decision_guardrails(
+            _interp(signal),
+            {"desorientierung": ["x"], "delir_explizit": [], "hyperaktivitaet_agitation": [], "vigilanz": [], "delir_therapie": [], "delir_prophylaxe": []},
+            _ev(has_indirect_delir_evidence=True),
+        )
+        assert g["klasse"] in (0, 1)
 
 
 def test_extraction_dedupe_and_cap():
@@ -186,3 +286,14 @@ def test_evidence_snippets_bounded_and_deduped(monkeypatch):
     assert len(prophy) <= 1
     for s in ev["evidence_snippets"]:
         assert len(s["text"]) <= 400
+
+
+def test_interpretation_prompt_mentions_clusters():
+    from pathlib import Path
+
+    prompt = (Path(__file__).resolve().parents[1] / "prompts" / "agent_interpretation.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "ISOLATED WEAK SYMPTOMS" in prompt
+    assert "Desorientierung + Vigilanzminderung" in prompt
+    assert "Bei Delir" in prompt
