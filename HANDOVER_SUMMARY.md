@@ -84,7 +84,7 @@ Optional synthetic mode (`DATA_MODE = "synthetic"`):
 ./scripts/preflight_check.sh
 ```
 ### Pre-prompt
-export MAX_REPORTS=30
+export MAX_REPORTS=60
 export DEBUG_LLM_OUTPUT=false
 export ENABLE_SQLITE_LOGGING=true
 
