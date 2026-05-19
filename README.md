@@ -160,6 +160,7 @@ python -m src.pipeline.evaluate_predictions      # primary baseline: baseline_co
 python -m src.analysis.create_patient_reporttype_matrix
 python -m src.analysis.export_manual_validation_sample
 python -m src.analysis.export_manual_annotation_sheet   # report-level sheet for manual GT
+python -m src.analysis.export_patient_validation_cohort # 100 patients, all reports per patient
 python -m src.analysis.export_presentation_examples     # slide-ready pipeline walkthrough examples
 python -m src.analysis.run_field_delirium_analysis
 ```

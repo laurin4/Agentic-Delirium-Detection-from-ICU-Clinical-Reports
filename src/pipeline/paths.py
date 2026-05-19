@@ -178,6 +178,10 @@ MANUAL_ANNOTATION_SHEET_PATH = MANUAL_VALIDATION_DIR / "manual_annotation_sheet.
 MANUAL_ANNOTATION_SHEET_REPORT_PATH = (
     MANUAL_VALIDATION_DIR / "manual_annotation_sheet_report.txt"
 )
+PATIENT_VALIDATION_COHORT_PATH = MANUAL_VALIDATION_DIR / "patient_validation_cohort.csv"
+PATIENT_VALIDATION_COHORT_REPORT_PATH = (
+    MANUAL_VALIDATION_DIR / "patient_validation_cohort_report.txt"
+)
 
 # Presentation slide examples (report flow: excerpt → keywords → evidence → LLM → prediction)
 PRESENTATION_EXAMPLES_DIR = ANALYSIS_DIR / "presentation_examples"
