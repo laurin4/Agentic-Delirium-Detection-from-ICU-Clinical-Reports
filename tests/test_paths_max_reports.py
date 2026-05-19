@@ -2,12 +2,13 @@ import os
 
 import pytest
 
-from src.pipeline.paths import MAX_REPORTS, parse_max_reports_env
+from src.pipeline.paths import DEFAULT_MAX_REPORTS, MAX_REPORTS, parse_max_reports_env
 
 
-def test_parse_max_reports_env_blank_defaults_to_thirty():
-    assert parse_max_reports_env("") == 30
-    assert parse_max_reports_env("   ") == 30
+def test_parse_max_reports_env_blank_uses_default(monkeypatch):
+    monkeypatch.delenv("MAX_REPORTS", raising=False)
+    assert parse_max_reports_env("") == DEFAULT_MAX_REPORTS
+    assert parse_max_reports_env("   ") == DEFAULT_MAX_REPORTS
 
 
 def test_parse_max_reports_env_all_means_unlimited():

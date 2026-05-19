@@ -19,8 +19,9 @@
 - The **entire** stitched `report_text` is scanned with deterministic keyword groups:
   - **direct_delir**, **indirect_symptom**, **negation**, **prophylaxis_or_risk** (see `evidence_extraction.py`).
 - **Negated** delirium phrases are **not** treated as positive evidence; **prophylaxis / screening / risk-only** mentions are **not** auto-positive for delirium (the LLM is instructed; final class still flows through signal strength).
-- If **no** snippet qualifies for LLM review (i.e. nothing beyond negation-only), the LLM is **skipped**, `llm_text_reduction_method=no_evidence_prefilter_skip`, and **`klasse=0`**.
-- If actionable snippets exist, `llm_text_reduction_method=structured_evidence_extraction` and the LLM receives **`llm_report_text`**: labeled snippets + short instruction — **not** the full chart.
+- If **no** snippet qualifies for LLM review, the LLM is normally **skipped** (`no_evidence_prefilter_skip`, `klasse=0`). Optional **short-report fallback** (see env below) sends capped full text for brief `Verlaufseintrag` / `Verlegungsbericht` / `Austrittsbericht` without keyword hits.
+- If actionable snippets exist, `llm_text_reduction_method=structured_evidence_extraction` and the LLM receives **`llm_report_text`**: labeled snippets — **not** the full chart.
+- **LLM prompts** (`prompts/agent_extraction.txt`, `prompts/agent_interpretation.txt`) are **German**; JSON field names (`signalstaerke`, `alternative_erklaerung`, …) stay English for parsers.
 - **Transparency**: describe this two-stage design (rules → LLM) in thesis/defense materials; CSV stores structured `evidence_snippets` (JSON list) plus boolean flags for audit.
 - **Clinical guardrails** (`src/agents/clinical_guardrails.py`, after Agent 2): hard-excludes **no evidence**, **prophylaxis/conditional-only**, **negated delirium**, and **isolated weak indirect symptoms** (single agitation/vigilance/GCS-only). **Direct delir** and **delirium-compatible symptom clusters** (≥2 indirect dimensions or therapy+symptoms) may stay `klasse=1`; clusters with `alternative_erklaerung` are flagged for review. **Isolated indirect + dominant alternative** → `klasse=0`, `alternative_explanation_downgrade`.
 
@@ -34,6 +35,8 @@
 | `DEBUG_LLM_OUTPUT` | false | If true, print verbose per-agent debug (full previews, raw LLM). |
 | `LLM_TEMPERATURE` | (provider default) | Recommended **0** for reproducible extraction/interpretation. |
 | `LLM_TOP_P` | (provider default) | Recommended **1** with `LLM_TEMPERATURE=0`. |
+| `SEND_SHORT_REPORTS_WITHOUT_EVIDENCE_TO_LLM` | false | If true, short reports without snippet hits still go to LLM (full capped text). |
+| `SHORT_REPORT_CHAR_THRESHOLD` | 1000 | Max `original_report_text_length` for short-report fallback. |
 
 ## Pipeline stages
 1. Prepare structured baseline (`src/pipeline/prepare_structured_data.py`)
@@ -60,7 +63,7 @@ Optional synthetic mode (`DATA_MODE = "synthetic"`):
 
 ## Important Logic
 - **Baseline construction** (`prepare_structured_data`): ICD + ICDSC only → `structured_baseline.csv`.
-- **ICD-10 delirium** (`has_delir_icd10` / `baseline_icd10`): main diagnosis `icd_hd == 1` and valid F05 code via `is_valid_delir_icd10_code`. **Temporary presentation mode** (`INCLUDE_ALL_F05_PRESENTATION_MODE = True` in `paths.py`): all codes starting with `F05` (includes `F05.1`). Revert to thesis set `F05.0` / `F05.8` / `F05.9` only after demo.
+- **ICD-10 delirium** (`has_delir_icd10` / `baseline_icd10`): main diagnosis `icd_hd == 1` and codes **F05.0, F05.8, F05.9** only. **F05.1** (alcohol-related / Entzugsdelir) and other F05 subcodes are **excluded** from the intended cohort.
 - **ICDSC** (`max_icdsc`): from `ICDSC_Max`; thresholds `baseline_icdsc_ge_*`, `baseline_icdsc_0`, `baseline_icdsc_1_to_3`, `baseline_icdsc_ge_4_grouped`.
 - **Primary validation baseline** `baseline_composite` = `(baseline_icdsc_ge_4 == 1) OR (baseline_icd10 == 1)`.
 - **Legacy** multiclass `baseline_reference_class` may still be written; primary evaluation uses binary baselines including `baseline_composite`.

@@ -26,9 +26,12 @@ from src.preprocessing.berichte_filters import normalize_bertyp
 from src.preprocessing.berichte_mapper import build_report_level_berichte_records
 from src.preprocessing.diagnosis_mapper import build_patient_level_report_records
 from src.preprocessing.evidence_extraction import (
+    METHOD_SHORT_REPORT_FULLTEXT,
+    apply_short_report_fulltext_to_evidence,
     evidence_snippets_json_for_csv,
     extract_delirium_evidence,
     llm_should_receive_evidence,
+    should_send_short_report_without_evidence,
 )
 
 
@@ -341,16 +344,21 @@ def _run_single_report(report: dict, idx: int, total: int) -> Tuple[dict, bool, 
     snippets = ev.get("evidence_snippets") or []
 
     if not llm_should_receive_evidence(snippets):
-        row = _prediction_row_no_evidence(ev, patient_id, report_name, bertyp=bertyp)
-        msg = _compact_line(
-            idx, total, patient_id, ev, bertyp=bertyp, status="skipped", klasse=0, signal="niedrig"
-        )
-        if DEBUG_VERBOSE:
-            print(msg)
+        if should_send_short_report_without_evidence(
+            full_report_text,
+            bertyp,
+            snippets,
+            original_length=int(ev.get("original_report_text_length") or 0),
+        ):
+            ev = apply_short_report_fulltext_to_evidence(ev, full_report_text)
         else:
+            row = _prediction_row_no_evidence(ev, patient_id, report_name, bertyp=bertyp)
+            msg = _compact_line(
+                idx, total, patient_id, ev, bertyp=bertyp, status="skipped", klasse=0, signal="niedrig"
+            )
             print(msg)
-        LOGGER.info(msg)
-        return row, True, False
+            LOGGER.info(msg)
+            return row, True, False
 
     llm_text = ev["llm_report_text"]
 
@@ -495,6 +503,7 @@ def main():
 
     rows: List[Dict[str, Any]] = []
     n_prefilter_skip = 0
+    n_sent_short_no_evidence = 0
     n_llm = 0
     n_failed = 0
     n_k0 = n_k1 = 0
@@ -527,6 +536,8 @@ def main():
             n_prefilter_skip += 1
         else:
             n_llm += 1
+            if str(row_dict.get("llm_text_reduction_method") or "") == METHOD_SHORT_REPORT_FULLTEXT:
+                n_sent_short_no_evidence += 1
 
     LOGGER.info(
         "Run summary: total=%d skipped=%d llm=%d failed=%d klasse0=%d klasse1=%d",
@@ -545,6 +556,7 @@ def main():
     print(f"total_reports={total}")
     print(f"sent_to_llm={n_llm}")
     print(f"skipped_no_evidence={n_prefilter_skip}")
+    print(f"sent_short_no_evidence={n_sent_short_no_evidence}")
     print(f"failed={n_failed}")
     print(f"klasse: 0={n_k0}, 1={n_k1}")
     print(f"signalstaerke: {sig_counts}")

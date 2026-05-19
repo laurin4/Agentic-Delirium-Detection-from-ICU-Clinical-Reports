@@ -31,7 +31,9 @@ ICDSC_LEGACY_VALUE_ALIASES: tuple[str, ...] = ("ICDSC_Value",)
 
 ICDSC_MAX_ALIASES: tuple[str, ...] = ("ICDSC_Max", "max_icdsc")
 
+# Thesis baseline: only these F05 subcodes (main diagnosis icd_hd==1 applied in prepare_icd10).
 VALID_DELIR_ICD10_CODES: frozenset[str] = frozenset({"F05.0", "F05.8", "F05.9"})
+# F05.1 = alcohol-related / withdrawal delirium — excluded from intended delirium cohort.
 EXCLUDED_DELIR_ICD10_CODE = "F05.1"
 
 
@@ -194,22 +196,13 @@ def is_valid_delir_icd10_code(code: object) -> bool:
     """
     Return whether an ICD-10 code counts toward delirium baseline (main diagnosis applied separately).
 
-    When ``INCLUDE_ALL_F05_PRESENTATION_MODE`` is True (temporary demo), any code starting with
-    ``F05`` is accepted. Otherwise only F05.0 / F05.8 / F05.9 (F05.1 excluded).
+    Included: F05.0, F05.8, F05.9 only.
+    Excluded: F05.1 (alcohol-related delirium / Entzugsdelir — outside intended cohort)
+    and all other F05 subcodes.
     """
-    from src.pipeline.paths import INCLUDE_ALL_F05_PRESENTATION_MODE
-
     normalized = normalize_icd_code(code)
     if not normalized:
         return False
-
-    if INCLUDE_ALL_F05_PRESENTATION_MODE:
-        # TEMPORARY PRESENTATION MODE:
-        # Includes all F05 ICD10 codes for simplified presentation/demo baseline.
-        # Methodologically broader than thesis definition.
-        # Revert after presentation validation/demo.
-        return normalized.startswith("F05")
-
     if normalized == EXCLUDED_DELIR_ICD10_CODE:
         return False
     return normalized in VALID_DELIR_ICD10_CODES

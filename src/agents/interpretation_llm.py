@@ -32,13 +32,12 @@ def interpret_signals_llm(
 
     signals_json = json.dumps(signals, ensure_ascii=False, indent=2)
 
-    user_prompt = f"""The following block is NOT a full ICU report. It contains only **rule-extracted evidence snippets**
-(section labels, evidence_type, priority) cut from the full report for scalable review.
+    user_prompt = f"""Der folgende Block ist ein Evidenz-Bündel für die Delir-Beurteilung (regelbasierte Snippets oder bei kurzen Berichten ohne Treffer der gekürzte Volltext).
 
-Evidence bundle:
+Evidenz / Text:
 {report_text}
 
-Extrahierte Signale (JSON) from the same bundle (Agent 1):
+Extrahierte Signale (JSON) von Agent 1 zum gleichen Bündel:
 {signals_json}
 """
 

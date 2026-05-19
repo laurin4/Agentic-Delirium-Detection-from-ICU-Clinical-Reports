@@ -104,7 +104,7 @@ def test_prefilter_calls_llm_when_delirium_present(monkeypatch, tmp_path):
     assert len(calls) >= 2
     extr_messages = calls[0]
     user_ex = str(extr_messages[-1].get("content", "")) if extr_messages else ""
-    assert "Evidence snippet bundle" in user_ex
+    assert "Evidenz-Bündel" in user_ex
     df = pd.read_csv(pred_dir / "agent1_agent2_agent3_results_prompt.csv")
     assert str(df["llm_skipped_by_prefilter"].iloc[0]).lower() in ("false", "0")
     assert int(df["klasse"].iloc[0]) in (0, 1)

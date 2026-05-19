@@ -288,12 +288,24 @@ def test_evidence_snippets_bounded_and_deduped(monkeypatch):
         assert len(s["text"]) <= 400
 
 
-def test_interpretation_prompt_mentions_clusters():
+def test_interpretation_prompt_german_and_clusters():
     from pathlib import Path
 
     prompt = (Path(__file__).resolve().parents[1] / "prompts" / "agent_interpretation.txt").read_text(
         encoding="utf-8"
     )
-    assert "ISOLATED WEAK SYMPTOMS" in prompt
+    assert "Du bist ein klinisches Bewertungssystem" in prompt
+    assert "ISOLIERTE SCHWACHE SYMPTOME" in prompt
     assert "Desorientierung + Vigilanzminderung" in prompt
-    assert "Bei Delir" in prompt
+    assert '"signalstaerke"' in prompt
+    assert "«bei delir»" in prompt.lower() or "bei delir" in prompt.lower()
+
+
+def test_extraction_prompt_german_json_schema():
+    from pathlib import Path
+
+    prompt = (Path(__file__).resolve().parents[1] / "prompts" / "agent_extraction.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "Du bist ein klinisches Informationsextraktionssystem" in prompt
+    assert '"delir_explizit"' in prompt

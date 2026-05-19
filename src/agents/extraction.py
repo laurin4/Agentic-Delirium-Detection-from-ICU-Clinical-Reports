@@ -57,7 +57,7 @@ def normalize_extraction_result(result: dict) -> dict:
 
 def extract_passages(text: str, patient_id: str = "", report_name: str = ""):
     system_prompt = load_prompt()
-    user_prompt = f"""Evidence snippet bundle (rule-extracted from full report; not the full chart):
+    user_prompt = f"""Evidenz-Bündel (regelbasiert aus dem Bericht; ggf. gekürzter Kurzbericht-Volltext ohne Snippet-Treffer):
 {text}
 """
 

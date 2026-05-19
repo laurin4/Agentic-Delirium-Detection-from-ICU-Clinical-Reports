@@ -59,11 +59,6 @@ def _max_reports_from_environment() -> int | None:
 
 MAX_REPORTS = _max_reports_from_environment()
 
-# TEMPORARY PRESENTATION MODE (revert after internal demo):
-# When True, all ICD-10 codes starting with F05 count toward has_delir_icd10 / baseline_icd10
-# (still requires icd_hd == 1). Broader than the thesis ICD-10 delirium definition.
-INCLUDE_ALL_F05_PRESENTATION_MODE = True
-
 # Outputs
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 PREDICTIONS_DIR = OUTPUTS_DIR / "predictions"

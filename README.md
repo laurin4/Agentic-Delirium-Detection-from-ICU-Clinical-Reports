@@ -52,7 +52,11 @@ Produced by `prepare_structured_data` from **`data/raw/ICD.csv`** and **`data/ra
 - `baseline_icdsc_ge_4_grouped`
 - `baseline_icd10`
 
-**ICD-10 delirium definition:** main diagnosis **`icd_hd == 1`** and codes **`F05.0`**, **`F05.8`**, **`F05.9`** only — **`F05.1` excluded**.
+**ICD-10 delirium definition:** main diagnosis **`icd_hd == 1`** and codes **`F05.0`**, **`F05.8`**, **`F05.9`** only. **`F05.1`** (alcohol-related delirium) and other F05 subcodes are excluded from the baseline cohort.
+
+**LLM prompts** are German (`prompts/agent_*.txt`); JSON keys remain unchanged for parsers.
+
+**Short-report fallback** (optional): `SEND_SHORT_REPORTS_WITHOUT_EVIDENCE_TO_LLM=true`, `SHORT_REPORT_CHAR_THRESHOLD=1000` — sends capped full text for short `Verlaufseintrag` / `Verlegungsbericht` / `Austrittsbericht` when the rule layer finds no snippets.
 
 **ICDSC:** `max_icdsc` = `ICDSC_Max`; binary columns derived from thresholds (e.g. `baseline_icdsc_ge_4` ⇔ `ICDSC_Max >= 4`).
 

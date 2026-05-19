@@ -62,38 +62,18 @@ def test_icd_only_main_diagnosis_counts_delir():
     assert int(out.loc[out["PatientenID"] == "p3", "has_delir_icd10"].iloc[0]) == 0
 
 
-def test_icd_valid_delir_codes_presentation_mode():
+def test_icd_valid_delir_codes_thesis_definition():
     assert is_valid_delir_icd10_code("F05.0")
     assert is_valid_delir_icd10_code("f05.8")
     assert is_valid_delir_icd10_code("F05.9")
-    assert is_valid_delir_icd10_code("F05.1")
-    assert is_valid_delir_icd10_code("F05")
-    assert not is_valid_delir_icd10_code("I10")
-    assert not is_valid_delir_icd10_code("F06.0")
-
-
-def test_icd_valid_delir_codes_thesis_mode(monkeypatch):
-    monkeypatch.setattr(
-        "src.pipeline.paths.INCLUDE_ALL_F05_PRESENTATION_MODE",
-        False,
-    )
-    assert is_valid_delir_icd10_code("F05.0")
-    assert is_valid_delir_icd10_code("F05.9")
     assert not is_valid_delir_icd10_code("F05.1")
     assert not is_valid_delir_icd10_code("F05")
+    assert not is_valid_delir_icd10_code("F05.2")
+    assert not is_valid_delir_icd10_code("I10")
 
 
-def test_icd_f051_included_when_presentation_mode():
-    df = pd.DataFrame({"PatientID": ["p1"], "icd_hd": [1], "icd_code": ["F05.1"]})
-    out = prepare_icd10(df)
-    assert int(out.loc[0, "has_delir_icd10"]) == 1
-
-
-def test_icd_f051_excluded_when_thesis_mode(monkeypatch):
-    monkeypatch.setattr(
-        "src.pipeline.paths.INCLUDE_ALL_F05_PRESENTATION_MODE",
-        False,
-    )
+def test_icd_f051_excluded_alcohol_delir():
+    """F05.1 (alcohol-related delirium) is outside the intended cohort."""
     df = pd.DataFrame({"PatientID": ["p1"], "icd_hd": [1], "icd_code": ["F05.1"]})
     out = prepare_icd10(df)
     assert int(out.loc[0, "has_delir_icd10"]) == 0

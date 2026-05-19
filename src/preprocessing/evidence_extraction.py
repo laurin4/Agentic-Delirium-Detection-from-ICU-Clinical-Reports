@@ -11,7 +11,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # --- Keyword groups (longest phrases first within each list for safe matching) ---
 
@@ -96,12 +96,75 @@ EVIDENCE_TYPE_ORDER: Dict[str, int] = {
 
 METHOD_NO_EVIDENCE = "no_evidence_prefilter_skip"
 METHOD_STRUCTURED = "structured_evidence_extraction"
+METHOD_SHORT_REPORT_FULLTEXT = "short_report_no_evidence_fulltext"
+
+SHORT_REPORT_BERTYPEN = ("Verlaufseintrag", "Verlegungsbericht", "Austrittsbericht")
 
 LLM_INSTRUCTION_BLOCK = """Instruction:
 Decide whether the evidence supports documented delirium.
 Do not classify prophylaxis/risk/screening alone as delirium.
 Do not classify negated/excluded delirium as delirium.
 Indirect symptoms require clinical interpretation."""
+
+
+def _bool_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
+
+
+def send_short_reports_without_evidence_enabled() -> bool:
+    """``SEND_SHORT_REPORTS_WITHOUT_EVIDENCE_TO_LLM`` (default false)."""
+    return _bool_env("SEND_SHORT_REPORTS_WITHOUT_EVIDENCE_TO_LLM")
+
+
+def short_report_char_threshold() -> int:
+    """``SHORT_REPORT_CHAR_THRESHOLD`` (default 1000)."""
+    raw = os.environ.get("SHORT_REPORT_CHAR_THRESHOLD", "1000").strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 1000
+
+
+def should_send_short_report_without_evidence(
+    report_text: str,
+    bertyp: str,
+    snippets: List[Dict[str, Any]],
+    *,
+    original_length: Optional[int] = None,
+) -> bool:
+    """
+    Send full short report text to LLM when rule layer found no snippets but report is brief.
+
+    Requires ``SEND_SHORT_REPORTS_WITHOUT_EVIDENCE_TO_LLM=true`` and bertyp in
+    Verlaufseintrag / Verlegungsbericht / Austrittsbericht.
+    """
+    from src.preprocessing.berichte_filters import normalize_bertyp
+
+    if not send_short_reports_without_evidence_enabled():
+        return False
+    if llm_should_receive_evidence(snippets):
+        return False
+    bt = normalize_bertyp(bertyp)
+    if bt not in SHORT_REPORT_BERTYPEN:
+        return False
+    length = original_length if original_length is not None else len(str(report_text or ""))
+    return length <= short_report_char_threshold()
+
+
+def apply_short_report_fulltext_to_evidence(
+    evidence: Dict[str, Any],
+    report_text: str,
+) -> Dict[str, Any]:
+    """Override LLM input with capped full report for short-report fallback path."""
+    max_llm = _max_llm_chars()
+    body = str(report_text or "").strip()
+    if len(body) > max_llm:
+        body = body[: max_llm - 1] + "…"
+    out = dict(evidence)
+    out["llm_report_text"] = body
+    out["llm_report_text_length"] = len(body)
+    out["llm_text_reduction_method"] = METHOD_SHORT_REPORT_FULLTEXT
+    return out
 
 
 def _int_env(name: str, default: int, minimum: int = 1) -> int:
