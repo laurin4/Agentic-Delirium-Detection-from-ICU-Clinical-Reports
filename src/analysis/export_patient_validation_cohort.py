@@ -47,6 +47,7 @@ from src.preprocessing.berichte_filters import (
     is_dokumentationsblatt,
     normalize_bertyp,
 )
+from src.preprocessing.berichte_mapper import read_berichte_csv_robust
 
 LOGGER = logging.getLogger(__name__)
 
@@ -156,11 +157,28 @@ def _merge_berdat_from_berichte(predictions: pd.DataFrame, berichte_path: Path) 
     if not berichte_path.exists():
         predictions["berdat"] = ""
         return predictions
-    ber = normalize_patient_id_column(pd.read_csv(berichte_path))
-    keys = ["PatientenID", "bericht", "bertyp"]
-    if not all(k in ber.columns for k in keys):
+    try:
+        ber = normalize_patient_id_column(
+            read_berichte_csv_robust(berichte_path, log_context="validation merge")
+        )
+    except (ValueError, OSError) as exc:
+        LOGGER.warning(
+            "Berichte.csv could not be loaded for berdat merge; continuing without dates: %s",
+            exc,
+        )
         predictions["berdat"] = ""
         return predictions
+    ber.columns = [str(c).strip() for c in ber.columns]
+    keys = ["PatientenID", "bericht", "bertyp"]
+    if not all(k in ber.columns for k in keys):
+        LOGGER.warning(
+            "Berichte.csv missing merge keys %s; berdat merge skipped.",
+            [k for k in keys if k not in ber.columns],
+        )
+        predictions["berdat"] = ""
+        return predictions
+    if "bertyp" in ber.columns:
+        ber["bertyp"] = ber["bertyp"].map(normalize_bertyp)
     ber = ber[keys + ["berdat"]].drop_duplicates(keys, keep="first")
     pred = normalize_patient_id_column(predictions.copy())
     if "bertyp" in pred.columns:

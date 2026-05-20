@@ -36,18 +36,79 @@ def _normalize_str(value: object) -> str:
     return s
 
 
-def _read_berichte_csv(path: Path) -> pd.DataFrame:
+def read_berichte_csv_robust(
+    path: Path,
+    *,
+    log_context: str = "Berichte load",
+) -> pd.DataFrame:
+    """
+    Load semicolon-separated Berichte.csv, skipping malformed rows instead of failing.
+
+    Uses ``engine="python"`` and ``on_bad_lines`` so free-text delimiter issues do not
+    abort downstream exports. Logs a warning per skipped row (and a summary count).
+    """
+    skipped_count = 0
+
+    def _on_bad_line(_bad_line: list[str]) -> None:
+        nonlocal skipped_count
+        skipped_count += 1
+        LOGGER.warning(
+            "[WARN] skipped malformed Berichte.csv row during %s",
+            log_context,
+        )
+        return None
+
     last_err: Optional[BaseException] = None
     for enc in _CSV_ENCODINGS:
         try:
-            return pd.read_csv(path, sep=";", dtype=str, encoding=enc)
+            try:
+                df = pd.read_csv(
+                    path,
+                    sep=";",
+                    dtype=str,
+                    encoding=enc,
+                    engine="python",
+                    on_bad_lines=_on_bad_line,
+                )
+            except TypeError:
+                # Older pandas: no callable on_bad_lines
+                df = pd.read_csv(
+                    path,
+                    sep=";",
+                    dtype=str,
+                    encoding=enc,
+                    engine="python",
+                    on_bad_lines="warn",
+                )
+            if skipped_count:
+                LOGGER.warning(
+                    "[WARN] skipped %d malformed Berichte.csv row(s) during %s",
+                    skipped_count,
+                    log_context,
+                )
+            return df
         except UnicodeDecodeError as exc:
             last_err = exc
+            skipped_count = 0
+        except pd.errors.ParserError as exc:
+            last_err = exc
+            LOGGER.warning(
+                "ParserError reading Berichte.csv with encoding %s (%s): %s",
+                enc,
+                log_context,
+                exc,
+            )
+            skipped_count = 0
         except Exception as exc:
             last_err = exc
             LOGGER.warning("Failed reading Berichte.csv with encoding %s: %s", enc, exc)
+            skipped_count = 0
             continue
     raise ValueError(f"Berichte.csv could not be read: {path}") from last_err
+
+
+def _read_berichte_csv(path: Path) -> pd.DataFrame:
+    return read_berichte_csv_robust(path, log_context="Berichte load")
 
 
 def load_berichte_dataframe(path: Optional[Path] = None) -> pd.DataFrame:

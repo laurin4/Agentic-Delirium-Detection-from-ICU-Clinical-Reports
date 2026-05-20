@@ -276,6 +276,62 @@ def test_column_order():
     assert list(cohort.columns) == COHORT_COLUMNS
 
 
+def _predictions_without_berdat() -> pd.DataFrame:
+    return _predictions().drop(columns=["berdat"], errors="ignore")
+
+
+def test_merge_berdat_survives_malformed_berichte_row(tmp_path):
+    """ParserError from extra semicolons in text must not abort validation export."""
+    berichte = tmp_path / "Berichte.csv"
+    berichte.write_text(
+        "PatientID;bericht;bertyp;berdat;diag\n"
+        "p1;p1_v_2024-01-01.txt;Verlaufseintrag;2024-01-01;ok\n"
+        "p1;p1_v_2024-01-02.txt;Verlaufseintrag;2024-01-02;bad;extra;fields;here\n"
+        "p1;p1_a.txt;Austrittsbericht;2024-01-03;ok\n",
+        encoding="utf-8",
+    )
+    from src.analysis.export_patient_validation_cohort import _merge_berdat_from_berichte
+
+    merged = _merge_berdat_from_berichte(_predictions_without_berdat(), berichte)
+    p1 = merged[merged["PatientenID"] == "p1"]
+    dates = set(p1["berdat"].astype(str).str.strip())
+    assert "2024-01-01" in dates
+    assert "2024-01-03" in dates
+
+
+def test_export_main_with_malformed_berichte(tmp_path, monkeypatch):
+    pred = tmp_path / "pred.csv"
+    base = tmp_path / "base.csv"
+    mat = tmp_path / "mat.csv"
+    berichte = tmp_path / "Berichte.csv"
+    out = tmp_path / "cohort.csv"
+    rep = tmp_path / "report.txt"
+    _predictions_without_berdat().to_csv(pred, index=False)
+    _baseline().to_csv(base, index=False)
+    _patient_matrix().to_csv(mat, index=False)
+    berichte.write_text(
+        "PatientID;bericht;bertyp;berdat;diag\n"
+        "p1;p1_v_2024-01-01.txt;Verlaufseintrag;2024-01-01;ok\n"
+        "p1;broken;row;with;too;many;fields;in;free;text\n"
+        "p2;p2_v_2024-02-01.txt;Verlaufseintrag;2024-02-01;ok\n",
+        encoding="utf-8",
+    )
+
+    import src.analysis.export_patient_validation_cohort as mod
+
+    monkeypatch.setenv("PATIENT_VALIDATION_N", "2")
+    mod.main(
+        predictions_path=pred,
+        baseline_path=base,
+        matrix_path=mat,
+        output_path=out,
+        report_path=rep,
+    )
+    assert out.exists()
+    df = pd.read_csv(out)
+    assert len(df) >= 1
+
+
 def test_main_writes_files(tmp_path, monkeypatch):
     pred = tmp_path / "pred.csv"
     base = tmp_path / "base.csv"
