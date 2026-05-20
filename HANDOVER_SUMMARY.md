@@ -105,17 +105,29 @@ python3 -m src.analysis.run_exploration
 python3 -m src.analysis.run_analysis
 python3 -m src.analysis.run_validation_suite
 python3 -m src.analysis.create_patient_reporttype_matrix
-python3 -m src.analysis.export_manual_validation_sample
-python3 -m src.analysis.export_manual_annotation_sheet
-python3 -m src.analysis.export_patient_validation_cohort
+python3 -m src.analysis.export_patient_validation_cohort   # PRIMARY manual validation export
+# After annotation:
+python3 -m src.analysis.evaluate_manual_validation
 python3 -m src.analysis.export_presentation_examples
 ```
 
-## Validation outputs (patient-level)
-- `outputs/analysis/patient_level/patient_reporttype_matrix.csv` — per-patient report-type positives + `baseline_composite` discrepancies.
-- `outputs/analysis/manual_validation/manual_validation_sample.csv` — ~100 mixed patients for manual review (binary `manual_ground_truth`).
-- `outputs/analysis/manual_validation/manual_annotation_sheet.csv` — one row per report for report-level manual GT (`manual_report_ground_truth`); see `manual_annotation_sheet_report.txt`.
-- `outputs/analysis/manual_validation/patient_validation_cohort.csv` — **patient-level cohort** (default 100 unique `PatientenID`); **all** included reports per selected patient (`PATIENT_VALIDATION_N`); annotate per report + optional `manual_patient_ground_truth`.
+## Validation architecture (PRIMARY)
+
+| Unit | Definition |
+|------|------------|
+| Prediction | 1 report → 1 `model_report_prediction` (from `klasse`) |
+| Validation cohort | 100 unique patients (`PATIENT_VALIDATION_N`); **all** Verlauf / Verlegung / Austritt reports per patient |
+| Manual annotation | `manual_report_ground_truth` (0/1) per report |
+| Patient manual GT | **Derived:** `derived_manual_patient_ground_truth` = max(report GT) per patient |
+| ICDSC / ICD10 | **Reference signals only** — not absolute truth |
+
+Legacy (deprecated): `export_manual_validation_sample`, `run_error_review_export` (`manual_label_0_1_2`).
+
+## Validation outputs
+- `outputs/analysis/patient_level/patient_reporttype_matrix.csv` — exploratory patient matrix.
+- `outputs/analysis/manual_validation/patient_validation_cohort.csv` — **PRIMARY** export (`Patient_0001`, `Patient_0001_Report_0001`, …).
+- `outputs/analysis/manual_validation/patient_validation_cohort_report.txt` — cohort summary + methodology.
+- `outputs/analysis/manual_validation/evaluation/` — metrics after annotation (`evaluate_manual_validation`).
 - Exploratory: `delir_probability_estimate` (0–100) in predictions CSV; not used for final `klasse`.
 - `outputs/analysis/presentation_examples/` — CSV + Markdown examples for slides (excerpt → keywords → evidence → LLM → prediction).
 

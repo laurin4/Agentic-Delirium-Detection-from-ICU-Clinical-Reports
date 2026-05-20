@@ -106,6 +106,32 @@ Inspect `outputs/logs/llm_debug/*.json`. Prompts are unchanged by design; backen
 
 Log line: `Long LLM input detected ...`. No truncation is applied. If outputs degrade, consider shorter reports or future chunking (not implemented yet).
 
+## Manual validation (PRIMARY thesis evaluation)
+
+1. **Prediction** remains report-level (`run_pipeline` → `klasse`).
+2. **Cohort export** — 100 unique patients, all included reports per patient:
+
+```bash
+export PATIENT_VALIDATION_N=100   # or 30 for a pilot
+python -m src.analysis.export_patient_validation_cohort
+```
+
+Outputs: `outputs/analysis/manual_validation/patient_validation_cohort.csv` and `patient_validation_cohort_report.txt`.
+
+3. **Annotate** `manual_report_ground_truth` (0/1) per report in the CSV. Do not fill a manual patient column; patient GT is derived automatically.
+
+4. **Evaluate** annotated cohort:
+
+```bash
+python -m src.analysis.evaluate_manual_validation
+```
+
+Outputs: `outputs/analysis/manual_validation/evaluation/` (tables, confusion plots, `evaluation_report.txt`).
+
+ICDSC and ICD10 in the cohort are **reference signals only**, not absolute ground truth. Exploratory baselines: `baseline_composite_or`, `baseline_composite_and`.
+
+Legacy: `export_manual_validation_sample`, `run_error_review_export` (multiclass `manual_label_0_1_2`).
+
 ## Compile / tests (CI-style)
 
 ```bash

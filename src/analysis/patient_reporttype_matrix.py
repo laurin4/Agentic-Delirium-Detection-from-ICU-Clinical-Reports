@@ -23,6 +23,8 @@ MANUAL_ANNOTATION_COLUMNS = (
     "review_date",
 )
 
+ICDSC_GE4_THRESHOLD = 4
+
 
 def _bin_klasse(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").fillna(0).astype(int).clip(0, 1)
@@ -58,6 +60,33 @@ def _aggregate_report_type(preds: pd.DataFrame, bertyp_label: str) -> pd.DataFra
     return grouped
 
 
+def ensure_baseline_icdsc_ge_4_column(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure ``baseline_icdsc_ge_4`` exists for patient-level sampling and exports.
+
+    Prefer values from ``structured_baseline`` when present; fill gaps from
+    ``ICDSC_max`` (or ``max_icdsc``) using threshold >= 4.
+    """
+    out = df.copy()
+    icdsc_col = "ICDSC_max" if "ICDSC_max" in out.columns else ("max_icdsc" if "max_icdsc" in out.columns else None)
+    if icdsc_col is None:
+        if "baseline_icdsc_ge_4" not in out.columns:
+            out["baseline_icdsc_ge_4"] = 0
+        else:
+            out["baseline_icdsc_ge_4"] = (
+                pd.to_numeric(out["baseline_icdsc_ge_4"], errors="coerce").fillna(0).astype(int).clip(0, 1)
+            )
+        return out
+
+    derived = (pd.to_numeric(out[icdsc_col], errors="coerce").fillna(0) >= ICDSC_GE4_THRESHOLD).astype(int)
+    if "baseline_icdsc_ge_4" not in out.columns:
+        out["baseline_icdsc_ge_4"] = derived
+    else:
+        existing = pd.to_numeric(out["baseline_icdsc_ge_4"], errors="coerce")
+        out["baseline_icdsc_ge_4"] = existing.fillna(derived).astype(int).clip(0, 1)
+    return out
+
+
 def build_patient_reporttype_matrix(
     predictions: pd.DataFrame,
     baseline: pd.DataFrame,
@@ -82,16 +111,21 @@ def build_patient_reporttype_matrix(
         "ICDSC_max": "max_icdsc",
         "ICD10": "baseline_icd10",
         "baseline_composite": "baseline_composite",
+        "baseline_icdsc_ge_4": "baseline_icdsc_ge_4",
     }
     for out_col, src in base_cols.items():
         if src in base.columns:
             merged = base[["PatientenID", src]].rename(columns={src: out_col})
             out = out.merge(merged, on="PatientenID", how="left")
+        elif out_col == "baseline_icdsc_ge_4":
+            out[out_col] = pd.NA
         else:
             out[out_col] = 0
 
     for col in ("ICDSC_max", "ICD10", "baseline_composite"):
         out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).astype(int)
+
+    out = ensure_baseline_icdsc_ge_4_column(out)
 
     for rt in REPORT_TYPE_COLUMNS:
         agg = _aggregate_report_type(pred, rt)
@@ -150,6 +184,7 @@ def build_patient_reporttype_matrix(
     column_order = [
         "PatientenID",
         "ICDSC_max",
+        "baseline_icdsc_ge_4",
         "ICD10",
         "baseline_composite",
         *REPORT_TYPE_COLUMNS,

@@ -11,7 +11,10 @@ from src.analysis.export_manual_validation_sample import (
     _assign_validation_category,
     build_validation_sample,
 )
-from src.analysis.patient_reporttype_matrix import build_patient_reporttype_matrix
+from src.analysis.patient_reporttype_matrix import (
+    build_patient_reporttype_matrix,
+    ensure_baseline_icdsc_ge_4_column,
+)
 from src.pipeline.prepare_structured_data import add_binary_baselines
 from src.preprocessing.berichte_filters import (
     DOKUMENTATIONSBLATT_BERTYP,
@@ -85,12 +88,15 @@ def test_patient_reporttype_matrix_aggregation():
             "PatientenID": ["p1", "p2"],
             "max_icdsc": [5, 0],
             "baseline_icd10": [0, 0],
-            "baseline_icd10": [0, 0],
+            "baseline_icdsc_ge_4": [1, 0],
             "baseline_composite": [1, 0],
         }
     )
     m = build_patient_reporttype_matrix(preds, baseline)
+    assert "baseline_icdsc_ge_4" in m.columns
     row1 = m.loc[m["PatientenID"] == "p1"].iloc[0]
+    assert int(row1["baseline_icdsc_ge_4"]) == 1
+    assert int(row1["ICDSC_max"]) == 5
     assert int(row1["Verlaufseintrag"]) == 1
     assert int(row1["n_verlaufseintrag"]) == 2
     assert int(row1["model_patient_positive"]) == 1
@@ -98,6 +104,40 @@ def test_patient_reporttype_matrix_aggregation():
     row2 = m.loc[m["PatientenID"] == "p2"].iloc[0]
     assert int(row2["Austrittsbericht"]) == 0
     assert int(row2["discrepancy_model_vs_baseline"]) == 0
+
+
+def test_matrix_derives_baseline_icdsc_ge_4_from_icdsc_max():
+    preds = pd.DataFrame(
+        {
+            "PatientenID": ["p1", "p2"],
+            "bertyp": ["Verlaufseintrag", "Verlaufseintrag"],
+            "klasse": [0, 0],
+        }
+    )
+    baseline = pd.DataFrame(
+        {
+            "PatientenID": ["p1", "p2"],
+            "max_icdsc": [5, 3],
+            "baseline_icd10": [0, 0],
+            "baseline_composite": [1, 0],
+        }
+    )
+    m = build_patient_reporttype_matrix(preds, baseline)
+    assert int(m.loc[m["PatientenID"] == "p1", "baseline_icdsc_ge_4"].iloc[0]) == 1
+    assert int(m.loc[m["PatientenID"] == "p2", "baseline_icdsc_ge_4"].iloc[0]) == 0
+
+
+def test_ensure_baseline_icdsc_ge_4_on_legacy_matrix_without_column():
+    legacy = pd.DataFrame(
+        {
+            "PatientenID": ["p1", "p2"],
+            "ICDSC_max": [6, 2],
+            "ICD10": [0, 0],
+            "model_patient_positive": [0, 0],
+        }
+    )
+    out = ensure_baseline_icdsc_ge_4_column(legacy)
+    assert list(out["baseline_icdsc_ge_4"]) == [1, 0]
 
 
 def test_delirium_probability_estimate_ranges():

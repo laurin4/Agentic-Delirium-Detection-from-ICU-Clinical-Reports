@@ -1,9 +1,9 @@
 """
-Manual review export: sample TP/TN/FP/FN cases per primary structured baseline.
+LEGACY / DEPRECATED — multiclass ``manual_label_0_1_2`` review tied to baseline-as-truth.
+
+PRIMARY manual validation: ``export_patient_validation_cohort`` + ``evaluate_manual_validation``.
 
 Reads: outputs/comparisons/report_vs_baseline_comparison.csv
-
-Does not change prediction or baseline logic — validation / QC tooling only.
 """
 
 from __future__ import annotations

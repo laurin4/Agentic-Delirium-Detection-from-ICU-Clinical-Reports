@@ -1,9 +1,11 @@
 """
-Export patient-level manual validation cohort: N unique patients, all included reports each.
+PRIMARY manual validation export: patient-level cohort, report-level rows.
 
-Prediction remains report-level; cohort selection is patient-level. For each selected
-patient, every Verlaufseintrag / Verlegungsbericht / Austrittsbericht prediction row
-is exported (Dokumentationsblatt excluded).
+- Prediction unit: one report = one prediction (Verlauf / Verlegung / Austritt).
+- Validation unit: unique patients (default 100 via PATIENT_VALIDATION_N).
+- Manual annotation: per report (manual_report_ground_truth 0/1).
+- Patient-level manual GT derived automatically (derived_manual_patient_ground_truth).
+- ICDSC / ICD10 are reference signals only (not absolute truth).
 """
 
 from __future__ import annotations
@@ -16,8 +18,22 @@ from typing import Callable, List, Optional, Sequence, Tuple
 import pandas as pd
 
 from src.analysis.cohort_counts import load_structured_baseline_rows
-from src.analysis.patient_reporttype_matrix import build_patient_reporttype_matrix
+from src.analysis.manual_validation_eval import (
+    DERIVED_PATIENT_GT_COL,
+    N_POSITIVE_REPORTS_COL,
+    derive_patient_manual_labels,
+)
+from src.analysis.patient_reporttype_matrix import (
+    build_patient_reporttype_matrix,
+    ensure_baseline_icdsc_ge_4_column,
+)
+from src.analysis.validation_ids import (
+    assign_validation_patient_ids,
+    format_validation_report_id,
+)
+from src.pipeline.baseline_composite import compute_baseline_composite
 from src.pipeline.paths import (
+    BERICHTE_INPUT_PATH,
     MANUAL_VALIDATION_DIR,
     PATIENT_REPORTTYPE_MATRIX_PATH,
     PATIENT_VALIDATION_COHORT_PATH,
@@ -38,16 +54,15 @@ DEFAULT_PREDICTIONS_PATH = PREDICTIONS_DIR / "agent1_agent2_agent3_results_promp
 DEFAULT_TARGET_N = 100
 
 REPORT_PATIENT_LEVEL_WARNING = (
-    "Patient-level baseline positive; this individual report may still be correctly negative."
+    "Patient-level reference positive; this report may still be correctly negative."
 )
 
-MANUAL_VALIDATION_COLUMNS = (
+MANUAL_ANNOTATION_COLUMNS = (
     "manual_report_ground_truth",
-    "manual_patient_ground_truth",
+    "manual_report_confidence",
     "manual_possible_delir_flag",
     "manual_alternative_explanation_flag",
     "manual_differential_diagnosis",
-    "manual_discrepancy_type",
     "manual_comment",
     "reviewer",
     "review_date",
@@ -55,24 +70,26 @@ MANUAL_VALIDATION_COLUMNS = (
 
 COHORT_COLUMNS: List[str] = [
     "validation_patient_id",
+    "validation_report_id",
+    "report_nr_within_patient",
     "PatientenID",
-    "baseline_composite",
-    "ICDSC_max",
-    "ICD10",
-    "baseline_icdsc_ge_4",
-    "model_patient_positive",
-    "n_reports_included",
-    "n_verlaufseintrag",
-    "n_verlegungsbericht",
-    "n_austrittsbericht",
-    "report_row_id",
     "bericht",
     "bertyp",
+    "berdat",
     "model_report_prediction",
     "signalstaerke",
     "delir_probability_estimate",
     "manual_review_candidate",
     "decision_rule_applied",
+    "model_patient_positive",
+    "baseline_icd10",
+    "baseline_icdsc_ge_4",
+    "ICDSC_max",
+    "baseline_composite_or",
+    "baseline_composite_and",
+    *MANUAL_ANNOTATION_COLUMNS,
+    DERIVED_PATIENT_GT_COL,
+    N_POSITIVE_REPORTS_COL,
     "evidence_snippets",
     "delir_signale",
     "kontext",
@@ -80,17 +97,18 @@ COHORT_COLUMNS: List[str] = [
     "original_report_text_length",
     "llm_report_text_length",
     "llm_text_reduction_method",
-    *MANUAL_VALIDATION_COLUMNS,
     "suggested_patient_sampling_group",
     "report_patient_level_warning",
     "missing_structured_baseline",
 ]
 
 SAMPLING_GROUP_ORDER: Tuple[str, ...] = (
-    "TP_composite",
-    "FN_composite",
-    "FP_composite",
-    "TN_composite",
+    "model_positive",
+    "model_negative",
+    "icdsc_reference_positive",
+    "icdsc_reference_negative",
+    "icd10_reference_positive",
+    "icd10_reference_negative",
     "manual_review",
     "multi_report_types",
     "other",
@@ -132,11 +150,34 @@ def _filter_included_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
     return pred
 
 
+def _merge_berdat_from_berichte(predictions: pd.DataFrame, berichte_path: Path) -> pd.DataFrame:
+    if "berdat" in predictions.columns and predictions["berdat"].notna().any():
+        return predictions
+    if not berichte_path.exists():
+        predictions["berdat"] = ""
+        return predictions
+    ber = normalize_patient_id_column(pd.read_csv(berichte_path))
+    keys = ["PatientenID", "bericht", "bertyp"]
+    if not all(k in ber.columns for k in keys):
+        predictions["berdat"] = ""
+        return predictions
+    ber = ber[keys + ["berdat"]].drop_duplicates(keys, keep="first")
+    pred = normalize_patient_id_column(predictions.copy())
+    if "bertyp" in pred.columns:
+        pred["bertyp"] = pred["bertyp"].map(normalize_bertyp)
+    merged = pred.merge(ber, on=keys, how="left", suffixes=("", "_src"))
+    if "berdat_src" in merged.columns:
+        merged["berdat"] = merged.get("berdat", merged["berdat_src"]).fillna(merged["berdat_src"])
+        merged = merged.drop(columns=["berdat_src"], errors="ignore")
+    if "berdat" not in merged.columns:
+        merged["berdat"] = ""
+    return merged
+
+
 def _patient_level_frame_from_predictions(
     predictions: pd.DataFrame,
     baseline: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Build patient-level summary when matrix CSV is unavailable."""
     pred = _filter_included_predictions(predictions)
     matrix = build_patient_reporttype_matrix(pred, baseline)
     if "manual_review_candidate" in pred.columns:
@@ -163,9 +204,12 @@ def load_patient_level_context(
         m = normalize_patient_id_column(pd.read_csv(matrix_path))
         if "any_manual_review_candidate" not in m.columns:
             m["any_manual_review_candidate"] = 0
+        m = ensure_baseline_icdsc_ge_4_column(m)
     else:
         LOGGER.info("Patient matrix not found at %s; building from predictions.", matrix_path)
         m = _patient_level_frame_from_predictions(predictions, baseline)
+    if "baseline_icd10" not in m.columns and "ICD10" in m.columns:
+        m["baseline_icd10"] = m["ICD10"]
     return normalize_patient_id_column(m)
 
 
@@ -178,23 +222,29 @@ def _count_report_types_present(row: pd.Series) -> int:
 
 
 def assign_primary_sampling_group(row: pd.Series) -> str:
-    """Assign one primary group per patient (priority order)."""
-    base = _int01(row.get("baseline_composite"))
+    """One primary label per patient for balanced selection (reference-aware, not composite-only)."""
     model = _int01(row.get("model_patient_positive"))
-    if base == 1 and model == 1:
-        return "TP_composite"
-    if base == 1 and model == 0:
-        return "FN_composite"
-    if base == 0 and model == 1:
-        return "FP_composite"
-    if base == 0 and model == 0:
-        return "TN_composite"
+    icdsc = _int01(row.get("baseline_icdsc_ge_4"))
+    icd10 = _int01(row.get("baseline_icd10"))
+    if model == 1:
+        return "model_positive"
+    if model == 0:
+        return "model_negative"
+    if icdsc == 1:
+        return "icdsc_reference_positive"
+    if icdsc == 0:
+        return "icdsc_reference_negative"
+    if icd10 == 1:
+        return "icd10_reference_positive"
+    if icd10 == 0:
+        return "icd10_reference_negative"
     return "other"
 
 
 def assign_sampling_groups(patient_df: pd.DataFrame) -> pd.DataFrame:
-    """Primary group + flags for balanced selection."""
-    out = patient_df.copy()
+    out = ensure_baseline_icdsc_ge_4_column(patient_df.copy())
+    if "baseline_icd10" not in out.columns and "ICD10" in out.columns:
+        out["baseline_icd10"] = out["ICD10"]
     out["suggested_patient_sampling_group"] = out.apply(assign_primary_sampling_group, axis=1)
     out["_manual_review"] = out.get("any_manual_review_candidate", pd.Series(0, index=out.index)).map(_bool01)
     out["_multi_report_types"] = out.apply(
@@ -227,19 +277,20 @@ def select_validation_patient_ids(
     *,
     target_n: int,
 ) -> Tuple[List[str], pd.DataFrame]:
-    """
-    Balanced patient selection; returns (ordered patient ids, patient frame with groups).
-    """
+    """Balanced patient selection across model / ICDSC / ICD10 / manual review / report types."""
     df = assign_sampling_groups(patient_df)
-    per_bucket = max(5, target_n // 6)
+    n_buckets = 8
+    per_bucket = max(3, target_n // n_buckets)
     seen: set[str] = set()
     selected: List[str] = []
 
     buckets: List[Tuple[str, Callable[[pd.Series], bool]]] = [
-        ("TP_composite", lambda r: assign_primary_sampling_group(r) == "TP_composite"),
-        ("FN_composite", lambda r: assign_primary_sampling_group(r) == "FN_composite"),
-        ("FP_composite", lambda r: assign_primary_sampling_group(r) == "FP_composite"),
-        ("TN_composite", lambda r: assign_primary_sampling_group(r) == "TN_composite"),
+        ("model_positive", lambda r: assign_primary_sampling_group(r) == "model_positive"),
+        ("model_negative", lambda r: assign_primary_sampling_group(r) == "model_negative"),
+        ("icdsc_reference_positive", lambda r: _int01(r.get("baseline_icdsc_ge_4")) == 1),
+        ("icdsc_reference_negative", lambda r: _int01(r.get("baseline_icdsc_ge_4")) == 0),
+        ("icd10_reference_positive", lambda r: _int01(r.get("baseline_icd10")) == 1),
+        ("icd10_reference_negative", lambda r: _int01(r.get("baseline_icd10")) == 0),
         ("manual_review", lambda r: bool(r.get("_manual_review"))),
         ("multi_report_types", lambda r: bool(r.get("_multi_report_types"))),
     ]
@@ -264,8 +315,28 @@ def select_validation_patient_ids(
     return ordered, subset
 
 
-def _baseline_context_columns() -> Tuple[str, ...]:
-    return ("max_icdsc", "baseline_icd10", "baseline_icdsc_ge_4", "baseline_composite")
+def _baseline_reference_for_patient(
+    base: pd.DataFrame,
+    pid: str,
+) -> Tuple[int, dict]:
+    """Return (missing_flag, reference dict) for one patient."""
+    if base.empty or "PatientenID" not in base.columns:
+        return 1, {}
+    row = base[base["PatientenID"].astype(str) == str(pid)]
+    if row.empty:
+        return 1, {}
+    br = row.iloc[0]
+    ge4 = _int01(br.get("baseline_icdsc_ge_4"))
+    icd10 = _int01(br.get("baseline_icd10"))
+    comp_or = int(compute_baseline_composite(pd.Series([ge4]), pd.Series([icd10]), mode="OR").iloc[0])
+    comp_and = int(compute_baseline_composite(pd.Series([ge4]), pd.Series([icd10]), mode="AND").iloc[0])
+    return 0, {
+        "baseline_icd10": icd10,
+        "baseline_icdsc_ge_4": ge4,
+        "ICDSC_max": br.get("max_icdsc", ""),
+        "baseline_composite_or": comp_or,
+        "baseline_composite_and": comp_and,
+    }
 
 
 def build_patient_validation_cohort(
@@ -273,13 +344,18 @@ def build_patient_validation_cohort(
     baseline: Optional[pd.DataFrame],
     patient_context: pd.DataFrame,
     selected_patient_ids: Sequence[str],
+    *,
+    berichte_path: Optional[Path] = None,
 ) -> pd.DataFrame:
-    """All included report rows for selected patients with patient-level context repeated."""
-    pred = _filter_included_predictions(predictions)
-    pred = pred[pred["PatientenID"].isin(list(selected_patient_ids))].copy()
+    """All included report rows for selected patients with stable validation IDs."""
+    pred = _merge_berdat_from_berichte(
+        _filter_included_predictions(predictions),
+        berichte_path or BERICHTE_INPUT_PATH,
+    )
+    pred = pred[pred["PatientenID"].isin([str(p) for p in selected_patient_ids])].copy()
 
     ctx = normalize_patient_id_column(patient_context)
-    ctx = ctx[ctx["PatientenID"].isin(list(selected_patient_ids))].drop_duplicates(
+    ctx = ctx[ctx["PatientenID"].isin([str(p) for p in selected_patient_ids])].drop_duplicates(
         "PatientenID", keep="first"
     )
 
@@ -289,68 +365,66 @@ def build_patient_validation_cohort(
         else pd.DataFrame(columns=["PatientenID"])
     )
 
-    pid_to_validation_id = {pid: f"VP{i + 1:03d}" for i, pid in enumerate(selected_patient_ids)}
-
+    pid_to_vpid = assign_validation_patient_ids(list(selected_patient_ids))
     rows: List[dict] = []
-    report_counter = 0
 
-    for vp_idx, pid in enumerate(selected_patient_ids, start=1):
-        validation_patient_id = pid_to_validation_id[pid]
-        patient_reports = pred[pred["PatientenID"] == pid].copy()
-        patient_reports = patient_reports.sort_values(
-            ["bertyp", "bericht"] if "bericht" in patient_reports.columns else ["bertyp"],
-            kind="mergesort",
+    for pid in selected_patient_ids:
+        validation_patient_id = pid_to_vpid[str(pid)]
+        patient_reports = pred[pred["PatientenID"].astype(str) == str(pid)].copy()
+        sort_cols = ["berdat", "bertyp", "bericht"]
+        for c in sort_cols:
+            if c not in patient_reports.columns:
+                patient_reports[c] = ""
+        if "berdat" in patient_reports.columns:
+            patient_reports["_berdat_sort"] = pd.to_datetime(
+                patient_reports["berdat"], errors="coerce"
+            )
+            patient_reports = patient_reports.sort_values(
+                ["_berdat_sort", "bertyp", "bericht"],
+                kind="mergesort",
+            ).drop(columns=["_berdat_sort"])
+        else:
+            patient_reports = patient_reports.sort_values(
+                ["bertyp", "bericht"], kind="mergesort"
+            )
+
+        ctx_row = ctx[ctx["PatientenID"].astype(str) == str(pid)]
+        ctx_dict = ctx_row.iloc[0].to_dict() if not ctx_row.empty else {}
+        missing_base, ref = _baseline_reference_for_patient(base, str(pid))
+        model_patient_pos = _int01(ctx_dict.get("model_patient_positive"))
+        if not model_patient_pos and len(patient_reports):
+            model_patient_pos = max(_int01(r.get("klasse")) for _, r in patient_reports.iterrows())
+
+        sampling_group = str(
+            ctx_dict.get("suggested_patient_sampling_group")
+            or assign_primary_sampling_group(pd.Series({**ctx_dict, **ref, "model_patient_positive": model_patient_pos}))
         )
 
-        ctx_row = ctx[ctx["PatientenID"] == pid]
-        ctx_dict = ctx_row.iloc[0].to_dict() if not ctx_row.empty else {}
-
-        base_row = base[base["PatientenID"] == pid] if not base.empty and "PatientenID" in base.columns else pd.DataFrame()
-        missing_base = 1 if base_row.empty else 0
-
-        n_verlauf = int((patient_reports["bertyp"] == "Verlaufseintrag").sum())
-        n_verleg = int((patient_reports["bertyp"] == "Verlegungsbericht").sum())
-        n_austritt = int((patient_reports["bertyp"] == "Austrittsbericht").sum())
-        n_included = len(patient_reports)
-
-        for _, rep in patient_reports.iterrows():
-            report_counter += 1
+        for report_nr, (_, rep) in enumerate(patient_reports.iterrows(), start=1):
             model_pred = _int01(rep.get("klasse"))
-            base_comp = ""
-            icdsc = ""
-            icd10 = ""
-            icdsc_ge4 = ""
-            if not missing_base:
-                br = base_row.iloc[0]
-                base_comp = _int01(br.get("baseline_composite"))
-                icdsc = br.get("max_icdsc", "")
-                icd10 = br.get("baseline_icd10", "")
-                icdsc_ge4 = br.get("baseline_icdsc_ge_4", "")
-
             warning = ""
-            if not missing_base and _int01(base_comp) == 1 and model_pred == 0:
+            if not missing_base and ref.get("baseline_icdsc_ge_4") == 1 and model_pred == 0:
                 warning = REPORT_PATIENT_LEVEL_WARNING
+            if not missing_base and ref.get("baseline_icd10") == 1 and model_pred == 0:
+                warning = warning or REPORT_PATIENT_LEVEL_WARNING
 
             row = {
                 "validation_patient_id": validation_patient_id,
+                "validation_report_id": format_validation_report_id(
+                    validation_patient_id, report_nr
+                ),
+                "report_nr_within_patient": report_nr,
                 "PatientenID": pid,
-                "baseline_composite": base_comp,
-                "ICDSC_max": icdsc,
-                "ICD10": icd10,
-                "baseline_icdsc_ge_4": icdsc_ge4,
-                "model_patient_positive": _int01(ctx_dict.get("model_patient_positive")),
-                "n_reports_included": n_included,
-                "n_verlaufseintrag": n_verlauf,
-                "n_verlegungsbericht": n_verleg,
-                "n_austrittsbericht": n_austritt,
-                "report_row_id": f"{validation_patient_id}_R{report_counter:04d}",
                 "bericht": str(rep.get("bericht") or ""),
                 "bertyp": str(rep.get("bertyp") or ""),
+                "berdat": str(rep.get("berdat") or ""),
                 "model_report_prediction": model_pred,
                 "signalstaerke": str(rep.get("signalstaerke") or ""),
                 "delir_probability_estimate": rep.get("delir_probability_estimate", ""),
                 "manual_review_candidate": rep.get("manual_review_candidate", ""),
                 "decision_rule_applied": str(rep.get("decision_rule_applied") or ""),
+                "model_patient_positive": model_patient_pos,
+                **ref,
                 "evidence_snippets": rep.get("evidence_snippets", ""),
                 "delir_signale": rep.get("delir_signale", ""),
                 "kontext": rep.get("kontext", ""),
@@ -358,13 +432,11 @@ def build_patient_validation_cohort(
                 "original_report_text_length": rep.get("original_report_text_length", ""),
                 "llm_report_text_length": rep.get("llm_report_text_length", ""),
                 "llm_text_reduction_method": rep.get("llm_text_reduction_method", ""),
-                "suggested_patient_sampling_group": str(
-                    ctx_dict.get("suggested_patient_sampling_group", assign_primary_sampling_group(pd.Series(ctx_dict)))
-                ),
+                "suggested_patient_sampling_group": sampling_group,
                 "report_patient_level_warning": warning,
                 "missing_structured_baseline": missing_base,
             }
-            for col in MANUAL_VALIDATION_COLUMNS:
+            for col in MANUAL_ANNOTATION_COLUMNS:
                 row[col] = ""
             rows.append(row)
 
@@ -372,13 +444,16 @@ def build_patient_validation_cohort(
         return pd.DataFrame(columns=COHORT_COLUMNS)
 
     out = pd.DataFrame(rows)
+    out = derive_patient_manual_labels(out)
     out = out.sort_values(
-        ["suggested_patient_sampling_group", "PatientenID", "bertyp", "bericht"],
+        ["validation_patient_id", "berdat", "bertyp", "validation_report_id"],
         kind="mergesort",
     ).reset_index(drop=True)
 
-    for col in ("ICDSC_max", "ICD10", "baseline_icdsc_ge_4", "baseline_composite"):
+    ref_cols = ("ICDSC_max", "baseline_icd10", "baseline_icdsc_ge_4", "baseline_composite_or", "baseline_composite_and")
+    for col in ref_cols:
         if col in out.columns:
+            out[col] = out[col].astype(object)
             out.loc[out["missing_structured_baseline"] == 1, col] = ""
 
     return out[[c for c in COHORT_COLUMNS if c in out.columns]]
@@ -389,39 +464,50 @@ def format_cohort_report(cohort: pd.DataFrame, selected_n: int) -> str:
         "Patient validation cohort export report",
         "=" * 44,
         f"target_unique_patients={selected_n}",
-        f"exported_unique_patients={cohort['PatientenID'].nunique() if not cohort.empty else 0}",
+        f"exported_unique_patients={cohort['validation_patient_id'].nunique() if not cohort.empty else 0}",
         f"total_report_rows={len(cohort)}",
         "",
-        "Sampling group counts (patients):",
+        "Report type distribution (rows):",
     ]
-    if not cohort.empty and "suggested_patient_sampling_group" in cohort.columns:
-        grp = cohort.drop_duplicates("PatientenID")["suggested_patient_sampling_group"].value_counts()
-        for name, cnt in grp.sort_index().items():
-            lines.append(f"  {name}: {cnt}")
-    lines.extend(["", "Report type distribution (rows):"])
     if not cohort.empty and "bertyp" in cohort.columns:
         for bt, cnt in cohort["bertyp"].value_counts().sort_index().items():
             lines.append(f"  {bt}: {cnt}")
-    if not cohort.empty and "baseline_composite" in cohort.columns:
-        pat = cohort.drop_duplicates("PatientenID")
-        bc = pd.to_numeric(pat["baseline_composite"], errors="coerce")
-        lines.append(f"\nbaseline_composite_positive_patients={int((bc == 1).sum())}")
+    if not cohort.empty:
+        pat = cohort.drop_duplicates("validation_patient_id")
         mp = pd.to_numeric(pat["model_patient_positive"], errors="coerce")
-        lines.append(f"model_patient_positive_patients={int((mp == 1).sum())}")
+        lines.append(f"\nmodel_patient_positive_patients={int((mp == 1).sum())}")
+        if "baseline_icdsc_ge_4" in pat.columns:
+            icdsc = pd.to_numeric(pat["baseline_icdsc_ge_4"], errors="coerce")
+            lines.append(f"icdsc_reference_positive_patients={int((icdsc == 1).sum())}")
+        if "baseline_icd10" in pat.columns:
+            icd10 = pd.to_numeric(pat["baseline_icd10"], errors="coerce")
+            lines.append(f"icd10_reference_positive_patients={int((icd10 == 1).sum())}")
+        if "suggested_patient_sampling_group" in pat.columns:
+            lines.append("\nSampling group counts (patients):")
+            for name, cnt in pat["suggested_patient_sampling_group"].value_counts().sort_index().items():
+                lines.append(f"  {name}: {cnt}")
     lines.extend(
         [
             "",
-            "Validation methodology",
+            "Validation architecture",
             "-" * 44,
-            "- Cohort selection is PATIENT-level (unique PatientenID).",
-            "- Each selected patient includes ALL report-level prediction rows for",
-            "  Verlaufseintrag, Verlegungsbericht, and Austrittsbericht (Dokumentationsblatt excluded).",
-            "- manual_report_ground_truth: annotate THIS report (0/1).",
-            "- manual_patient_ground_truth: after reviewing all reports, delir documented",
-            "  anywhere for this patient (0/1).",
-            "- Patient-level ICDSC/ICD10 baseline does not imply every report is delir-positive;",
-            "  one report may be correctly negative while another is correctly positive.",
-            "- Derive patient-level manual truth later as any(manual_report_ground_truth==1) if needed.",
+            "- Prediction unit: one report = one model prediction (klasse -> model_report_prediction).",
+            "- Validation unit: unique patients; cohort exports ALL included reports per patient.",
+            "- Included bertyp: Verlaufseintrag, Verlegungsbericht, Austrittsbericht.",
+            "- Excluded: Dokumentationsblatt.",
+            "- Chronological order within patient: berdat, bertyp, validation_report_id.",
+            "",
+            "Manual annotation (PRIMARY): manual_report_ground_truth per report (0/1).",
+            "  Meaning: clinically plausible delir evidence in THIS report.",
+            "- Do NOT fill manual_patient_ground_truth manually.",
+            "- derived_manual_patient_ground_truth = max(manual_report_ground_truth) per patient",
+            "  (filled after annotation; re-run evaluate_manual_validation).",
+            "",
+            "ICDSC and ICD10 are REFERENCE SIGNALS only — not absolute ground truth.",
+            "- baseline_composite_or / baseline_composite_and: exploratory baselines.",
+            "",
+            "Evaluation after annotation:",
+            "  python -m src.analysis.evaluate_manual_validation",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -446,7 +532,7 @@ def main(
     if baseline_path.exists():
         baseline = load_structured_baseline_rows(baseline_path)
     else:
-        LOGGER.warning("Baseline missing at %s; baseline fields will be empty.", baseline_path)
+        LOGGER.warning("Baseline missing at %s; reference fields will be empty.", baseline_path)
 
     base_for_ctx = baseline if baseline is not None else pd.DataFrame()
     patient_ctx = load_patient_level_context(matrix_path, preds, base_for_ctx)
@@ -459,7 +545,10 @@ def main(
 
     print(f"Wrote patient validation cohort: {output_path}")
     print(f"Wrote cohort report: {report_path}")
-    print(f"unique_patients={cohort['PatientenID'].nunique()} report_rows={len(cohort)}")
+    print(
+        f"unique_patients={cohort['validation_patient_id'].nunique()} "
+        f"report_rows={len(cohort)}"
+    )
 
 
 if __name__ == "__main__":

@@ -75,6 +75,16 @@ Model-positive / AND-baseline-negative cases are **Delirkandidaten** (possible u
 
 **Legacy:** `baseline_reference_class` (0/1/2) may still be written for backward compatibility; it is **not** the primary evaluation target. Use binary baselines and `evaluate_predictions`.
 
+### Manual validation (PRIMARY thesis evaluation)
+
+| Unit | Role |
+|------|------|
+| Report | One prediction per report (`klasse` → `model_report_prediction`) |
+| Patient cohort | 100 unique patients; export **all** Verlauf / Verlegung / Austritt reports each |
+| Manual GT | `manual_report_ground_truth` (0/1) per report |
+| Derived patient GT | `derived_manual_patient_ground_truth` = max(report GT) — do not annotate manually |
+| ICDSC / ICD10 in cohort | Reference signals only (exploratory comparison in `evaluate_manual_validation`) |
+
 ---
 
 ## LLM providers
@@ -171,9 +181,9 @@ python -m src.pipeline.run_pipeline              # report-level predictions (exc
 python -m src.pipeline.compare_reports_vs_baseline
 python -m src.pipeline.evaluate_predictions      # primary baseline: baseline_composite (see BASELINE_COMPOSITE_MODE)
 python -m src.analysis.create_patient_reporttype_matrix
-python -m src.analysis.export_manual_validation_sample
-python -m src.analysis.export_manual_annotation_sheet   # report-level sheet for manual GT
-python -m src.analysis.export_patient_validation_cohort # 100 patients, all reports per patient
+python -m src.analysis.export_patient_validation_cohort   # PRIMARY: 100 patients, all reports each
+# Annotate manual_report_ground_truth (0/1) in patient_validation_cohort.csv, then:
+python -m src.analysis.evaluate_manual_validation
 python -m src.analysis.export_presentation_examples     # slide-ready pipeline walkthrough examples
 python -m src.analysis.run_field_delirium_analysis
 ```

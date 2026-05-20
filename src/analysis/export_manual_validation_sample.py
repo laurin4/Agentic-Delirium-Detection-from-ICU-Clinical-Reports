@@ -1,4 +1,6 @@
 """
+LEGACY / DEPRECATED — use ``export_patient_validation_cohort`` as the PRIMARY workflow.
+
 Export ~100-patient mixed manual validation sample from patient_reporttype_matrix.
 """
 

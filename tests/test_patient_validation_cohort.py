@@ -1,4 +1,4 @@
-"""Tests for patient-level manual validation cohort export."""
+"""Tests for PRIMARY patient-level manual validation cohort export."""
 
 import json
 
@@ -7,19 +7,30 @@ import pandas as pd
 from src.analysis.export_patient_validation_cohort import (
     COHORT_COLUMNS,
     build_patient_validation_cohort,
+    load_patient_level_context,
     select_validation_patient_ids,
 )
+from src.analysis.manual_validation_eval import (
+    DERIVED_PATIENT_GT_COL,
+    derive_patient_manual_labels,
+)
+from src.analysis.validation_ids import format_validation_patient_id, format_validation_report_id
 from src.preprocessing.berichte_filters import DOKUMENTATIONSBLATT_BERTYP
 
 
 def _predictions() -> pd.DataFrame:
     rows = []
-    for pid, klasse in [("p1", 1), ("p1", 0), ("p2", 0)]:
+    for pid, klasse, berdat in [
+        ("p1", 1, "2024-01-02"),
+        ("p1", 0, "2024-01-01"),
+        ("p2", 0, "2024-02-01"),
+    ]:
         rows.append(
             {
                 "PatientenID": pid,
-                "bericht": f"{pid}_v.txt",
+                "bericht": f"{pid}_v_{berdat}.txt",
                 "bertyp": "Verlaufseintrag",
+                "berdat": berdat,
                 "klasse": klasse,
                 "signalstaerke": "mittel" if klasse else "niedrig",
                 "delir_probability_estimate": 50,
@@ -39,6 +50,7 @@ def _predictions() -> pd.DataFrame:
             "PatientenID": "p1",
             "bericht": "p1_a.txt",
             "bertyp": "Austrittsbericht",
+            "berdat": "2024-01-03",
             "klasse": 1,
             "signalstaerke": "hoch",
             "delir_probability_estimate": 80,
@@ -58,6 +70,7 @@ def _predictions() -> pd.DataFrame:
             "PatientenID": "p3",
             "bericht": "p3_doc",
             "bertyp": DOKUMENTATIONSBLATT_BERTYP,
+            "berdat": "2024-03-01",
             "klasse": 1,
             "signalstaerke": "hoch",
             "delir_probability_estimate": 90,
@@ -79,9 +92,7 @@ def _patient_matrix() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "PatientenID": ["p1", "p2", "p3"],
-            "baseline_composite": [1, 0, 0],
-            "ICDSC_max": [5, 0, 0],
-            "ICD10": [0, 0, 0],
+            "baseline_icd10": [0, 0, 0],
             "baseline_icdsc_ge_4": [1, 0, 0],
             "model_patient_positive": [1, 0, 0],
             "n_verlaufseintrag": [2, 1, 0],
@@ -115,31 +126,67 @@ def test_select_n_unique_patients_exports_all_reports():
     assert DOKUMENTATIONSBLATT_BERTYP not in set(cohort["bertyp"])
 
 
-def test_patient_with_multiple_reports_all_included():
+def test_validation_ids_deterministic():
     cohort = build_patient_validation_cohort(
-        _predictions(),
-        _baseline(),
-        _patient_matrix(),
-        ["p1"],
+        _predictions(), _baseline(), _patient_matrix(), ["p1", "p2"]
     )
-    assert len(cohort) == 3
-    assert set(cohort["bertyp"]) == {"Verlaufseintrag", "Austrittsbericht"}
+    assert cohort.iloc[0]["validation_patient_id"] == format_validation_patient_id(1)
+    assert cohort.iloc[0]["validation_report_id"] == format_validation_report_id(
+        format_validation_patient_id(1), 1
+    )
+    assert list(cohort["validation_patient_id"].unique()) == [
+        format_validation_patient_id(1),
+        format_validation_patient_id(2),
+    ]
 
 
-def test_manual_columns_exist():
+def test_chronological_order_by_berdat():
     cohort = build_patient_validation_cohort(
-        _predictions(),
-        _baseline(),
-        _patient_matrix(),
-        ["p1"],
+        _predictions(), _baseline(), _patient_matrix(), ["p1"]
     )
-    for col in (
-        "manual_report_ground_truth",
-        "manual_patient_ground_truth",
-        "reviewer",
-    ):
-        assert col in cohort.columns
-        assert (cohort[col].astype(str).str.strip() == "").all()
+    p1 = cohort[cohort["PatientenID"] == "p1"].reset_index(drop=True)
+    dates = pd.to_datetime(p1["berdat"], errors="coerce")
+    assert dates.is_monotonic_increasing
+    assert list(p1["report_nr_within_patient"]) == [1, 2, 3]
+
+
+def test_model_patient_positive_is_max_report():
+    cohort = build_patient_validation_cohort(
+        _predictions(), _baseline(), _patient_matrix(), ["p1"]
+    )
+    assert (cohort["model_patient_positive"] == 1).all()
+
+
+def test_derived_manual_patient_ground_truth_from_reports():
+    df = pd.DataFrame(
+        {
+            "validation_patient_id": ["Patient_0001"] * 3,
+            "manual_report_ground_truth": [0, 1, 0],
+        }
+    )
+    out = derive_patient_manual_labels(df)
+    assert int(out[DERIVED_PATIENT_GT_COL].iloc[0]) == 1
+    assert int(out["n_positive_reports_manual"].iloc[0]) == 1
+
+
+def test_manual_columns_no_required_patient_gt():
+    cohort = build_patient_validation_cohort(
+        _predictions(), _baseline(), _patient_matrix(), ["p1"]
+    )
+    assert "manual_report_ground_truth" in cohort.columns
+    assert "manual_patient_ground_truth" not in cohort.columns
+    assert (cohort["manual_report_ground_truth"].astype(str).str.strip() == "").all()
+
+
+def test_baseline_composite_or_and_columns():
+    cohort = build_patient_validation_cohort(
+        _predictions(), _baseline(), _patient_matrix(), ["p1"]
+    )
+    assert "baseline_composite_or" in cohort.columns
+    assert "baseline_composite_and" in cohort.columns
+    row = cohort.iloc[0]
+    assert int(row["baseline_composite_or"]) == 1
+    assert int(row["baseline_composite_and"]) == 0
 
 
 def test_missing_baseline_keeps_reports():
@@ -151,55 +198,80 @@ def test_missing_baseline_keeps_reports():
     )
     assert len(cohort) == 1
     assert int(cohort.iloc[0]["missing_structured_baseline"]) == 1
-    assert str(cohort.iloc[0]["ICDSC_max"]).strip() == ""
 
 
-def test_patientenid_int64_merge():
-    preds = _predictions().copy()
-    preds["PatientenID"] = preds["PatientenID"].replace({"p1": 1, "p2": 2, "p3": 3})
-    matrix = _patient_matrix().copy()
-    matrix["PatientenID"] = ["1", "2", "3"]
-    selected, _ = select_validation_patient_ids(matrix, target_n=1)
-    cohort = build_patient_validation_cohort(preds, _baseline(), matrix, selected)
-    assert len(cohort) >= 1
-
-
-def test_balanced_sampling_groups_created():
-    matrix = pd.DataFrame(
+def test_matrix_icdsc_max_enables_icdsc_positive_sampling_bucket(tmp_path):
+    """Legacy matrix CSV without baseline_icdsc_ge_4 still fills bucket via ICDSC_max >= 4."""
+    legacy_matrix = pd.DataFrame(
         {
-            "PatientenID": [f"p{i}" for i in range(8)],
-            "baseline_composite": [1, 1, 0, 0, 1, 0, 0, 0],
-            "model_patient_positive": [1, 0, 1, 0, 1, 1, 0, 0],
-            "n_verlaufseintrag": [1] * 8,
-            "n_verlegungsbericht": [0] * 8,
-            "n_austrittsbericht": [0] * 8,
-            "any_manual_review_candidate": [0, 0, 0, 0, 1, 0, 0, 0],
+            "PatientenID": [f"p{i}" for i in range(10)],
+            "ICDSC_max": [5, 5, 5, 0, 0, 0, 0, 0, 0, 0],
+            "ICD10": [0] * 10,
+            "model_patient_positive": [0] * 10,
+            "n_verlaufseintrag": [1] * 10,
+            "n_verlegungsbericht": [0] * 10,
+            "n_austrittsbericht": [0] * 10,
+            "any_manual_review_candidate": [0] * 10,
         }
     )
-    selected, subset = select_validation_patient_ids(matrix, target_n=6)
+    mat_path = tmp_path / "matrix_legacy.csv"
+    legacy_matrix.to_csv(mat_path, index=False)
+
+    preds = _predictions()
+    baseline = _baseline()
+    ctx = load_patient_level_context(mat_path, preds, baseline)
+    assert "baseline_icdsc_ge_4" in ctx.columns
+    assert int(ctx.loc[ctx["PatientenID"] == "p0", "baseline_icdsc_ge_4"].iloc[0]) == 1
+
+    selected, subset = select_validation_patient_ids(ctx, target_n=6)
     assert len(selected) == 6
-    groups = set(subset["suggested_patient_sampling_group"])
-    assert "TP_composite" in groups or "FN_composite" in groups
+    assert (subset["baseline_icdsc_ge_4"] == 1).any()
 
 
-def test_report_warning_when_baseline_positive_report_negative():
-    cohort = build_patient_validation_cohort(
-        _predictions(),
-        _baseline(),
-        _patient_matrix(),
-        ["p1"],
+def test_validation_sampling_includes_icdsc_positive_from_built_matrix():
+    preds = pd.DataFrame(
+        {
+            "PatientenID": [f"p{i}" for i in range(10)],
+            "bertyp": ["Verlaufseintrag"] * 10,
+            "klasse": [0] * 10,
+        }
     )
-    neg = cohort[(cohort["model_report_prediction"] == 0) & (cohort["baseline_composite"] == 1)]
-    assert len(neg) >= 1
-    assert "correctly negative" in str(neg.iloc[0]["report_patient_level_warning"]).lower()
+    baseline = pd.DataFrame(
+        {
+            "PatientenID": [f"p{i}" for i in range(10)],
+            "max_icdsc": [5, 5, 4, 0, 0, 0, 0, 0, 0, 0],
+            "baseline_icd10": [0] * 10,
+            "baseline_composite": [1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+        }
+    )
+    from src.analysis.patient_reporttype_matrix import build_patient_reporttype_matrix
+
+    matrix = build_patient_reporttype_matrix(preds, baseline)
+    assert (matrix["baseline_icdsc_ge_4"] == 1).sum() >= 3
+    selected, subset = select_validation_patient_ids(matrix, target_n=6)
+    assert (subset["baseline_icdsc_ge_4"] == 1).any()
+
+
+def test_balanced_sampling_groups():
+    matrix = pd.DataFrame(
+        {
+            "PatientenID": [f"p{i}" for i in range(10)],
+            "baseline_icd10": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            "baseline_icdsc_ge_4": [1, 1, 0, 0, 1, 0, 0, 0, 0, 0],
+            "model_patient_positive": [1, 0, 1, 0, 1, 1, 0, 0, 0, 0],
+            "n_verlaufseintrag": [1, 1, 1, 1, 1, 1, 1, 1, 1, 2],
+            "n_verlegungsbericht": [0] * 10,
+            "n_austrittsbericht": [0] * 10,
+            "any_manual_review_candidate": [0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+        }
+    )
+    selected, _ = select_validation_patient_ids(matrix, target_n=6)
+    assert len(selected) == 6
 
 
 def test_column_order():
     cohort = build_patient_validation_cohort(
-        _predictions(),
-        _baseline(),
-        _patient_matrix(),
-        ["p1"],
+        _predictions(), _baseline(), _patient_matrix(), ["p1"]
     )
     assert list(cohort.columns) == COHORT_COLUMNS
 
@@ -227,4 +299,4 @@ def test_main_writes_files(tmp_path, monkeypatch):
     assert out.exists()
     assert rep.exists()
     df = pd.read_csv(out)
-    assert df["PatientenID"].nunique() == 2
+    assert df["validation_patient_id"].nunique() == 2
