@@ -58,6 +58,19 @@ Produced by `prepare_structured_data` from **`data/raw/ICD.csv`** and **`data/ra
 
 **Short-report fallback** (optional): `SEND_SHORT_REPORTS_WITHOUT_EVIDENCE_TO_LLM=true`, `SHORT_REPORT_CHAR_THRESHOLD=1000` — sends capped full text for short `Verlaufseintrag` / `Verlegungsbericht` / `Austrittsbericht` when the rule layer finds no snippets.
 
+**Primary baseline `baseline_composite`** — set in `src/pipeline/paths.py`:
+
+```python
+BASELINE_COMPOSITE_MODE = "AND"  # or "OR" for thesis default
+```
+
+| Mode | Definition | Use |
+|------|------------|-----|
+| `OR` | ICDSC≥4 **or** ICD10 | Thesis / sensitive baseline |
+| `AND` | ICDSC≥4 **and** ICD10 | Presentation: «sichere Delirfälle» (high-confidence coded delir) |
+
+Model-positive / AND-baseline-negative cases are **Delirkandidaten** (possible uncoded or underdocumented delir), not strict false positives.
+
 **ICDSC:** `max_icdsc` = `ICDSC_Max`; binary columns derived from thresholds (e.g. `baseline_icdsc_ge_4` ⇔ `ICDSC_Max >= 4`).
 
 **Legacy:** `baseline_reference_class` (0/1/2) may still be written for backward compatibility; it is **not** the primary evaluation target. Use binary baselines and `evaluate_predictions`.
@@ -156,7 +169,7 @@ python -m src.analysis.run_data_coverage_analysis   # Berichte vs baseline; Doku
 python -m src.analysis.run_icd_icdsc_overlap_analysis
 python -m src.pipeline.run_pipeline              # report-level predictions (excludes bertyp=Dokumentationsblatt)
 python -m src.pipeline.compare_reports_vs_baseline
-python -m src.pipeline.evaluate_predictions      # primary baseline: baseline_composite
+python -m src.pipeline.evaluate_predictions      # primary baseline: baseline_composite (see BASELINE_COMPOSITE_MODE)
 python -m src.analysis.create_patient_reporttype_matrix
 python -m src.analysis.export_manual_validation_sample
 python -m src.analysis.export_manual_annotation_sheet   # report-level sheet for manual GT

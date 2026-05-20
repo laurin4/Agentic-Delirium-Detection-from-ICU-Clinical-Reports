@@ -16,6 +16,7 @@ from typing import List, Optional
 import pandas as pd
 
 from src.analysis.cohort_counts import load_structured_baseline_rows
+from src.pipeline.baseline_composite import baseline_composite_definition_text
 from src.pipeline.paths import (
     MANUAL_ANNOTATION_SHEET_PATH,
     MANUAL_ANNOTATION_SHEET_REPORT_PATH,
@@ -262,7 +263,7 @@ def _format_report(sheet: pd.DataFrame) -> str:
             "- Patient-level manual truth can later be derived as:",
             "  any(manual_report_ground_truth == 1) within a patient.",
             "- Dokumentationsblatt reports are excluded from this sheet.",
-            "- baseline_composite is patient-level (ICDSC>=4 OR ICD10);",
+            f"- {baseline_composite_definition_text()};",
             "  report_patient_level_warning flags patient-positive baseline with",
             "  model_report_prediction==0 on a single report.",
         ]

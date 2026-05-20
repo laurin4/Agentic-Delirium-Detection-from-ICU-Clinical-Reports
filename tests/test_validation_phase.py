@@ -57,7 +57,8 @@ def test_build_report_level_excludes_dokumentationsblatt(tmp_path):
     assert {r["bertyp"] for r in records} == {"Verlaufseintrag", "Austrittsbericht"}
 
 
-def test_baseline_composite_or_logic():
+def test_baseline_composite_or_logic(monkeypatch):
+    monkeypatch.setattr("src.pipeline.paths.BASELINE_COMPOSITE_MODE", "OR")
     df = pd.DataFrame(
         {
             "has_delir_icd10": [0, 1, 0, 1],

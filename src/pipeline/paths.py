@@ -59,6 +59,11 @@ def _max_reports_from_environment() -> int | None:
 
 MAX_REPORTS = _max_reports_from_environment()
 
+# TEMPORARY PRESENTATION MODE — baseline_composite definition (revert for thesis default):
+#   "OR"  = (ICDSC>=4) OR ICD10  — broader / sensitive thesis baseline
+#   "AND" = (ICDSC>=4) AND ICD10 — stricter "secure delir cases" for presentation/demo
+BASELINE_COMPOSITE_MODE = "AND"  # allowed: "OR", "AND"
+
 # Outputs
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 PREDICTIONS_DIR = OUTPUTS_DIR / "predictions"

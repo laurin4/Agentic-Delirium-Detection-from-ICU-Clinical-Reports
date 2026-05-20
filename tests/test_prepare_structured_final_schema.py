@@ -20,7 +20,8 @@ from src.pipeline.schema_normalize import (
 )
 
 
-def test_baseline_composite_icdsc_ge4_or_icd10():
+def test_baseline_composite_icdsc_ge4_or_icd10(monkeypatch):
+    monkeypatch.setattr("src.pipeline.paths.BASELINE_COMPOSITE_MODE", "OR")
     df = pd.DataFrame({"has_delir_icd10": [0, 1, 0], "max_icdsc": [0, 2, 5]})
     out = add_binary_baselines(df)
     assert list(out["baseline_composite"]) == [0, 1, 1]

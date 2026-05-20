@@ -12,6 +12,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from src.pipeline.baseline_composite import (
+    baseline_composite_fp_interpretation_note,
+    baseline_composite_short_label,
+    format_baseline_composite_mode_banner,
+)
 from src.pipeline.paths import (
     EVALUATION_BINARY_BASELINE_CONFUSION_COUNTS_PATH,
     EVALUATION_BINARY_BASELINE_REPORT_PATH,
@@ -86,6 +91,9 @@ def _plot_confusion_matrix_binary(counts: dict, baseline_name: str, out_path: Pa
     fig, ax = plt.subplots(figsize=(4.8, 4.0))
     im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
     ax.figure.colorbar(im, ax=ax)
+    title = f"Confusion: {baseline_name}"
+    if baseline_name == "baseline_composite":
+        title = f"Confusion: {baseline_composite_short_label()}"
     ax.set(
         xticks=np.arange(2),
         yticks=np.arange(2),
@@ -93,7 +101,7 @@ def _plot_confusion_matrix_binary(counts: dict, baseline_name: str, out_path: Pa
         yticklabels=["true_0", "true_1"],
         ylabel="Baseline",
         xlabel="Report text model",
-        title=f"Confusion: {baseline_name}",
+        title=title,
     )
     threshold = cm.max() / 2.0 if cm.max() else 0
     for i in range(2):
@@ -114,7 +122,10 @@ def _plot_distribution_comparison(df: pd.DataFrame, out_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(fig_w, 4.8))
     ax.bar(labels, positive_counts, color="#3b82f6")
     ax.set_ylabel("Positive count (class=1)")
-    ax.set_title("Positive class distribution: report text model vs baselines")
+    ax.set_title(
+        "Positive class distribution: report text model vs baselines\n"
+        f"({baseline_composite_short_label()} when applicable)"
+    )
     ax.tick_params(axis="x", rotation=25)
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)
@@ -122,6 +133,7 @@ def _plot_distribution_comparison(df: pd.DataFrame, out_path: Path) -> None:
 
 
 def main() -> None:
+    print(format_baseline_composite_mode_banner())
     if not REPORT_VS_BASELINE_PATH.exists():
         raise FileNotFoundError(
             f"Comparison file not found: {REPORT_VS_BASELINE_PATH}. "
@@ -194,9 +206,13 @@ def main() -> None:
     report_lines = [
         "Binary baseline evaluation",
         "",
+        format_baseline_composite_mode_banner(),
+        "",
         f"n_patients: {len(df)}",
         f"best_baseline_by_f1: {best_row['baseline_name']}",
         f"best_baseline_f1: {best_row['f1']}",
+        "",
+        baseline_composite_fp_interpretation_note(),
         "",
         f"summary_table: {EVALUATION_BINARY_BASELINE_SUMMARY_PATH}",
         f"confusion_counts: {EVALUATION_BINARY_BASELINE_CONFUSION_COUNTS_PATH}",

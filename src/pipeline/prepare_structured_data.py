@@ -12,6 +12,10 @@ import logging
 
 import pandas as pd
 
+from src.pipeline.baseline_composite import (
+    compute_baseline_composite,
+    format_baseline_composite_mode_banner,
+)
 from src.pipeline.paths import ICD10_PATH, ICDSC_PATH, STRUCTURED_BASELINE_PATH
 from src.pipeline.schema_normalize import (
     SchemaValidationError,
@@ -143,9 +147,10 @@ def add_binary_baselines(df: pd.DataFrame) -> pd.DataFrame:
         (df["max_icdsc"] >= 1) & (df["max_icdsc"] <= 3)
     ).astype(int)
     df["baseline_icdsc_ge_4_grouped"] = (df["max_icdsc"] >= 4).astype(int)
-    df["baseline_composite"] = (
-        (df["baseline_icdsc_ge_4"] == 1) | (df["baseline_icd10"] == 1)
-    ).astype(int)
+    df["baseline_composite"] = compute_baseline_composite(
+        df["baseline_icdsc_ge_4"],
+        df["baseline_icd10"],
+    )
     return df
 
 
@@ -184,6 +189,7 @@ def build_structured_baseline(icd10: pd.DataFrame, icdsc: pd.DataFrame) -> pd.Da
 
 
 def main() -> None:
+    print(format_baseline_composite_mode_banner())
     STRUCTURED_BASELINE_PATH.parent.mkdir(parents=True, exist_ok=True)
     icd10, icdsc = load_data()
     merged = build_structured_baseline(icd10, icdsc)
