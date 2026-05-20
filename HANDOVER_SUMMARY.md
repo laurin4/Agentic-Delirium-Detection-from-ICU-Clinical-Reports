@@ -63,7 +63,7 @@ Optional synthetic mode (`DATA_MODE = "synthetic"`):
 
 ## Important Logic
 - **Baseline construction** (`prepare_structured_data`): ICD + ICDSC only → `structured_baseline.csv`.
-- **ICD-10 delirium** (`has_delir_icd10` / `baseline_icd10`): main diagnosis `icd_hd == 1` and codes **F05.0, F05.8, F05.9** only. **F05.1** (alcohol-related / Entzugsdelir) and other F05 subcodes are **excluded** from the intended cohort.
+- **ICD-10 delirium** (`has_delir_icd10` / `baseline_icd10`): main diagnosis `icd_hd == 1` and codes **F05.0, F05.8, F05.9** only. **F05.1** (alcohol-related / Entzugsdelir) and other F05 subcodes are **excluded** from the intended cohort. Implementation: exact allowlist in `is_valid_delir_icd10_code()` — no `startswith("F05")` / no `INCLUDE_ALL_F05_PRESENTATION_MODE`.
 - **ICDSC** (`max_icdsc`): from `ICDSC_Max`; thresholds `baseline_icdsc_ge_*`, `baseline_icdsc_0`, `baseline_icdsc_1_to_3`, `baseline_icdsc_ge_4_grouped`.
 - **Primary validation baseline** `baseline_composite` — configurable in `src/pipeline/paths.py` as `BASELINE_COMPOSITE_MODE`:
   - **`OR`** (thesis): `(baseline_icdsc_ge_4 == 1) OR (baseline_icd10 == 1)` — broader/sensitive.

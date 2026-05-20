@@ -73,6 +73,24 @@ def test_icd_valid_delir_codes_thesis_definition():
     assert not is_valid_delir_icd10_code("I10")
 
 
+@pytest.mark.parametrize(
+    "icd_code,expected",
+    [
+        ("F05.0", 1),
+        ("F05.8", 1),
+        ("F05.9", 1),
+        ("F05.1", 0),
+        ("F05.2", 0),
+        ("F05.5", 0),
+    ],
+)
+def test_icd10_main_diagnosis_thesis_codes(icd_code, expected):
+    """Thesis ICD-10 delir: icd_hd==1 and F05.0 / F05.8 / F05.9 only."""
+    df = pd.DataFrame({"PatientID": ["p1"], "icd_hd": [1], "icd_code": [icd_code]})
+    out = prepare_icd10(df)
+    assert int(out.loc[0, "has_delir_icd10"]) == expected
+
+
 def test_icd_f051_excluded_alcohol_delir():
     """F05.1 (alcohol-related delirium) is outside the intended cohort."""
     df = pd.DataFrame({"PatientID": ["p1"], "icd_hd": [1], "icd_code": ["F05.1"]})
@@ -88,6 +106,12 @@ def test_icd_non_f05_excluded_even_as_main():
 
 def test_icd_f05_not_counted_when_not_main_diagnosis():
     df = pd.DataFrame({"PatientID": ["p1"], "icd_hd": [0], "icd_code": ["F05.1"]})
+    out = prepare_icd10(df)
+    assert int(out.loc[0, "has_delir_icd10"]) == 0
+
+
+def test_icd_f050_not_counted_when_icd_hd_not_main():
+    df = pd.DataFrame({"PatientID": ["p1"], "icd_hd": [0], "icd_code": ["F05.0"]})
     out = prepare_icd10(df)
     assert int(out.loc[0, "has_delir_icd10"]) == 0
 

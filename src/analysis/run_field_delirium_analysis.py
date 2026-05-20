@@ -115,7 +115,7 @@ def _plot_odds_ratios(rows: List[Dict[str, object]], out_path: Path) -> None:
         "any_field": "Any Berichte section",
     }
     outcome_labels = {
-        "icd10_delir": "ICD-10 delirium (F05.* excl. F05.1)",
+        "icd10_delir": "ICD-10 delirium (F05.0/F05.8/F05.9, main dx)",
         "icdsc_ge_4": "ICDSC score ≥ 4",
     }
     labels: List[str] = []

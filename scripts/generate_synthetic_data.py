@@ -24,7 +24,7 @@ DIAGNOSIS_OUTPUT_PATH = DIAGNOSIS_EXAMPLES_DIR / "synthetic_diagnoses.csv"
 ICD10_OUTPUT_PATH = STRUCTURED_RAW_DIR / "synthetic_icd10.csv"
 ICDSC_OUTPUT_PATH = STRUCTURED_RAW_DIR / "synthetic_icdsc.csv"
 
-VALID_DELIR_CODES = ["F05", "F05.0", "F05.8"]
+VALID_DELIR_CODES = ["F05.0", "F05.8", "F05.9"]
 EXCLUDED_DELIR_CODE = "F05.1"
 NON_DELIR_CODES = ["I10", "J44.1", "A41", "K70.3", "N17.9", "R65.1", "E87.1"]
 
@@ -226,7 +226,10 @@ def compute_generated_classes(icd10_df: pd.DataFrame, icdsc_df: pd.DataFrame) ->
 
     icd10["PatientID"] = icd10["PatientID"].astype(str).str.strip()
     icd10["Code"] = icd10["Code"].astype(str).str.strip().str.upper()
-    icd10["valid_delir_icd10"] = icd10["Code"].str.startswith("F05") & (icd10["Code"] != "F05.1")
+    from src.pipeline.schema_normalize import is_main_diagnosis_flag, is_valid_delir_icd10_code
+
+    icd10["is_main"] = icd10["IsHauptDiagn"].map(is_main_diagnosis_flag)
+    icd10["valid_delir_icd10"] = icd10["is_main"] & icd10["Code"].map(is_valid_delir_icd10_code)
 
     icd10_agg = (
         icd10.groupby("PatientID")["valid_delir_icd10"]

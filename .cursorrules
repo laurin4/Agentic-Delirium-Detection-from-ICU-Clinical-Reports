@@ -34,8 +34,7 @@ Data assumptions:
 
 Baseline rules:
 - Class 2 (documented delirium):
-  - ICD10 code starts with F05
-  - excluding F05.1
+  - ICD10 main diagnosis (icd_hd == 1) with code F05.0, F05.8, or F05.9 only (F05.1 and other F05 subcodes excluded)
   - and any ICDSC_DelirFlag == 1
 - Class 1 (possible delirium):
   - not class 2, but at least one of:
