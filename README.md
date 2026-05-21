@@ -182,8 +182,10 @@ python -m src.pipeline.compare_reports_vs_baseline
 python -m src.pipeline.evaluate_predictions      # primary baseline: baseline_composite (see BASELINE_COMPOSITE_MODE)
 python -m src.analysis.create_patient_reporttype_matrix
 python -m src.analysis.export_patient_validation_cohort   # PRIMARY: 100 patients, all reports each
-# Annotate manual_report_ground_truth (0/1) in patient_validation_cohort.csv, then:
-python -m src.analysis.evaluate_manual_validation
+python -m src.analysis.export_manual_report_labels         # slim annotation CSV
+python -m src.analysis.freeze_validation_cohort          # fixed cohort (after full inference)
+# Annotate manual_report_labels.csv (or frozen copy), then:
+python -m src.analysis.evaluate_manual_validation        # uses frozen_validation_cohort/ when present
 python -m src.analysis.export_presentation_examples     # slide-ready pipeline walkthrough examples
 python -m src.analysis.run_field_delirium_analysis
 ```

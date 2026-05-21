@@ -129,31 +129,43 @@ def merge_manual_report_labels(
 
 
 def load_cohort_for_manual_evaluation(
-    cohort_path: Path,
+    cohort_path: Optional[Path] = None,
     labels_path: Optional[Path] = None,
     *,
     auto_merge_default_labels: bool = True,
+    prefer_frozen: bool = True,
 ) -> pd.DataFrame:
     """
-    Load cohort for evaluation; merge ``manual_report_labels.csv`` when present.
+    Load cohort for evaluation; merge label file when present.
 
-    If *labels_path* is set and exists, merge that file. When *auto_merge_default_labels*
-    is true and *labels_path* is None, use ``MANUAL_REPORT_LABELS_PATH`` from paths if it exists.
+    When *prefer_frozen* is true, uses frozen cohort/labels if they exist (see
+    ``resolve_validation_input_paths``).
     """
-    from src.pipeline.paths import MANUAL_REPORT_LABELS_PATH
+    if prefer_frozen or cohort_path is None:
+        from src.analysis.frozen_validation_cohort import resolve_validation_input_paths
+
+        cohort_path, labels_path, _ = resolve_validation_input_paths(
+            cohort_path, labels_path
+        )
+    else:
+        from src.pipeline.paths import (
+            MANUAL_REPORT_LABELS_PATH,
+            PATIENT_VALIDATION_COHORT_PATH,
+        )
+
+        cohort_path = cohort_path or PATIENT_VALIDATION_COHORT_PATH
+        if labels_path is None and auto_merge_default_labels:
+            labels_path = MANUAL_REPORT_LABELS_PATH
 
     if not cohort_path.exists():
         raise FileNotFoundError(f"Patient validation cohort missing: {cohort_path}")
 
     cohort = pd.read_csv(cohort_path)
     resolved = labels_path
-    if resolved is None and auto_merge_default_labels:
-        resolved = MANUAL_REPORT_LABELS_PATH
-
     if resolved is not None and resolved.exists():
         labels = pd.read_csv(resolved)
         cohort = merge_manual_report_labels(cohort, labels)
-    elif labels_path is not None and not resolved.exists():
-        raise FileNotFoundError(f"Manual report labels file missing: {resolved}")
+    elif labels_path is not None and resolved is not None and not resolved.exists():
+        LOGGER.warning("Manual report labels file not found; using cohort as-is: %s", resolved)
 
     return cohort

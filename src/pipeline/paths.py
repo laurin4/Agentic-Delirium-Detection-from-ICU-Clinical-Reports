@@ -189,6 +189,14 @@ PATIENT_VALIDATION_COHORT_REPORT_PATH = (
 )
 MANUAL_VALIDATION_EVAL_DIR = MANUAL_VALIDATION_DIR / "evaluation"
 MANUAL_REPORT_LABELS_PATH = MANUAL_VALIDATION_DIR / "manual_report_labels.csv"
+FROZEN_VALIDATION_COHORT_DIR = MANUAL_VALIDATION_DIR / "frozen_validation_cohort"
+FROZEN_PATIENT_VALIDATION_COHORT_PATH = (
+    FROZEN_VALIDATION_COHORT_DIR / "patient_validation_cohort_frozen.csv"
+)
+FROZEN_MANUAL_REPORT_LABELS_PATH = (
+    FROZEN_VALIDATION_COHORT_DIR / "manual_report_labels_frozen.csv"
+)
+FROZEN_COHORT_METADATA_PATH = FROZEN_VALIDATION_COHORT_DIR / "frozen_cohort_metadata.json"
 
 # Presentation slide examples (report flow: excerpt → keywords → evidence → LLM → prediction)
 PRESENTATION_EXAMPLES_DIR = ANALYSIS_DIR / "presentation_examples"

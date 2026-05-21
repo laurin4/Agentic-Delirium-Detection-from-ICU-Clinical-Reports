@@ -107,8 +107,9 @@ python3 -m src.analysis.run_validation_suite
 python3 -m src.analysis.create_patient_reporttype_matrix
 python3 -m src.analysis.export_patient_validation_cohort   # PRIMARY manual validation export
 python3 -m src.analysis.export_manual_report_labels        # slim sheet for annotation
-# After annotation (edit manual_report_labels.csv or full cohort):
-python3 -m src.analysis.evaluate_manual_validation
+python3 -m src.analysis.freeze_validation_cohort         # lock 100-patient cohort (after full inference)
+# Annotate manual_report_labels.csv (or frozen copy); then:
+python3 -m src.analysis.evaluate_manual_validation         # prefers frozen_validation_cohort/ if present
 python3 -m src.analysis.export_presentation_examples
 ```
 
@@ -128,6 +129,7 @@ Legacy (deprecated): `export_manual_validation_sample`, `run_error_review_export
 - `outputs/analysis/patient_level/patient_reporttype_matrix.csv` — exploratory patient matrix.
 - `outputs/analysis/manual_validation/patient_validation_cohort.csv` — **PRIMARY** export (`Patient_0001`, `Patient_0001_Report_0001`, …).
 - `outputs/analysis/manual_validation/manual_report_labels.csv` — slim annotation sheet (merge by `validation_report_id` at evaluation).
+- `outputs/analysis/manual_validation/frozen_validation_cohort/` — **fixed** cohort for thesis validation (`*_frozen.csv`, `frozen_cohort_metadata.json`). Re-freeze only with `OVERWRITE_FROZEN_VALIDATION=true`.
 - `outputs/analysis/manual_validation/patient_validation_cohort_report.txt` — cohort summary + methodology.
 - `outputs/analysis/manual_validation/evaluation/` — metrics after annotation (`evaluate_manual_validation`).
 - Exploratory: `delir_probability_estimate` (0–100) in predictions CSV; not used for final `klasse`.
