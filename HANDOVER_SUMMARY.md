@@ -89,12 +89,17 @@ Optional synthetic mode (`DATA_MODE = "synthetic"`):
 ```bash
 ./scripts/preflight_check.sh
 ```
-### Pre-prompt
-export MAX_REPORTS=60
+### Pre-prompt (pilot / dev only — not thesis validation)
+
+```bash
+export MAX_REPORTS=60   # caps REPORT rows — do NOT use for final validation
 export DEBUG_LLM_OUTPUT=false
 export ENABLE_SQLITE_LOGGING=true
+```
 
-### Manual step-by-step
+For the thesis validation path, use **[FINAL THESIS WORKFLOW (FULL RUN)](#final-thesis-workflow-full-run)** instead.
+
+### Manual step-by-step (reference / partial runs)
 ```bash
 python3 -m src.pipeline.prepare_structured_data
 python3 -m src.pipeline.run_pipeline
@@ -124,6 +129,146 @@ python3 -m src.analysis.export_presentation_examples
 | ICDSC / ICD10 | **Reference signals only** — not absolute truth |
 
 Legacy (deprecated): `export_manual_validation_sample`, `run_error_review_export` (`manual_label_0_1_2`).
+
+---
+
+## FINAL THESIS WORKFLOW (FULL RUN)
+
+Copy-paste sequence for the **production thesis run**: full inference → validation cohort → freeze → manual annotation → evaluation.
+
+Run all commands from the project root (`delirium_project/`). Ensure `data/raw/Berichte.csv`, `ICD.csv`, and `ICDSC.csv` are present and the USZ LLM service is reachable (see environment notes above).
+
+### 1. Full dataset inference
+
+For final thesis evaluation, the **full** report corpus must be processed **before** exporting the manual validation cohort.
+
+**Why:** Validation is patient-level. Every selected patient must have a **complete report trajectory** (processed, prefilter-skipped, and guardrail-negative rows). The cohort export joins `Berichte.csv` with predictions; predictions must cover the full run first.
+
+**Critical:** Do **not** cap the pipeline with `MAX_REPORTS`. `MAX_REPORTS` limits **report rows**, not patients — a partial run under-represents patients and biases validation.
+
+```bash
+cd delirium_project
+
+unset MAX_REPORTS
+# Alternative explicit “no cap”: export MAX_REPORTS=all
+
+export DEBUG_LLM_OUTPUT=false
+export ENABLE_SQLITE_LOGGING=true
+export SEND_SHORT_REPORTS_WITHOUT_EVIDENCE_TO_LLM=true
+export SHORT_REPORT_CHAR_THRESHOLD=1000
+
+# LLM (USZ) — adjust if your server differs
+export LLM_PROVIDER=usz_api
+export LLM_TEMPERATURE=0
+export LLM_TOP_P=1
+
+python3 -m src.pipeline.prepare_structured_data
+python3 -m src.pipeline.run_pipeline
+python3 -m src.analysis.run_validation_suite
+```
+
+| Step | Role |
+|------|------|
+| `prepare_structured_data` | Builds `structured_baseline.csv` (ICDSC + ICD10; F05.0/F05.8/F05.9 main diagnosis only). |
+| `run_pipeline` | Report-level inference for **all** included Berichte rows (Dokumentationsblatt excluded). |
+| `run_validation_suite` | Compare vs baseline, evaluation plots, patient matrix, **and** `export_patient_validation_cohort` (mutable copy). |
+
+Optional after inference: `python3 -m src.validation.validate_inputs`
+
+**Primary predictions file:** `outputs/predictions/agent1_agent2_agent3_results_prompt.csv`
+
+### 2. Export validation cohort
+
+Run **after** full inference. Re-export if predictions or baseline change.
+
+```bash
+export PATIENT_VALIDATION_N=100
+
+python3 -m src.analysis.export_patient_validation_cohort
+python3 -m src.analysis.export_manual_report_labels
+```
+
+| Output | Purpose |
+|--------|---------|
+| `outputs/analysis/manual_validation/patient_validation_cohort.csv` | Wide cohort (all reports for 100 patients; stable IDs). |
+| `outputs/analysis/manual_validation/manual_report_labels.csv` | **Slim sheet for annotation** (copy before editing if not freezing immediately). |
+| `outputs/analysis/manual_validation/patient_validation_cohort_report.txt` | Counts + processing summary (`status`, skipped vs LLM, etc.). |
+
+**Included report types:** Verlaufseintrag, Verlegungsbericht, Austrittsbericht.
+
+**Skipped reports are included** — prefilter skip (`no_evidence_prefilter_skip`) is still a model decision (`klasse=0`, `status=skipped`). Guardrail negatives after LLM are included too.
+
+**Pilot (30 patients):** `export PATIENT_VALIDATION_N=30` with the same commands (only for dry runs, not thesis freeze).
+
+### 3. Freeze validation dataset
+
+Locks the cohort for manual review. **Do not re-freeze** after annotation starts unless you intentionally reset the study (requires `OVERWRITE_FROZEN_VALIDATION=true`).
+
+```bash
+python3 -m src.analysis.freeze_validation_cohort
+```
+
+**Fixed thesis dataset directory:**
+
+`outputs/analysis/manual_validation/frozen_validation_cohort/`
+
+| File | Role |
+|------|------|
+| `patient_validation_cohort_frozen.csv` | Full frozen cohort (reference). |
+| `manual_report_labels_frozen.csv` | **Annotate this file** (or copy labels back into this path). |
+| `frozen_cohort_metadata.json` | Timestamp, patient/report counts, checksums, source paths. |
+
+### 4. Manual validation
+
+**Primary annotation file:**
+
+`outputs/analysis/manual_validation/frozen_validation_cohort/manual_report_labels_frozen.csv`
+
+Annotate only:
+
+- **`manual_report_ground_truth`** — required  
+- `manual_comment` — optional  
+
+**Allowed values:** `0` or `1`
+
+| Value | Meaning |
+|-------|---------|
+| `1` | Clinically plausible delir documented in **this** report |
+| `0` | No delir documented in **this** report |
+
+**Do not** fill a manual patient-level label. Patient-level ground truth is derived automatically:
+
+`derived_manual_patient_ground_truth = max(manual_report_ground_truth)` per `validation_patient_id`
+
+Use columns `status`, `llm_called`, `skipped_reason` in the frozen full cohort for context (prefilter vs LLM-processed).
+
+### 5. Final evaluation
+
+```bash
+python3 -m src.analysis.evaluate_manual_validation
+```
+
+Uses **frozen** cohort + frozen labels when `frozen_validation_cohort/` exists.
+
+**Outputs:** `outputs/analysis/manual_validation/evaluation/` (metrics tables, confusion plots, `evaluation_report.txt`)
+
+| Level | Comparison | Role |
+|-------|------------|------|
+| Report | `model_report_prediction` vs `manual_report_ground_truth` | Per-report agreement |
+| **Patient (PRIMARY)** | `model_patient_positive` vs `derived_manual_patient_ground_truth` | **Main thesis evaluation** |
+| Exploratory | ICDSC / ICD10 vs derived patient GT | Reference signals only — not absolute truth |
+
+### 6. Important warnings
+
+- **`MAX_REPORTS` limits reports, not patients** — never use it for the thesis validation run.
+- **Never regenerate** the validation cohort after manual annotation has started (use the frozen copy).
+- **Never mix** predictions from a new `run_pipeline` with an old frozen cohort — re-freeze only with a deliberate reset (`export OVERWRITE_FROZEN_VALIDATION=true`).
+- **Always evaluate** using frozen files when they exist (`evaluate_manual_validation` prefers them automatically).
+- **Skipped / prefilter-negative reports belong in the cohort** — excluding them inflates performance.
+- **`Dokumentationsblatt` stays excluded** from processing and validation (raw CSV unchanged).
+- **ICDSC / ICD10** in the cohort are reference signals, not manual ground truth.
+
+---
 
 ## Validation outputs
 - `outputs/analysis/patient_level/patient_reporttype_matrix.csv` — exploratory patient matrix.

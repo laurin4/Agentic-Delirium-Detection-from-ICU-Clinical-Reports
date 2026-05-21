@@ -85,6 +85,8 @@ Model-positive / AND-baseline-negative cases are **Delirkandidaten** (possible u
 | Derived patient GT | `derived_manual_patient_ground_truth` = max(report GT) — do not annotate manually |
 | ICDSC / ICD10 in cohort | Reference signals only (exploratory comparison in `evaluate_manual_validation`) |
 
+**Full thesis run (copy-paste):** see **[HANDOVER_SUMMARY.md — FINAL THESIS WORKFLOW (FULL RUN)](HANDOVER_SUMMARY.md#final-thesis-workflow-full-run)**. Summary: `unset MAX_REPORTS` → full `prepare_structured_data` + `run_pipeline` + `run_validation_suite` → export cohort + slim labels → `freeze_validation_cohort` → annotate `manual_report_labels_frozen.csv` → `evaluate_manual_validation`.
+
 ---
 
 ## LLM providers
@@ -170,6 +172,8 @@ export DEBUG_LLM_OUTPUT=false   # true = verbose per-agent dumps to stdout
 ---
 
 ## Command order (recommended)
+
+For the **final thesis validation path** (full dataset, frozen cohort, patient-level primary metrics), use **[HANDOVER_SUMMARY.md — FINAL THESIS WORKFLOW (FULL RUN)](HANDOVER_SUMMARY.md#final-thesis-workflow-full-run)** instead of the exploratory list below.
 
 From the project root (`delirium_project/`):
 

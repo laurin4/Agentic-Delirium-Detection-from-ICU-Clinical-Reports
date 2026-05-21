@@ -108,27 +108,48 @@ Log line: `Long LLM input detected ...`. No truncation is applied. If outputs de
 
 ## Manual validation (PRIMARY thesis evaluation)
 
-1. **Prediction** remains report-level (`run_pipeline` → `klasse`).
-2. **Cohort export** — 100 unique patients, all included reports per patient:
+**Canonical copy-paste workflow:** [HANDOVER_SUMMARY.md — FINAL THESIS WORKFLOW (FULL RUN)](HANDOVER_SUMMARY.md#final-thesis-workflow-full-run)
+
+### Quick reference
+
+1. **Full inference** — `unset MAX_REPORTS` (never cap reports for thesis validation). Then:
 
 ```bash
-export PATIENT_VALIDATION_N=100   # or 30 for a pilot
-python -m src.analysis.export_patient_validation_cohort
+export DEBUG_LLM_OUTPUT=false
+export ENABLE_SQLITE_LOGGING=true
+export SEND_SHORT_REPORTS_WITHOUT_EVIDENCE_TO_LLM=true
+export SHORT_REPORT_CHAR_THRESHOLD=1000
+
+python -m src.pipeline.prepare_structured_data
+python -m src.pipeline.run_pipeline
+python -m src.analysis.run_validation_suite
 ```
 
-Outputs: `outputs/analysis/manual_validation/patient_validation_cohort.csv` and `patient_validation_cohort_report.txt`.
+2. **Export cohort** (after full inference):
 
-3. **Annotate** `manual_report_ground_truth` (0/1) per report in the CSV. Do not fill a manual patient column; patient GT is derived automatically.
+```bash
+export PATIENT_VALIDATION_N=100
+python -m src.analysis.export_patient_validation_cohort
+python -m src.analysis.export_manual_report_labels
+```
 
-4. **Evaluate** annotated cohort:
+3. **Freeze** (fixed thesis dataset — do not regenerate after annotation starts):
+
+```bash
+python -m src.analysis.freeze_validation_cohort
+```
+
+Annotate: `outputs/analysis/manual_validation/frozen_validation_cohort/manual_report_labels_frozen.csv` — column `manual_report_ground_truth` only (`0` / `1`). Skipped prefilter reports are included.
+
+4. **Evaluate** (prefers frozen files):
 
 ```bash
 python -m src.analysis.evaluate_manual_validation
 ```
 
-Outputs: `outputs/analysis/manual_validation/evaluation/` (tables, confusion plots, `evaluation_report.txt`).
+Outputs: `outputs/analysis/manual_validation/evaluation/`. **Patient-level** metrics (`model_patient_positive` vs `derived_manual_patient_ground_truth`) are the primary thesis evaluation.
 
-ICDSC and ICD10 in the cohort are **reference signals only**, not absolute ground truth. Exploratory baselines: `baseline_composite_or`, `baseline_composite_and`.
+**Warnings:** `MAX_REPORTS` limits reports not patients; never mix a new pipeline run with an old frozen cohort; Dokumentationsblatt excluded; ICDSC/ICD10 are reference only.
 
 Legacy: `export_manual_validation_sample`, `run_error_review_export` (multiclass `manual_label_0_1_2`).
 
