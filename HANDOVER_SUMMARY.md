@@ -144,13 +144,13 @@ For final thesis evaluation, the **full** report corpus must be processed **befo
 
 **Why:** Validation is patient-level. Every selected patient must have a **complete report trajectory** (processed, prefilter-skipped, and guardrail-negative rows). The cohort export joins `Berichte.csv` with predictions; predictions must cover the full run first.
 
-**Critical:** Do **not** cap the pipeline with `MAX_REPORTS`. `MAX_REPORTS` limits **report rows**, not patients — a partial run under-represents patients and biases validation.
+**Critical:** Do **not** set a numeric `MAX_REPORTS` for thesis validation. `MAX_REPORTS` limits **report rows**, not patients — a partial run under-represents patients and biases validation. Default in `paths.py` is already **no cap**; only `unset` if your shell still exports a limit from an earlier pilot.
 
 ```bash
 cd delirium_project
 
 unset MAX_REPORTS
-# Alternative explicit “no cap”: export MAX_REPORTS=all
+# Optional explicit full run: export MAX_REPORTS=all
 
 export DEBUG_LLM_OUTPUT=false
 export ENABLE_SQLITE_LOGGING=true

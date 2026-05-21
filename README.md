@@ -142,14 +142,14 @@ Ollama maps `LLM_MAX_TOKENS` → `num_predict`, and uses `LLM_TEMPERATURE`, `LLM
 - Copy: `outputs/predictions/agent_results_<provider>_<model_label>.csv`  
   Examples: `agent_results_usz_api_gemma4_26b_usz.csv`, `agent_results_ollama_qwen2_5_7b.csv`.
 
-**Limit run size:** by default only the **first 30** patient-level reports are processed (stable order from the input loader). Override with `MAX_REPORTS`:
+**Limit run size (pilot / dev only):** by default the **full** evaluatable corpus is processed. Cap with `MAX_REPORTS`:
 
 ```bash
-MAX_REPORTS=100 python -m src.pipeline.run_pipeline   # first 100
-MAX_REPORTS=all python -m src.pipeline.run_pipeline   # entire corpus
+MAX_REPORTS=60 python -m src.pipeline.run_pipeline   # first 60 reports (stable loader order)
+MAX_REPORTS=all python -m src.pipeline.run_pipeline   # explicit full corpus (same as unset)
 ```
 
-If `MAX_REPORTS` is unset, the default cap (30) applies.
+If `MAX_REPORTS` is unset, there is **no** report cap (`paths.DEFAULT_MAX_REPORTS = None`).
 
 **Optional SQLite append log** (CSV remains the canonical artifact):
 
