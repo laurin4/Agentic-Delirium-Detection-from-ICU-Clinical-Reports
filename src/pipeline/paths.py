@@ -188,6 +188,7 @@ PATIENT_VALIDATION_COHORT_REPORT_PATH = (
     MANUAL_VALIDATION_DIR / "patient_validation_cohort_report.txt"
 )
 MANUAL_VALIDATION_EVAL_DIR = MANUAL_VALIDATION_DIR / "evaluation"
+MANUAL_REPORT_LABELS_PATH = MANUAL_VALIDATION_DIR / "manual_report_labels.csv"
 
 # Presentation slide examples (report flow: excerpt → keywords → evidence → LLM → prediction)
 PRESENTATION_EXAMPLES_DIR = ANALYSIS_DIR / "presentation_examples"
