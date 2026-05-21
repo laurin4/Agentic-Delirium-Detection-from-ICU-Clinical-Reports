@@ -136,6 +136,19 @@ def _guardrail_fields(guard: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _processing_status_fields(
+    *,
+    status: str,
+    llm_called: int,
+    skipped_reason: str = "",
+) -> Dict[str, Any]:
+    return {
+        "status": status,
+        "llm_called": int(llm_called),
+        "skipped_reason": str(skipped_reason or ""),
+    }
+
+
 def _prediction_row_no_evidence(
     ev: Dict[str, Any],
     patient_id: str,
@@ -171,6 +184,11 @@ def _prediction_row_no_evidence(
         "klasse": 0,
         "klassifikation": "kein_delir",
         "klassifikation_begruendung": _KLASSE_NULL_BE + " | " + NO_EVIDENCE_BE,
+        **_processing_status_fields(
+            status="skipped",
+            llm_called=0,
+            skipped_reason=str(guard.get("decision_rule_applied", "")) or "no_evidence_prefilter_skip",
+        ),
     }
 
 
@@ -198,6 +216,11 @@ def _prediction_row_pipeline_error(
         "klasse": 0,
         "klassifikation": "kein_delir",
         "klassifikation_begruendung": _KLASSE_NULL_BE,
+        **_processing_status_fields(
+            status="failed",
+            llm_called=1,
+            skipped_reason="pipeline_error",
+        ),
     }
 
 
@@ -476,6 +499,11 @@ def _run_single_report(report: dict, idx: int, total: int) -> Tuple[dict, bool, 
             "klasse": final_klasse,
             "klassifikation": guard["klassifikation"],
             "klassifikation_begruendung": klassifikation_begr_str,
+            **_processing_status_fields(
+                status="processed",
+                llm_called=1,
+                skipped_reason=str(guard.get("decision_rule_applied", "")),
+            ),
         }
         return row, False, False
 
@@ -582,6 +610,9 @@ def main():
         "has_alternative_explanation",
         "manual_review_candidate",
         "decision_rule_applied",
+        "status",
+        "llm_called",
+        "skipped_reason",
         "llm_skipped_by_prefilter",
         "anzahl_treffer",
         "delir_signale",

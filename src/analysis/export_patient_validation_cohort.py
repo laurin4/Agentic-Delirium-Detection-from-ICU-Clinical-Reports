@@ -27,6 +27,10 @@ from src.analysis.patient_reporttype_matrix import (
     build_patient_reporttype_matrix,
     ensure_baseline_icdsc_ge_4_column,
 )
+from src.analysis.validation_cohort_reports import (
+    build_complete_validation_reports_frame,
+    cohort_processing_summary_lines,
+)
 from src.analysis.validation_ids import (
     assign_validation_patient_ids,
     format_validation_report_id,
@@ -42,11 +46,7 @@ from src.pipeline.paths import (
     STRUCTURED_BASELINE_PATH,
 )
 from src.pipeline.schema_normalize import normalize_patient_id_column
-from src.preprocessing.berichte_filters import (
-    REPORT_TYPES_FOR_MATRIX,
-    is_dokumentationsblatt,
-    normalize_bertyp,
-)
+from src.preprocessing.berichte_filters import normalize_bertyp
 from src.preprocessing.berichte_mapper import read_berichte_csv_robust
 
 LOGGER = logging.getLogger(__name__)
@@ -82,6 +82,9 @@ COHORT_COLUMNS: List[str] = [
     "delir_probability_estimate",
     "manual_review_candidate",
     "decision_rule_applied",
+    "status",
+    "llm_called",
+    "skipped_reason",
     "model_patient_positive",
     "baseline_icd10",
     "baseline_icdsc_ge_4",
@@ -139,16 +142,6 @@ def _bool01(value: object) -> int:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return 0
     return int(str(value).strip().lower() in ("1", "true", "yes"))
-
-
-def _filter_included_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
-    pred = normalize_patient_id_column(predictions.copy())
-    if "bertyp" not in pred.columns:
-        pred["bertyp"] = ""
-    pred["bertyp"] = pred["bertyp"].map(normalize_bertyp)
-    pred = pred[~pred["bertyp"].map(is_dokumentationsblatt)].copy()
-    pred = pred[pred["bertyp"].isin(REPORT_TYPES_FOR_MATRIX)].copy()
-    return pred
 
 
 def _merge_berdat_from_berichte(predictions: pd.DataFrame, berichte_path: Path) -> pd.DataFrame:
@@ -364,13 +357,21 @@ def build_patient_validation_cohort(
     selected_patient_ids: Sequence[str],
     *,
     berichte_path: Optional[Path] = None,
+    berichte_reports: Optional[pd.DataFrame] = None,
+    merge_stats: Optional[dict] = None,
 ) -> pd.DataFrame:
-    """All included report rows for selected patients with stable validation IDs."""
-    pred = _merge_berdat_from_berichte(
-        _filter_included_predictions(predictions),
-        berichte_path or BERICHTE_INPUT_PATH,
+    """All included report rows for selected patients (predictions + Berichte spine)."""
+    bpath = berichte_path or BERICHTE_INPUT_PATH
+    pred, stats = build_complete_validation_reports_frame(
+        predictions,
+        selected_patient_ids,
+        berichte_path=bpath,
+        berichte_df=berichte_reports,
     )
-    pred = pred[pred["PatientenID"].isin([str(p) for p in selected_patient_ids])].copy()
+    if merge_stats is not None:
+        merge_stats.clear()
+        merge_stats.update(stats)
+    pred = _merge_berdat_from_berichte(pred, bpath)
 
     ctx = normalize_patient_id_column(patient_context)
     ctx = ctx[ctx["PatientenID"].isin([str(p) for p in selected_patient_ids])].drop_duplicates(
@@ -441,6 +442,9 @@ def build_patient_validation_cohort(
                 "delir_probability_estimate": rep.get("delir_probability_estimate", ""),
                 "manual_review_candidate": rep.get("manual_review_candidate", ""),
                 "decision_rule_applied": str(rep.get("decision_rule_applied") or ""),
+                "status": str(rep.get("status") or ""),
+                "llm_called": _int01(rep.get("llm_called")),
+                "skipped_reason": str(rep.get("skipped_reason") or ""),
                 "model_patient_positive": model_patient_pos,
                 **ref,
                 "evidence_snippets": rep.get("evidence_snippets", ""),
@@ -477,7 +481,12 @@ def build_patient_validation_cohort(
     return out[[c for c in COHORT_COLUMNS if c in out.columns]]
 
 
-def format_cohort_report(cohort: pd.DataFrame, selected_n: int) -> str:
+def format_cohort_report(
+    cohort: pd.DataFrame,
+    selected_n: int,
+    *,
+    merge_stats: Optional[dict] = None,
+) -> str:
     lines = [
         "Patient validation cohort export report",
         "=" * 44,
@@ -526,8 +535,16 @@ def format_cohort_report(cohort: pd.DataFrame, selected_n: int) -> str:
             "",
             "Evaluation after annotation:",
             "  python -m src.analysis.evaluate_manual_validation",
+            "",
+            "Skipped / prefilter-negative rows are included (model decision: no delir evidence).",
         ]
     )
+    if merge_stats:
+        lines.append(f"berichte_spine_reports={merge_stats.get('berichte_reports', 0)}")
+        lines.append(f"prediction_export_reports={merge_stats.get('prediction_reports', 0)}")
+        lines.append(f"reports_only_in_berichte={merge_stats.get('only_in_berichte', 0)}")
+        lines.append(f"reports_only_in_predictions={merge_stats.get('only_in_predictions', 0)}")
+    lines.extend(cohort_processing_summary_lines(cohort))
     return "\n".join(lines) + "\n"
 
 
@@ -555,11 +572,21 @@ def main(
     base_for_ctx = baseline if baseline is not None else pd.DataFrame()
     patient_ctx = load_patient_level_context(matrix_path, preds, base_for_ctx)
     selected_ids, _ = select_validation_patient_ids(patient_ctx, target_n=target_n)
-    cohort = build_patient_validation_cohort(preds, baseline, patient_ctx, selected_ids)
+    merge_stats: dict = {}
+    cohort = build_patient_validation_cohort(
+        preds,
+        baseline,
+        patient_ctx,
+        selected_ids,
+        merge_stats=merge_stats,
+    )
 
     MANUAL_VALIDATION_DIR.mkdir(parents=True, exist_ok=True)
     cohort.to_csv(output_path, index=False)
-    report_path.write_text(format_cohort_report(cohort, target_n), encoding="utf-8")
+    report_path.write_text(
+        format_cohort_report(cohort, target_n, merge_stats=merge_stats),
+        encoding="utf-8",
+    )
 
     print(f"Wrote patient validation cohort: {output_path}")
     print(f"Wrote cohort report: {report_path}")

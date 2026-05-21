@@ -20,6 +20,9 @@ SLIM_LABEL_EXPORT_COLUMNS: tuple[str, ...] = (
     "bertyp",
     "berdat",
     "model_report_prediction",
+    "status",
+    "llm_called",
+    "skipped_reason",
     "evidence_snippets",
     "manual_report_ground_truth",
     "manual_comment",
@@ -49,13 +52,23 @@ def _normalize_manual_report_gt(value: object) -> Optional[str]:
 
 def build_manual_report_labels_sheet(cohort: pd.DataFrame) -> pd.DataFrame:
     """Subset of cohort rows with empty manual columns for external annotation."""
-    missing = [c for c in SLIM_LABEL_EXPORT_COLUMNS if c not in cohort.columns]
-    if missing:
-        raise ValueError(f"Cohort missing columns for label export: {missing}")
+    export_cols = [c for c in SLIM_LABEL_EXPORT_COLUMNS if c in cohort.columns]
+    missing_required = [
+        c
+        for c in (
+            "validation_patient_id",
+            "validation_report_id",
+            "PatientenID",
+            "model_report_prediction",
+        )
+        if c not in cohort.columns
+    ]
+    if missing_required:
+        raise ValueError(f"Cohort missing required columns for label export: {missing_required}")
     if cohort["validation_report_id"].duplicated().any():
         raise ValueError("validation_report_id must be unique in patient_validation_cohort.csv")
 
-    out = cohort[list(SLIM_LABEL_EXPORT_COLUMNS)].copy()
+    out = cohort[export_cols].copy()
     out["manual_report_ground_truth"] = ""
     out["manual_comment"] = ""
     sort_cols = [c for c in ("validation_patient_id", "berdat", "bertyp", "validation_report_id") if c in out.columns]

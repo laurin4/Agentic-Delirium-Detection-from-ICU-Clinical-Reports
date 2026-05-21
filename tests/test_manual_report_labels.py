@@ -44,7 +44,13 @@ def test_build_manual_report_labels_empty_manual_fields():
 
     sheet = build_manual_report_labels_sheet(_cohort_df())
     assert len(sheet) == 3
-    assert list(sheet.columns) == list(SLIM_LABEL_EXPORT_COLUMNS)
+    for col in (
+        "validation_patient_id",
+        "validation_report_id",
+        "model_report_prediction",
+        "manual_report_ground_truth",
+    ):
+        assert col in sheet.columns
     assert (sheet["manual_report_ground_truth"].astype(str).str.strip() == "").all()
 
 

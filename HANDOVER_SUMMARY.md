@@ -118,7 +118,7 @@ python3 -m src.analysis.export_presentation_examples
 | Unit | Definition |
 |------|------------|
 | Prediction | 1 report → 1 `model_report_prediction` (from `klasse`) |
-| Validation cohort | 100 unique patients (`PATIENT_VALIDATION_N`); **all** Verlauf / Verlegung / Austritt reports per patient |
+| Validation cohort | 100 unique patients (`PATIENT_VALIDATION_N`); **all** evaluatable reports per patient (Berichte spine + predictions; includes prefilter-skipped rows) |
 | Manual annotation | `manual_report_ground_truth` (0/1) per report |
 | Patient manual GT | **Derived:** `derived_manual_patient_ground_truth` = max(report GT) per patient |
 | ICDSC / ICD10 | **Reference signals only** — not absolute truth |
