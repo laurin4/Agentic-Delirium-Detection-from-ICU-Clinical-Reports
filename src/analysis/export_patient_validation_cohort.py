@@ -28,8 +28,10 @@ from src.analysis.patient_reporttype_matrix import (
     ensure_baseline_icdsc_ge_4_column,
 )
 from src.analysis.validation_cohort_reports import (
+    MERGE_KEYS,
     build_complete_validation_reports_frame,
     cohort_processing_summary_lines,
+    load_included_berichte_reports,
 )
 from src.analysis.validation_ids import (
     assign_validation_patient_ids,
@@ -185,21 +187,81 @@ def _merge_berdat_from_berichte(predictions: pd.DataFrame, berichte_path: Path) 
     return merged
 
 
+def _filter_included_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
+    from src.analysis.validation_cohort_reports import _filter_included_predictions as _filter
+
+    return _filter(predictions)
+
+
+def build_patient_level_sampling_frame(
+    predictions: pd.DataFrame,
+    baseline: pd.DataFrame,
+    *,
+    berichte_path: Optional[Path] = None,
+    berichte_df: Optional[pd.DataFrame] = None,
+) -> Tuple[pd.DataFrame, dict]:
+    """
+    One row per eligible patient for cohort sampling.
+
+    Patient universe = all included Berichte reports (not prediction export only).
+    Predictions are left-merged onto the report spine; missing rows count as klasse=0.
+    """
+    bpath = berichte_path or BERICHTE_INPUT_PATH
+    spine = load_included_berichte_reports(bpath, berichte_df=berichte_df)
+    stats: dict = {
+        "eligible_spine_patients": int(spine["PatientenID"].nunique()) if not spine.empty else 0,
+    }
+
+    if spine.empty:
+        LOGGER.warning(
+            "Berichte spine empty at %s; patient sampling falls back to prediction export only.",
+            bpath,
+        )
+        matrix = _patient_level_frame_from_predictions(predictions, baseline)
+        stats["sampling_source"] = "predictions_only"
+        return matrix, stats
+
+    preds = _filter_included_predictions(predictions)
+    if preds.empty:
+        merged = spine.copy()
+        merged["klasse"] = 0
+    else:
+        preds = preds.drop_duplicates(list(MERGE_KEYS), keep="first")
+        spine_cols = set(spine.columns)
+        extra_cols = [c for c in preds.columns if c not in spine_cols or c in MERGE_KEYS]
+        merged = spine.merge(
+            preds[extra_cols],
+            on=list(MERGE_KEYS),
+            how="left",
+            suffixes=("", "_pred"),
+        )
+        drop_suffix = [c for c in merged.columns if c.endswith("_pred")]
+        merged = merged.drop(columns=drop_suffix, errors="ignore")
+        merged["klasse"] = (
+            pd.to_numeric(merged.get("klasse"), errors="coerce").fillna(0).astype(int).clip(0, 1)
+        )
+
+    matrix = build_patient_reporttype_matrix(merged, baseline)
+    stats["sampling_source"] = "berichte_spine"
+    return matrix, stats
+
+
 def _patient_level_frame_from_predictions(
     predictions: pd.DataFrame,
     baseline: pd.DataFrame,
 ) -> pd.DataFrame:
     pred = _filter_included_predictions(predictions)
     matrix = build_patient_reporttype_matrix(pred, baseline)
-    if "manual_review_candidate" in pred.columns:
-        rev = (
-            pred.groupby("PatientenID")["manual_review_candidate"]
-            .apply(lambda s: int(any(_bool01(v) for v in s)))
-            .reset_index(name="any_manual_review_candidate")
-        )
-        matrix = matrix.merge(rev, on="PatientenID", how="left")
-    else:
-        matrix["any_manual_review_candidate"] = 0
+    if "any_manual_review_candidate" not in matrix.columns:
+        if "manual_review_candidate" in pred.columns and not pred.empty:
+            rev = (
+                pred.groupby("PatientenID")["manual_review_candidate"]
+                .apply(lambda s: int(any(_bool01(v) for v in s)))
+                .reset_index(name="any_manual_review_candidate")
+            )
+            matrix = matrix.merge(rev, on="PatientenID", how="left")
+        else:
+            matrix["any_manual_review_candidate"] = 0
     matrix["any_manual_review_candidate"] = (
         pd.to_numeric(matrix["any_manual_review_candidate"], errors="coerce").fillna(0).astype(int)
     )
@@ -210,14 +272,31 @@ def load_patient_level_context(
     matrix_path: Path,
     predictions: pd.DataFrame,
     baseline: pd.DataFrame,
+    *,
+    berichte_path: Optional[Path] = None,
+    berichte_df: Optional[pd.DataFrame] = None,
+    prefer_berichte_spine: bool = True,
 ) -> pd.DataFrame:
-    if matrix_path.exists():
+    """Patient-level frame for balanced sampling (Berichte spine when available)."""
+    bpath = berichte_path or BERICHTE_INPUT_PATH
+    if prefer_berichte_spine and (berichte_df is not None or bpath.exists()):
+        m, _ = build_patient_level_sampling_frame(
+            predictions,
+            baseline,
+            berichte_path=bpath,
+            berichte_df=berichte_df,
+        )
+    elif matrix_path.exists():
+        LOGGER.info("Using patient matrix at %s (Berichte spine not available).", matrix_path)
         m = normalize_patient_id_column(pd.read_csv(matrix_path))
         if "any_manual_review_candidate" not in m.columns:
             m["any_manual_review_candidate"] = 0
         m = ensure_baseline_icdsc_ge_4_column(m)
     else:
-        LOGGER.info("Patient matrix not found at %s; building from predictions.", matrix_path)
+        LOGGER.info(
+            "Patient matrix not found at %s; building from predictions only.",
+            matrix_path,
+        )
         m = _patient_level_frame_from_predictions(predictions, baseline)
     if "baseline_icd10" not in m.columns and "ICD10" in m.columns:
         m["baseline_icd10"] = m["ICD10"]
@@ -420,7 +499,10 @@ def build_patient_validation_cohort(
         )
 
         for report_nr, (_, rep) in enumerate(patient_reports.iterrows(), start=1):
-            model_pred = _int01(rep.get("klasse"))
+            if "model_report_prediction" in rep.index and pd.notna(rep.get("model_report_prediction")):
+                model_pred = _int01(rep.get("model_report_prediction"))
+            else:
+                model_pred = _int01(rep.get("klasse"))
             warning = ""
             if not missing_base and ref.get("baseline_icdsc_ge_4") == 1 and model_pred == 0:
                 warning = REPORT_PATIENT_LEVEL_WARNING
@@ -486,16 +568,28 @@ def format_cohort_report(
     selected_n: int,
     *,
     merge_stats: Optional[dict] = None,
+    sampling_stats: Optional[dict] = None,
 ) -> str:
+    exported_patients = cohort["validation_patient_id"].nunique() if not cohort.empty else 0
     lines = [
         "Patient validation cohort export report",
         "=" * 44,
         f"target_unique_patients={selected_n}",
-        f"exported_unique_patients={cohort['validation_patient_id'].nunique() if not cohort.empty else 0}",
+        f"exported_unique_patients={exported_patients}",
         f"total_report_rows={len(cohort)}",
-        "",
-        "Report type distribution (rows):",
     ]
+    if sampling_stats:
+        lines.append(f"eligible_spine_patients={sampling_stats.get('eligible_spine_patients', 0)}")
+        lines.append(f"sampling_source={sampling_stats.get('sampling_source', '')}")
+    if merge_stats:
+        lines.append(f"prediction_matched_reports={merge_stats.get('prediction_matched_reports', 0)}")
+        lines.append(f"missing_prediction_reports={merge_stats.get('missing_prediction_reports', 0)}")
+    lines.extend(
+        [
+            "",
+            "Report type distribution (rows):",
+        ]
+    )
     if not cohort.empty and "bertyp" in cohort.columns:
         for bt, cnt in cohort["bertyp"].value_counts().sort_index().items():
             lines.append(f"  {bt}: {cnt}")
@@ -570,7 +664,16 @@ def main(
         LOGGER.warning("Baseline missing at %s; reference fields will be empty.", baseline_path)
 
     base_for_ctx = baseline if baseline is not None else pd.DataFrame()
-    patient_ctx = load_patient_level_context(matrix_path, preds, base_for_ctx)
+    patient_ctx, sampling_stats = build_patient_level_sampling_frame(
+        preds, base_for_ctx, berichte_path=BERICHTE_INPUT_PATH
+    )
+    eligible = int(sampling_stats.get("eligible_spine_patients", 0))
+    if eligible < target_n:
+        LOGGER.warning(
+            "Only %d eligible spine patients (requested %d). Export will include all eligible.",
+            eligible,
+            target_n,
+        )
     selected_ids, _ = select_validation_patient_ids(patient_ctx, target_n=target_n)
     merge_stats: dict = {}
     cohort = build_patient_validation_cohort(
@@ -578,13 +681,23 @@ def main(
         baseline,
         patient_ctx,
         selected_ids,
+        berichte_path=BERICHTE_INPUT_PATH,
         merge_stats=merge_stats,
     )
+    sampling_stats["exported_unique_patients"] = (
+        cohort["validation_patient_id"].nunique() if not cohort.empty else 0
+    )
+    sampling_stats["total_report_rows"] = len(cohort)
 
     MANUAL_VALIDATION_DIR.mkdir(parents=True, exist_ok=True)
     cohort.to_csv(output_path, index=False)
     report_path.write_text(
-        format_cohort_report(cohort, target_n, merge_stats=merge_stats),
+        format_cohort_report(
+            cohort,
+            target_n,
+            merge_stats=merge_stats,
+            sampling_stats=sampling_stats,
+        ),
         encoding="utf-8",
     )
 

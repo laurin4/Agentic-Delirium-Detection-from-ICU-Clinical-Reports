@@ -45,8 +45,12 @@ PREDICTION_FILL_DEFAULTS: Dict[str, object] = {
 
 def _filter_included_berichte(df: pd.DataFrame) -> pd.DataFrame:
     out = normalize_patient_id_column(df.copy())
+    if out.empty:
+        return out
     if "bertyp" not in out.columns:
         out["bertyp"] = ""
+    if "bericht" not in out.columns:
+        out["bericht"] = ""
     out["bertyp"] = out["bertyp"].map(normalize_bertyp)
     out["bericht"] = out["bericht"].astype(str).str.strip()
     out = out[~out["bertyp"].map(is_dokumentationsblatt)].copy()
@@ -105,7 +109,7 @@ def derive_report_processing_fields(row: pd.Series) -> Dict[str, object]:
         return {
             "status": "missing_prediction",
             "llm_called": 0,
-            "skipped_reason": "not_in_prediction_export",
+            "skipped_reason": "missing_prediction_implicit_negative",
         }
 
     if llm_skipped or method == METHOD_NO_EVIDENCE or rule == "no_evidence_prefilter_skip":
@@ -154,8 +158,11 @@ def build_complete_validation_reports_frame(
     """
     pids = [str(p) for p in selected_patient_ids]
     preds = _filter_included_predictions(predictions)
-    preds = preds[preds["PatientenID"].isin(pids)].copy()
-    preds["_has_prediction_row"] = True
+    if preds.empty:
+        preds = pd.DataFrame(columns=list(MERGE_KEYS))
+    else:
+        preds = preds[preds["PatientenID"].isin(pids)].copy()
+        preds["_has_prediction_row"] = True
 
     spine_available = berichte_df is not None or (
         berichte_path is not None and berichte_path.exists()
@@ -249,12 +256,16 @@ def build_complete_validation_reports_frame(
             only_berichte,
         )
 
+    prediction_matched = int(merged["_has_prediction_row"].fillna(False).astype(bool).sum())
     stats = {
         "berichte_reports": len(berichte),
         "prediction_reports": len(preds),
         "merged_reports": len(merged),
         "only_in_berichte": only_berichte,
         "only_in_predictions": only_preds,
+        "eligible_spine_patients": int(berichte["PatientenID"].nunique()),
+        "prediction_matched_reports": prediction_matched,
+        "missing_prediction_reports": only_berichte,
     }
     merged = apply_processing_fields(merged)
     if "klasse" in merged.columns:

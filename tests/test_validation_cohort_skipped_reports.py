@@ -120,6 +120,7 @@ def test_berichte_spine_adds_missing_report():
     assert stats["only_in_berichte"] == 1
     missing = merged[merged["bericht"] == "r2_only_berichte.txt"].iloc[0]
     assert missing["status"] == "missing_prediction"
+    assert missing["skipped_reason"] == "missing_prediction_implicit_negative"
     assert int(missing["model_report_prediction"]) == 0
 
     cohort = build_patient_validation_cohort(

@@ -219,7 +219,9 @@ def test_matrix_icdsc_max_enables_icdsc_positive_sampling_bucket(tmp_path):
 
     preds = _predictions()
     baseline = _baseline()
-    ctx = load_patient_level_context(mat_path, preds, baseline)
+    ctx = load_patient_level_context(
+        mat_path, preds, baseline, berichte_path=tmp_path / "no_berichte.csv"
+    )
     assert "baseline_icdsc_ge_4" in ctx.columns
     assert int(ctx.loc[ctx["PatientenID"] == "p0", "baseline_icdsc_ge_4"].iloc[0]) == 1
 
