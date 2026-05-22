@@ -12,6 +12,11 @@ import pandas as pd
 
 from src.pipeline.paths import BERICHTE_INPUT_PATH
 from src.preprocessing.berichte_filters import exclude_dokumentationsblatt, normalize_bertyp
+from src.preprocessing.report_identity import (
+    SOURCE_REPORT_ROW_ID_COL,
+    assign_source_report_row_ids,
+    compute_pipeline_bericht_id,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -224,6 +229,8 @@ def build_report_level_berichte_records(
     if "PatientID" not in df.columns:
         raise ValueError(f"Berichte.csv must contain column 'PatientID'. Found columns: {list(df.columns)}")
 
+    df = assign_source_report_row_ids(df)
+
     excluded_count = 0
     if apply_dokumentationsblatt_exclusion:
         df, excluded_count = exclude_dokumentationsblatt(df)
@@ -233,6 +240,7 @@ def build_report_level_berichte_records(
             df[name] = ""
 
     df["PatientID"] = df["PatientID"].astype(str).str.strip()
+    df["PatientenID"] = df["PatientID"]
     df["bertyp"] = df["bertyp"].map(normalize_bertyp) if "bertyp" in df.columns else ""
 
     records: List[dict] = []
@@ -244,18 +252,16 @@ def build_report_level_berichte_records(
         blk = _row_blocks(row_dict)
         if not blk:
             continue
-        bername = _normalize_str(row.get("bername", ""))
-        bertyp = normalize_bertyp(row.get("bertyp", ""))
-        if bername:
-            bericht_id = bername
-        else:
-            bericht_id = f"{bertyp or 'bericht'}_{pid}_{idx}"
+        bericht_id = compute_pipeline_bericht_id(row)
+        berdat = _normalize_str(row.get("berdat", ""))
 
         records.append(
             {
                 "PatientenID": pid,
                 "bericht": bericht_id,
-                "bertyp": bertyp,
+                "bertyp": normalize_bertyp(row.get("bertyp", "")),
+                "berdat": berdat,
+                SOURCE_REPORT_ROW_ID_COL: str(row.get(SOURCE_REPORT_ROW_ID_COL, "")),
                 "report_text": blk,
             }
         )

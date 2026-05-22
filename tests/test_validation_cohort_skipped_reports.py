@@ -68,11 +68,21 @@ def test_skipped_prefilter_report_in_cohort():
             },
         ]
     )
+    berichte = pd.DataFrame(
+        {
+            "PatientenID": ["p1", "p1"],
+            "bername": ["r_llm.txt", "r_skip.txt"],
+            "bertyp": ["Verlaufseintrag", "Verlaufseintrag"],
+            "berdat": ["2024-01-02", "2024-01-01"],
+            "diag": ["Delir", "x"],
+        }
+    )
     cohort = build_patient_validation_cohort(
         preds,
         None,
         _matrix(),
         ["p1"],
+        berichte_reports=berichte,
     )
     assert len(cohort) == 2
     skip = cohort[cohort["bericht"] == "r_skip.txt"].iloc[0]
@@ -109,9 +119,10 @@ def test_berichte_spine_adds_missing_report():
     berichte = pd.DataFrame(
         {
             "PatientenID": ["p1", "p1"],
-            "bericht": ["r1.txt", "r2_only_berichte.txt"],
+            "bername": ["r1.txt", "r2_only_berichte.txt"],
             "bertyp": ["Verlaufseintrag", "Austrittsbericht"],
             "berdat": ["2024-01-01", "2024-01-02"],
+            "diag": ["x", "y"],
         }
     )
     merged, stats = build_complete_validation_reports_frame(
@@ -119,7 +130,7 @@ def test_berichte_spine_adds_missing_report():
     )
     assert len(merged) == 2
     assert stats["only_in_berichte"] == 1
-    missing = merged[merged["bericht"] == "r2_only_berichte.txt"].iloc[0]
+    missing = merged[merged["pipeline_bericht"] == "r2_only_berichte.txt"].iloc[0]
     assert missing["status"] == "missing_prediction"
     assert missing["skipped_reason"] == "missing_prediction_implicit_negative"
     assert int(missing["model_report_prediction"]) == 0

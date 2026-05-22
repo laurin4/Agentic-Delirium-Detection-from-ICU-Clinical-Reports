@@ -118,6 +118,8 @@ _EXPECTED_COLUMNS = (
     "PatientenID",
     "bericht",
     "bertyp",
+    "berdat",
+    "source_report_row_id",
     "original_report_text_length",
     "llm_report_text_length",
     "llm_text_reduction_method",
@@ -164,6 +166,8 @@ def test_prefilter_csv_schema_stable(monkeypatch, tmp_path):
                 "PatientenID": "p_s",
                 "bericht": "z.txt",
                 "bertyp": "Verlaufseintrag",
+                "berdat": "2024-01-01",
+                "source_report_row_id": "berichte_row_0",
                 "report_text": "Unauffälliger Verlauf.",
             }
         ],

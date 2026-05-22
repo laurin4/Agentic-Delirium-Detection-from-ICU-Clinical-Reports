@@ -24,6 +24,7 @@ from src.pipeline.paths import (
 from src.agents.delirium_probability import delirium_probability_estimate
 from src.preprocessing.berichte_filters import normalize_bertyp
 from src.preprocessing.berichte_mapper import build_report_level_berichte_records
+from src.preprocessing.report_identity import SOURCE_REPORT_ROW_ID_COL
 from src.preprocessing.diagnosis_mapper import build_patient_level_report_records
 from src.preprocessing.evidence_extraction import (
     METHOD_SHORT_REPORT_FULLTEXT,
@@ -146,6 +147,14 @@ def _processing_status_fields(
         "status": status,
         "llm_called": int(llm_called),
         "skipped_reason": str(skipped_reason or ""),
+    }
+
+
+def _report_identity_fields(report: dict) -> Dict[str, Any]:
+    """Stable keys for cohort export merge (from Berichte.csv row identity)."""
+    return {
+        SOURCE_REPORT_ROW_ID_COL: str(report.get(SOURCE_REPORT_ROW_ID_COL, "") or "").strip(),
+        "berdat": str(report.get("berdat", "") or "").strip(),
     }
 
 
@@ -541,6 +550,7 @@ def main():
 
     for i, report in enumerate(report_records, start=1):
         row_dict, skipped, failed = _run_single_report(report, i, total)
+        row_dict.update(_report_identity_fields(report))
         rows.append(row_dict)
         accumulate_bertyp_stat(
             bertyp_stats,
@@ -599,6 +609,8 @@ def main():
         "PatientenID",
         "bericht",
         "bertyp",
+        "berdat",
+        SOURCE_REPORT_ROW_ID_COL,
         "original_report_text_length",
         "llm_report_text_length",
         "llm_text_reduction_method",

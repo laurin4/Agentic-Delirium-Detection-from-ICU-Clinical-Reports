@@ -52,9 +52,10 @@ def test_seven_raw_reports_two_predictions_exports_all_seven():
         raw_rows.append(
             {
                 "PatientenID": pid,
-                "bericht": f"report_{i}.txt",
+                "bername": f"report_{i}.txt",
                 "bertyp": "Verlaufseintrag" if i < 5 else "Austrittsbericht",
                 "berdat": f"2024-02-{i + 1:02d}",
+                "diag": "clinical text",
             }
         )
     raw_rows.append(
@@ -69,14 +70,19 @@ def test_seven_raw_reports_two_predictions_exports_all_seven():
     spine = load_raw_included_report_spine(Path("."), berichte_df=raw_df)
     assert len(spine) == 7
 
+    from src.preprocessing.report_identity import PIPELINE_BERICHT_COL
+
     preds = pd.DataFrame(
         [
             {
                 "PatientenID": pid,
-                "bericht": "report_0.txt",
+                "bericht": spine.iloc[0][PIPELINE_BERICHT_COL],
                 "bertyp": "Verlaufseintrag",
                 "berdat": "2024-02-01",
                 "klasse": 1,
+                "status": "processed",
+                "llm_called": 1,
+                "skipped_reason": "direct",
                 "signalstaerke": "hoch",
                 "delir_probability_estimate": 80,
                 "manual_review_candidate": "False",
@@ -91,10 +97,13 @@ def test_seven_raw_reports_two_predictions_exports_all_seven():
             },
             {
                 "PatientenID": pid,
-                "bericht": "report_3.txt",
+                "bericht": spine.iloc[3][PIPELINE_BERICHT_COL],
                 "bertyp": "Verlaufseintrag",
                 "berdat": "2024-02-04",
                 "klasse": 0,
+                "status": "skipped",
+                "llm_called": 0,
+                "skipped_reason": "no_evidence_prefilter_skip",
                 "signalstaerke": "niedrig",
                 "delir_probability_estimate": 0,
                 "manual_review_candidate": "False",
@@ -115,8 +124,8 @@ def test_seven_raw_reports_two_predictions_exports_all_seven():
     assert stats["raw_spine_selected_rows"] == 7
     assert stats["exported_cohort_rows"] == 7
     assert len(merged) == 7
+    assert stats["prediction_matched_reports"] == 2
     assert int((merged["status"] == "missing_prediction").sum()) == 5
-    assert int((merged["status"] != "missing_prediction").sum()) == 2
 
     cohort = build_patient_validation_cohort(
         preds,

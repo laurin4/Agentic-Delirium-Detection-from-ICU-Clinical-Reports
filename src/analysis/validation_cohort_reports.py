@@ -1,9 +1,9 @@
 """
 Complete validation report frame: all Berichte rows per patient merged with predictions.
 
-Skipped / prefilter-negative reports are model decisions (klasse=0) and must remain in the
-manual validation cohort. Raw Berichte.csv (after report-type filter) is the authoritative spine;
-predictions are LEFT-merged and must never reduce row count.
+Raw Berichte.csv (after report-type filter) is authoritative. Predictions are LEFT-merged
+using ``source_report_row_id`` or pipeline ``bericht`` identity; pipeline ``status`` fields
+are preserved when a prediction row matches.
 """
 
 from __future__ import annotations
@@ -22,14 +22,20 @@ from src.preprocessing.berichte_filters import (
 )
 from src.preprocessing.berichte_mapper import read_berichte_csv_robust
 from src.preprocessing.evidence_extraction import METHOD_NO_EVIDENCE
+from src.preprocessing.report_identity import (
+    FALLBACK_MERGE_KEYS,
+    PIPELINE_BERICHT_COL,
+    SOURCE_REPORT_ROW_ID_COL,
+    assign_source_report_row_ids,
+    attach_report_identity_columns,
+    choose_prediction_merge_keys,
+    row_has_report_text_blocks,
+)
 
 LOGGER = logging.getLogger(__name__)
 
-# Legacy triple (still used in some prediction exports); do not dedupe spine on this alone.
+# Legacy alias
 MERGE_KEYS = ("PatientenID", "bericht", "bertyp")
-
-SOURCE_REPORT_ROW_ID_COL = "source_report_row_id"
-FALLBACK_MERGE_KEYS = ("PatientenID", "bertyp", "berdat", "bericht")
 
 PREDICTION_FILL_DEFAULTS: Dict[str, object] = {
     "klasse": 0,
@@ -45,6 +51,9 @@ PREDICTION_FILL_DEFAULTS: Dict[str, object] = {
     "llm_report_text_length": 0,
     "llm_text_reduction_method": "",
     "llm_skipped_by_prefilter": False,
+    "status": "",
+    "llm_called": 0,
+    "skipped_reason": "",
 }
 
 
@@ -67,27 +76,6 @@ def _filter_included_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
     return _filter_included_berichte(predictions)
 
 
-def assign_source_report_row_ids(df: pd.DataFrame) -> pd.DataFrame:
-    """Deterministic id from raw row order in *df* (assign before report-type filtering)."""
-    out = df.reset_index(drop=True)
-    out[SOURCE_REPORT_ROW_ID_COL] = "berichte_row_" + out.index.astype(str)
-    return out
-
-
-def _normalize_spine_merge_columns(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    if "PatientenID" in out.columns:
-        out["PatientenID"] = out["PatientenID"].astype(str).str.strip()
-    if "bertyp" in out.columns:
-        out["bertyp"] = out["bertyp"].map(normalize_bertyp)
-    if "bericht" in out.columns:
-        out["bericht"] = out["bericht"].astype(str).str.strip()
-    if "berdat" not in out.columns:
-        out["berdat"] = ""
-    out["berdat"] = out["berdat"].astype(str).str.strip()
-    return out
-
-
 def load_raw_included_report_spine(
     berichte_path: Path,
     *,
@@ -97,14 +85,14 @@ def load_raw_included_report_spine(
     """
     All included raw Berichte rows (no deduplication).
 
-    ``source_report_row_id`` is assigned from row index in the loaded file before filtering.
+    Assigns ``source_report_row_id`` before bertyp filter; adds ``pipeline_bericht`` for merge.
     """
     if berichte_df is not None:
         raw = normalize_patient_id_column(berichte_df.copy())
     else:
         if not berichte_path.exists():
             return pd.DataFrame(
-                columns=list(FALLBACK_MERGE_KEYS) + [SOURCE_REPORT_ROW_ID_COL]
+                columns=list(FALLBACK_MERGE_KEYS) + [SOURCE_REPORT_ROW_ID_COL, PIPELINE_BERICHT_COL]
             )
         raw = normalize_patient_id_column(
             read_berichte_csv_robust(berichte_path, log_context="validation cohort spine")
@@ -119,7 +107,7 @@ def load_raw_included_report_spine(
 
     raw = assign_source_report_row_ids(raw)
     out = _filter_included_berichte(raw)
-    out = _normalize_spine_merge_columns(out)
+    out = attach_report_identity_columns(out)
     if patient_ids is not None:
         pset = {str(p) for p in patient_ids}
         out = out[out["PatientenID"].isin(pset)].copy()
@@ -138,26 +126,102 @@ def load_included_berichte_reports(
     )
 
 
-def _choose_prediction_merge_keys(
-    spine: pd.DataFrame, preds: pd.DataFrame
-) -> List[str]:
-    if (
-        SOURCE_REPORT_ROW_ID_COL in preds.columns
-        and preds[SOURCE_REPORT_ROW_ID_COL].notna().any()
-        and SOURCE_REPORT_ROW_ID_COL in spine.columns
-    ):
-        return [SOURCE_REPORT_ROW_ID_COL]
-    return list(FALLBACK_MERGE_KEYS)
-
-
-def _prepare_predictions_for_merge(preds: pd.DataFrame, merge_on: Sequence[str]) -> pd.DataFrame:
-    """Deduplicate prediction export only (never the spine) to enforce many-to-one merge."""
+def _prepare_predictions_for_merge(
+    preds: pd.DataFrame, spine: pd.DataFrame, merge_on: Sequence[str]
+) -> Tuple[pd.DataFrame, str]:
+    """
+    Normalize predictions and enrich legacy exports with ``source_report_row_id`` when possible.
+    """
     if preds.empty:
-        return preds
-    cols = [c for c in merge_on if c in preds.columns]
-    if not cols:
-        return preds
-    return preds.drop_duplicates(subset=cols, keep="first")
+        return preds, "empty"
+
+    out = normalize_patient_id_column(preds.copy())
+    if "bertyp" in out.columns:
+        out["bertyp"] = out["bertyp"].map(normalize_bertyp)
+    if "bericht" not in out.columns:
+        out["bericht"] = ""
+    out["bericht"] = out["bericht"].astype(str).str.strip()
+    if "berdat" not in out.columns:
+        out["berdat"] = ""
+    out["berdat"] = out["berdat"].astype(str).str.strip()
+    # Pipeline CSV stores the pipeline identifier in ``bericht`` (bername or synthetic id).
+    out[PIPELINE_BERICHT_COL] = out["bericht"]
+
+    has_source = (
+        SOURCE_REPORT_ROW_ID_COL in out.columns
+        and out[SOURCE_REPORT_ROW_ID_COL].astype(str).str.strip().ne("").any()
+    )
+    if not has_source and SOURCE_REPORT_ROW_ID_COL in spine.columns:
+        lookup = spine[
+            [SOURCE_REPORT_ROW_ID_COL, "PatientenID", PIPELINE_BERICHT_COL]
+        ].drop_duplicates(subset=["PatientenID", PIPELINE_BERICHT_COL], keep="first")
+        out = out.drop(columns=[SOURCE_REPORT_ROW_ID_COL], errors="ignore")
+        out = out.merge(lookup, on=["PatientenID", PIPELINE_BERICHT_COL], how="left")
+        LOGGER.info(
+            "Enriched legacy predictions with source_report_row_id from Berichte spine "
+            "(PatientenID + pipeline_bericht)."
+        )
+
+    cols = [c for c in merge_on if c in out.columns]
+    if cols:
+        out = out.drop_duplicates(subset=cols, keep="first")
+    out["_has_prediction_row"] = True
+    return out, "ready"
+
+
+def derive_report_processing_fields(row: pd.Series) -> Dict[str, object]:
+    """Use pipeline CSV status when matched; implicit negative only when unmatched."""
+    if bool(row.get("_has_prediction_row")):
+        status = str(row.get("status") or "").strip()
+        if status in ("skipped", "processed", "failed"):
+            return {
+                "status": status,
+                "llm_called": int(pd.to_numeric(row.get("llm_called"), errors="coerce") or 0),
+                "skipped_reason": str(row.get("skipped_reason") or ""),
+            }
+        # Legacy predictions without status column: infer from pipeline flags
+        llm_skipped = str(row.get("llm_skipped_by_prefilter", "")).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        method = str(row.get("llm_text_reduction_method") or "").strip()
+        rule = str(row.get("decision_rule_applied") or "").strip()
+        kontext = str(row.get("kontext") or "")
+        if llm_skipped or method == METHOD_NO_EVIDENCE or rule == "no_evidence_prefilter_skip":
+            return {
+                "status": "skipped",
+                "llm_called": 0,
+                "skipped_reason": rule or METHOD_NO_EVIDENCE,
+            }
+        if kontext.startswith("Pipeline-Fehler:"):
+            return {
+                "status": "failed",
+                "llm_called": 1,
+                "skipped_reason": "pipeline_error",
+            }
+        return {
+            "status": "processed",
+            "llm_called": 1,
+            "skipped_reason": rule,
+        }
+
+    return {
+        "status": "missing_prediction",
+        "llm_called": 0,
+        "skipped_reason": "missing_prediction_implicit_negative",
+    }
+
+
+def apply_processing_fields(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if "_has_prediction_row" not in out.columns:
+        out["_has_prediction_row"] = False
+    derived = out.apply(derive_report_processing_fields, axis=1, result_type="expand")
+    out["status"] = derived["status"]
+    out["llm_called"] = derived["llm_called"].astype(int)
+    out["skipped_reason"] = derived["skipped_reason"]
+    return out
 
 
 def assert_spine_row_count_preserved(
@@ -166,7 +230,6 @@ def assert_spine_row_count_preserved(
     *,
     context: str = "validation cohort export",
 ) -> None:
-    """Raise if LEFT merge dropped or multiplied spine rows."""
     expected = len(spine)
     actual = len(merged)
     if expected == actual:
@@ -187,21 +250,69 @@ def assert_spine_row_count_preserved(
     raise ValueError("\n".join(lines))
 
 
-def _merge_predictions_onto_spine(spine: pd.DataFrame, preds: pd.DataFrame) -> pd.DataFrame:
+def diagnose_missing_prediction_reasons(
+    spine: pd.DataFrame,
+    preds: pd.DataFrame,
+    merged: pd.DataFrame,
+) -> Dict[str, int]:
+    """Heuristic counts for why spine rows lack a prediction match."""
+    unmatched = merged[~merged["_has_prediction_row"].fillna(False).astype(bool)].copy()
+    if unmatched.empty:
+        return {}
+
+    reasons: Dict[str, int] = {}
+    for _, row in unmatched.iterrows():
+        if not row_has_report_text_blocks(row):
+            reasons["no_text_blocks_in_raw_row"] = reasons.get("no_text_blocks_in_raw_row", 0) + 1
+            continue
+        pid = str(row.get("PatientenID", ""))
+        pber = str(row.get(PIPELINE_BERICHT_COL, row.get("bericht", "")))
+        if preds.empty:
+            reasons["predictions_empty"] = reasons.get("predictions_empty", 0) + 1
+            continue
+        pred_sub = preds[preds["PatientenID"].astype(str) == pid]
+        if pred_sub.empty:
+            reasons["patient_not_in_predictions"] = reasons.get("patient_not_in_predictions", 0) + 1
+        elif "bericht" in pred_sub.columns and not (
+            pred_sub["bericht"].astype(str).str.strip() == pber
+        ).any():
+            reasons["pipeline_bericht_mismatch"] = reasons.get("pipeline_bericht_mismatch", 0) + 1
+        else:
+            reasons["other_unmatched"] = reasons.get("other_unmatched", 0) + 1
+    return reasons
+
+
+def _merge_predictions_onto_spine(
+    spine: pd.DataFrame, preds: pd.DataFrame
+) -> Tuple[pd.DataFrame, str, str]:
     spine_n = len(spine)
     if preds.empty:
         merged = spine.copy()
         merged["_has_prediction_row"] = False
         assert_spine_row_count_preserved(spine, merged)
-        return merged
+        return merged, "none", "predictions_empty"
 
-    merge_on = _choose_prediction_merge_keys(spine, preds)
-    preds_ready = _normalize_spine_merge_columns(_prepare_predictions_for_merge(preds, merge_on))
-    preds_ready = preds_ready.copy()
-    preds_ready["_has_prediction_row"] = True
+    merge_on, strategy = choose_prediction_merge_keys(spine, preds)
+    if strategy != "source_report_row_id":
+        LOGGER.warning(
+            "Predictions lack usable source_report_row_id; merging via %s (%s). "
+            "Re-run run_pipeline to add source_report_row_id for best traceability.",
+            strategy,
+            ", ".join(merge_on),
+        )
+
+    preds_ready, _ = _prepare_predictions_for_merge(preds, spine, merge_on)
+
+    if strategy == "patientenid_pipeline_bericht":
+        if PIPELINE_BERICHT_COL not in preds_ready.columns and "bericht" in preds_ready.columns:
+            preds_ready[PIPELINE_BERICHT_COL] = preds_ready["bericht"].astype(str).str.strip()
+        merge_on = ["PatientenID", PIPELINE_BERICHT_COL]
 
     spine_cols = set(spine.columns)
     pred_extra = [c for c in preds_ready.columns if c not in spine_cols or c in merge_on]
+    if strategy == "patientenid_pipeline_bericht" and PIPELINE_BERICHT_COL in pred_extra:
+        pred_extra = [c for c in pred_extra if c != "bericht"]
+
     merged = spine.merge(
         preds_ready[pred_extra],
         on=list(merge_on),
@@ -209,74 +320,20 @@ def _merge_predictions_onto_spine(spine: pd.DataFrame, preds: pd.DataFrame) -> p
         validate="m:1",
         suffixes=("", "_pred"),
     )
-    if "_has_prediction_row" not in merged.columns:
-        merged["_has_prediction_row"] = False
     merged["_has_prediction_row"] = merged["_has_prediction_row"].fillna(False).astype(bool)
 
     assert_spine_row_count_preserved(spine, merged)
     if len(merged) != spine_n:
         raise ValueError(
             f"Prediction merge changed row count: spine={spine_n} merged={len(merged)} "
-            f"(merge_on={merge_on})"
+            f"(merge_on={merge_on}, strategy={strategy})"
         )
-    return merged
-
-
-def derive_report_processing_fields(row: pd.Series) -> Dict[str, object]:
-    """Map prediction row to ``status``, ``llm_called``, ``skipped_reason``."""
-    in_predictions = bool(row.get("_has_prediction_row"))
-    llm_skipped = str(row.get("llm_skipped_by_prefilter", "")).strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    method = str(row.get("llm_text_reduction_method") or "").strip()
-    rule = str(row.get("decision_rule_applied") or "").strip()
-    kontext = str(row.get("kontext") or "")
-
-    if not in_predictions:
-        return {
-            "status": "missing_prediction",
-            "llm_called": 0,
-            "skipped_reason": "missing_prediction_implicit_negative",
-        }
-
-    if llm_skipped or method == METHOD_NO_EVIDENCE or rule == "no_evidence_prefilter_skip":
-        return {
-            "status": "skipped",
-            "llm_called": 0,
-            "skipped_reason": rule or METHOD_NO_EVIDENCE,
-        }
-
-    if kontext.startswith("Pipeline-Fehler:"):
-        return {
-            "status": "failed",
-            "llm_called": 1,
-            "skipped_reason": "pipeline_error",
-        }
-
-    return {
-        "status": "processed",
-        "llm_called": 1,
-        "skipped_reason": rule,
-    }
-
-
-def apply_processing_fields(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    if "_has_prediction_row" not in out.columns:
-        out["_has_prediction_row"] = True
-    derived = out.apply(derive_report_processing_fields, axis=1, result_type="expand")
-    out["status"] = derived["status"]
-    out["llm_called"] = derived["llm_called"].astype(int)
-    out["skipped_reason"] = derived["skipped_reason"]
-    return out
+    return merged, strategy, ", ".join(merge_on)
 
 
 def per_patient_spine_export_counts(
     spine: pd.DataFrame, cohort: pd.DataFrame
 ) -> pd.DataFrame:
-    """Per-patient raw spine vs exported row counts (for cohort report)."""
     raw = spine.groupby("PatientenID", dropna=False).size().rename("raw_included_reports")
     if cohort.empty:
         exp = pd.Series(dtype=int, name="exported_reports")
@@ -319,8 +376,7 @@ def build_complete_validation_reports_frame(
 
     if not spine_available and not preds.empty:
         LOGGER.warning(
-            "Berichte.csv not available; cohort uses prediction export only (%d rows). "
-            "Re-export after full run_pipeline on complete Berichte for unbiased validation.",
+            "Berichte.csv not available; cohort uses prediction export only (%d rows).",
             len(preds),
         )
         merged = preds.copy()
@@ -338,6 +394,7 @@ def build_complete_validation_reports_frame(
             "exported_cohort_rows": len(merged),
             "only_in_berichte": 0,
             "only_in_predictions": 0,
+            "prediction_match_rate_pct": 100.0 if len(merged) else 0.0,
         }
 
     if berichte.empty and not preds.empty:
@@ -354,6 +411,7 @@ def build_complete_validation_reports_frame(
             "exported_cohort_rows": len(merged),
             "only_in_berichte": 0,
             "only_in_predictions": len(preds),
+            "prediction_match_rate_pct": 0.0,
         }
         return apply_processing_fields(merged.drop(columns=["_has_prediction_row"], errors="ignore")), stats
 
@@ -366,10 +424,11 @@ def build_complete_validation_reports_frame(
             "exported_cohort_rows": 0,
             "only_in_berichte": 0,
             "only_in_predictions": 0,
+            "prediction_match_rate_pct": 0.0,
         }
 
     raw_spine_rows = len(berichte)
-    merged = _merge_predictions_onto_spine(berichte, preds)
+    merged, merge_strategy, merge_keys = _merge_predictions_onto_spine(berichte, preds)
 
     for col, default in PREDICTION_FILL_DEFAULTS.items():
         if col not in merged.columns:
@@ -378,6 +437,10 @@ def build_complete_validation_reports_frame(
             merged[col] = merged[col].fillna(default)
 
     only_berichte = int((~merged["_has_prediction_row"]).sum())
+    prediction_matched = int(merged["_has_prediction_row"].sum())
+    match_rate = (100.0 * prediction_matched / raw_spine_rows) if raw_spine_rows else 0.0
+    missing_reasons = diagnose_missing_prediction_reasons(berichte, preds, merged)
+
     only_preds = 0
     if not preds.empty and not berichte.empty:
         pred_keys = [k for k in FALLBACK_MERGE_KEYS if k in preds.columns]
@@ -394,12 +457,12 @@ def build_complete_validation_reports_frame(
 
     if only_berichte:
         LOGGER.info(
-            "Validation cohort: %d report(s) in Berichte without prediction match "
-            "(implicit negative).",
+            "Validation cohort: %d / %d spine rows without prediction (%.1f%% matched).",
             only_berichte,
+            raw_spine_rows,
+            match_rate,
         )
 
-    prediction_matched = int(merged["_has_prediction_row"].sum())
     stats = {
         "berichte_reports": raw_spine_rows,
         "raw_spine_selected_rows": raw_spine_rows,
@@ -411,7 +474,10 @@ def build_complete_validation_reports_frame(
         "eligible_spine_patients": int(berichte["PatientenID"].nunique()),
         "prediction_matched_reports": prediction_matched,
         "missing_prediction_reports": only_berichte,
-        "merge_keys_used": _choose_prediction_merge_keys(berichte, preds),
+        "prediction_match_rate_pct": round(match_rate, 2),
+        "merge_strategy": merge_strategy,
+        "merge_keys": merge_keys,
+        "missing_match_reasons": missing_reasons,
     }
     merged = apply_processing_fields(merged)
     if "klasse" in merged.columns:
@@ -432,7 +498,6 @@ def build_complete_validation_reports_frame(
 
 
 def cohort_processing_summary_lines(cohort: pd.DataFrame) -> List[str]:
-    """Summary lines for cohort export report."""
     if cohort.empty:
         return ["Processing summary: (empty cohort)"]
     lines = [

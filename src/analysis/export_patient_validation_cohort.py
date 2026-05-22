@@ -28,12 +28,12 @@ from src.analysis.patient_reporttype_matrix import (
     ensure_baseline_icdsc_ge_4_column,
 )
 from src.analysis.validation_cohort_reports import (
-    SOURCE_REPORT_ROW_ID_COL,
     build_complete_validation_reports_frame,
     cohort_processing_summary_lines,
     load_raw_included_report_spine,
     per_patient_spine_export_counts,
 )
+from src.preprocessing.report_identity import SOURCE_REPORT_ROW_ID_COL
 from src.analysis.validation_ids import (
     assign_validation_patient_ids,
     format_validation_report_id,
@@ -226,7 +226,7 @@ def build_patient_level_sampling_frame(
         return matrix, stats
 
     preds = _filter_included_predictions(predictions)
-    merged = _merge_predictions_onto_spine(spine, preds)
+    merged, _, _ = _merge_predictions_onto_spine(spine, preds)
     if "klasse" in merged.columns:
         merged["klasse"] = (
             pd.to_numeric(merged["klasse"], errors="coerce").fillna(0).astype(int).clip(0, 1)
@@ -595,8 +595,19 @@ def format_cohort_report(
     if merge_stats:
         lines.append(f"prediction_matched_reports={merge_stats.get('prediction_matched_reports', 0)}")
         lines.append(f"missing_prediction_reports={merge_stats.get('missing_prediction_reports', 0)}")
-        if merge_stats.get("merge_keys_used"):
-            lines.append(f"prediction_merge_keys={merge_stats.get('merge_keys_used')}")
+        lines.append(
+            f"prediction_match_rate_pct={merge_stats.get('prediction_match_rate_pct', 0)}"
+        )
+        if merge_stats.get("merge_strategy"):
+            lines.append(
+                f"prediction_merge_strategy={merge_stats.get('merge_strategy')} "
+                f"keys={merge_stats.get('merge_keys', '')}"
+            )
+        reasons = merge_stats.get("missing_match_reasons") or {}
+        if reasons:
+            lines.append("missing_match_reasons (heuristic):")
+            for reason, cnt in sorted(reasons.items(), key=lambda x: -x[1]):
+                lines.append(f"  {reason}: {cnt}")
         ppc = merge_stats.get("per_patient_row_check")
         if isinstance(ppc, pd.DataFrame) and not ppc.empty:
             lines.extend(["", "Per-patient raw vs exported row counts:", "-" * 44])
