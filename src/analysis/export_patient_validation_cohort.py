@@ -41,12 +41,14 @@ from src.analysis.validation_ids import (
 from src.pipeline.baseline_composite import compute_baseline_composite
 from src.pipeline.paths import (
     BERICHTE_INPUT_PATH,
+    FROZEN_PATIENT_VALIDATION_COHORT_PATH,
     MANUAL_VALIDATION_DIR,
     PATIENT_REPORTTYPE_MATRIX_PATH,
     PATIENT_VALIDATION_COHORT_PATH,
     PATIENT_VALIDATION_COHORT_REPORT_PATH,
     PREDICTIONS_DIR,
     STRUCTURED_BASELINE_PATH,
+    VALIDATION_COHORT_PREDICTIONS_PATH,
 )
 from src.pipeline.schema_normalize import normalize_patient_id_column
 from src.preprocessing.berichte_filters import normalize_bertyp
@@ -56,6 +58,27 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_PREDICTIONS_PATH = PREDICTIONS_DIR / "agent1_agent2_agent3_results_prompt.csv"
 DEFAULT_TARGET_N = 100
+
+
+def resolve_predictions_path_for_export(
+    predictions_path: Optional[Path] = None,
+    *,
+    prefer_validation_cohort_predictions: bool = True,
+) -> Path:
+    """
+    Prediction CSV for cohort export / merge.
+
+    Prefers ``validation_cohort_predictions.csv`` when present (cohort-limited inference run).
+    """
+    if predictions_path is not None:
+        return predictions_path
+    if prefer_validation_cohort_predictions and VALIDATION_COHORT_PREDICTIONS_PATH.exists():
+        LOGGER.info(
+            "Using cohort-limited predictions: %s",
+            VALIDATION_COHORT_PREDICTIONS_PATH,
+        )
+        return VALIDATION_COHORT_PREDICTIONS_PATH
+    return DEFAULT_PREDICTIONS_PATH
 
 REPORT_PATIENT_LEVEL_WARNING = (
     "Patient-level reference positive; this report may still be correctly negative."
@@ -678,19 +701,35 @@ def format_cohort_report(
 
 
 def main(
-    predictions_path: Path = DEFAULT_PREDICTIONS_PATH,
+    predictions_path: Optional[Path] = None,
     baseline_path: Path = STRUCTURED_BASELINE_PATH,
     matrix_path: Path = PATIENT_REPORTTYPE_MATRIX_PATH,
     output_path: Path = PATIENT_VALIDATION_COHORT_PATH,
     report_path: Path = PATIENT_VALIDATION_COHORT_REPORT_PATH,
+    *,
+    frozen_cohort_path: Path = FROZEN_PATIENT_VALIDATION_COHORT_PATH,
+    use_frozen_cohort_patients: bool = True,
 ) -> None:
-    if not predictions_path.exists():
+    pred_path = resolve_predictions_path_for_export(predictions_path)
+    if not pred_path.exists():
         raise FileNotFoundError(
-            f"Predictions missing: {predictions_path}. Run python -m src.pipeline.run_pipeline first."
+            f"Predictions missing: {pred_path}. "
+            "Run python -m src.pipeline.run_pipeline or "
+            "VALIDATION_COHORT_ONLY=true python -m src.pipeline.run_pipeline."
         )
 
     target_n = patient_validation_n()
-    preds = pd.read_csv(predictions_path)
+    preds = pd.read_csv(pred_path)
+
+    frozen_selected_ids: Optional[List[str]] = None
+    if use_frozen_cohort_patients and frozen_cohort_path.exists():
+        frozen = normalize_patient_id_column(pd.read_csv(frozen_cohort_path))
+        frozen_selected_ids = sorted(frozen["PatientenID"].astype(str).unique().tolist())
+        LOGGER.info(
+            "Using %d patients from frozen cohort for export: %s",
+            len(frozen_selected_ids),
+            frozen_cohort_path,
+        )
 
     baseline: Optional[pd.DataFrame] = None
     if baseline_path.exists():
@@ -709,7 +748,10 @@ def main(
             eligible,
             target_n,
         )
-    selected_ids, _ = select_validation_patient_ids(patient_ctx, target_n=target_n)
+    if frozen_selected_ids is not None:
+        selected_ids = frozen_selected_ids[:target_n]
+    else:
+        selected_ids, _ = select_validation_patient_ids(patient_ctx, target_n=target_n)
     raw_spine_selected = load_raw_included_report_spine(
         BERICHTE_INPUT_PATH, patient_ids=selected_ids
     )
@@ -742,6 +784,7 @@ def main(
     )
 
     print(f"Wrote patient validation cohort: {output_path}")
+    print(f"predictions_source={pred_path}")
     print(f"Wrote cohort report: {report_path}")
     print(
         f"unique_patients={cohort['validation_patient_id'].nunique()} "

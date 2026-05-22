@@ -17,9 +17,15 @@ from src.models.model_config import LLM_MODEL_LABEL, LLM_PROVIDER
 from src.pipeline.paths import (
     ANONYMIZED_DIR,
     BERICHTE_INPUT_PATH,
+    FROZEN_PATIENT_VALIDATION_COHORT_PATH,
     PREDICTIONS_DIR,
     MAX_REPORTS,
     SQLITE_PREDICTIONS_DB_PATH,
+    VALIDATION_COHORT_PREDICTIONS_PATH,
+)
+from src.pipeline.validation_cohort_filter import (
+    filter_report_records_for_validation_cohort,
+    validation_cohort_only_enabled,
 )
 from src.agents.delirium_probability import delirium_probability_estimate
 from src.preprocessing.berichte_filters import normalize_bertyp
@@ -277,7 +283,19 @@ def _get_report_records():
     else:
         raise ValueError(f"Ungültiger INPUT_MODE: {INPUT_MODE}")
 
-    if MAX_REPORTS is not None:
+    if validation_cohort_only_enabled():
+        report_records, spec = filter_report_records_for_validation_cohort(report_records)
+        print(
+            f"VALIDATION_COHORT_ONLY=true: processing {len(report_records)} reports "
+            f"from frozen cohort ({FROZEN_PATIENT_VALIDATION_COHORT_PATH.name}, "
+            f"filter_mode={spec.filter_mode})"
+        )
+        if MAX_REPORTS is not None:
+            LOGGER.warning(
+                "MAX_REPORTS is ignored when VALIDATION_COHORT_ONLY=true "
+                "(cohort row set defines the run)."
+            )
+    elif MAX_REPORTS is not None:
         if isinstance(MAX_REPORTS, int) and MAX_REPORTS > 0:
             report_records = report_records[:MAX_REPORTS]
             print(
@@ -292,6 +310,8 @@ def _get_report_records():
 
 def _get_output_path() -> Path:
     PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
+    if validation_cohort_only_enabled():
+        return VALIDATION_COHORT_PREDICTIONS_PATH
     return PREDICTIONS_DIR / f"agent1_agent2_agent3_results_{INTERPRETATION_MODE}.csv"
 
 
@@ -652,11 +672,16 @@ def main():
             log_prediction_row(SQLITE_PREDICTIONS_DB_PATH, row_dict)
         print(f"SQLite prediction log: {SQLITE_PREDICTIONS_DB_PATH}")
 
-    model_copy_path = _get_model_named_output_path()
-    shutil.copy2(output_csv, model_copy_path)
-
     print(f"Ergebnisse gespeichert in: {output_csv}")
-    print(f"Ergebnisse (Modellkopie) gespeichert in: {model_copy_path}")
+    if validation_cohort_only_enabled():
+        print(
+            "VALIDATION_COHORT_ONLY: full predictions file was NOT updated "
+            f"({PREDICTIONS_DIR / f'agent1_agent2_agent3_results_{INTERPRETATION_MODE}.csv'} unchanged)."
+        )
+    else:
+        model_copy_path = _get_model_named_output_path()
+        shutil.copy2(output_csv, model_copy_path)
+        print(f"Ergebnisse (Modellkopie) gespeichert in: {model_copy_path}")
 
 
 if __name__ == "__main__":
