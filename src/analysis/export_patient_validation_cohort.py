@@ -28,10 +28,11 @@ from src.analysis.patient_reporttype_matrix import (
     ensure_baseline_icdsc_ge_4_column,
 )
 from src.analysis.validation_cohort_reports import (
-    MERGE_KEYS,
+    SOURCE_REPORT_ROW_ID_COL,
     build_complete_validation_reports_frame,
     cohort_processing_summary_lines,
-    load_included_berichte_reports,
+    load_raw_included_report_spine,
+    per_patient_spine_export_counts,
 )
 from src.analysis.validation_ids import (
     assign_validation_patient_ids,
@@ -76,6 +77,7 @@ COHORT_COLUMNS: List[str] = [
     "validation_report_id",
     "report_nr_within_patient",
     "PatientenID",
+    SOURCE_REPORT_ROW_ID_COL,
     "bericht",
     "bertyp",
     "berdat",
@@ -206,8 +208,10 @@ def build_patient_level_sampling_frame(
     Patient universe = all included Berichte reports (not prediction export only).
     Predictions are left-merged onto the report spine; missing rows count as klasse=0.
     """
+    from src.analysis.validation_cohort_reports import _merge_predictions_onto_spine
+
     bpath = berichte_path or BERICHTE_INPUT_PATH
-    spine = load_included_berichte_reports(bpath, berichte_df=berichte_df)
+    spine = load_raw_included_report_spine(bpath, berichte_df=berichte_df)
     stats: dict = {
         "eligible_spine_patients": int(spine["PatientenID"].nunique()) if not spine.empty else 0,
     }
@@ -222,24 +226,13 @@ def build_patient_level_sampling_frame(
         return matrix, stats
 
     preds = _filter_included_predictions(predictions)
-    if preds.empty:
-        merged = spine.copy()
-        merged["klasse"] = 0
-    else:
-        preds = preds.drop_duplicates(list(MERGE_KEYS), keep="first")
-        spine_cols = set(spine.columns)
-        extra_cols = [c for c in preds.columns if c not in spine_cols or c in MERGE_KEYS]
-        merged = spine.merge(
-            preds[extra_cols],
-            on=list(MERGE_KEYS),
-            how="left",
-            suffixes=("", "_pred"),
-        )
-        drop_suffix = [c for c in merged.columns if c.endswith("_pred")]
-        merged = merged.drop(columns=drop_suffix, errors="ignore")
+    merged = _merge_predictions_onto_spine(spine, preds)
+    if "klasse" in merged.columns:
         merged["klasse"] = (
-            pd.to_numeric(merged.get("klasse"), errors="coerce").fillna(0).astype(int).clip(0, 1)
+            pd.to_numeric(merged["klasse"], errors="coerce").fillna(0).astype(int).clip(0, 1)
         )
+    else:
+        merged["klasse"] = 0
 
     matrix = build_patient_reporttype_matrix(merged, baseline)
     stats["sampling_source"] = "berichte_spine"
@@ -438,18 +431,31 @@ def build_patient_validation_cohort(
     berichte_path: Optional[Path] = None,
     berichte_reports: Optional[pd.DataFrame] = None,
     merge_stats: Optional[dict] = None,
+    raw_spine_for_assert: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
-    """All included report rows for selected patients (predictions + Berichte spine)."""
+    """All included report rows for selected patients (raw Berichte spine + LEFT predictions)."""
     bpath = berichte_path or BERICHTE_INPUT_PATH
+    pids = [str(p) for p in selected_patient_ids]
+    spine_selected = raw_spine_for_assert
+    if spine_selected is None:
+        spine_selected = load_raw_included_report_spine(
+            bpath,
+            patient_ids=pids,
+            berichte_df=berichte_reports,
+        )
+
     pred, stats = build_complete_validation_reports_frame(
         predictions,
         selected_patient_ids,
         berichte_path=bpath,
-        berichte_df=berichte_reports,
+        berichte_df=berichte_reports if berichte_reports is not None else spine_selected,
     )
     if merge_stats is not None:
         merge_stats.clear()
         merge_stats.update(stats)
+        merge_stats["per_patient_row_check"] = per_patient_spine_export_counts(
+            spine_selected, pred
+        )
     pred = _merge_berdat_from_berichte(pred, bpath)
 
     ctx = normalize_patient_id_column(patient_context)
@@ -516,6 +522,7 @@ def build_patient_validation_cohort(
                 ),
                 "report_nr_within_patient": report_nr,
                 "PatientenID": pid,
+                SOURCE_REPORT_ROW_ID_COL: str(rep.get(SOURCE_REPORT_ROW_ID_COL) or ""),
                 "bericht": str(rep.get("bericht") or ""),
                 "bertyp": str(rep.get("bertyp") or ""),
                 "berdat": str(rep.get("berdat") or ""),
@@ -571,12 +578,16 @@ def format_cohort_report(
     sampling_stats: Optional[dict] = None,
 ) -> str:
     exported_patients = cohort["validation_patient_id"].nunique() if not cohort.empty else 0
+    raw_rows = merge_stats.get("raw_spine_selected_rows", merge_stats.get("berichte_reports", 0)) if merge_stats else 0
+    exported_rows = merge_stats.get("exported_cohort_rows", len(cohort)) if merge_stats else len(cohort)
     lines = [
         "Patient validation cohort export report",
         "=" * 44,
         f"target_unique_patients={selected_n}",
         f"exported_unique_patients={exported_patients}",
-        f"total_report_rows={len(cohort)}",
+        f"raw_spine_selected_rows={raw_rows}",
+        f"exported_cohort_rows={exported_rows}",
+        f"row_count_match={raw_rows == exported_rows}",
     ]
     if sampling_stats:
         lines.append(f"eligible_spine_patients={sampling_stats.get('eligible_spine_patients', 0)}")
@@ -584,6 +595,19 @@ def format_cohort_report(
     if merge_stats:
         lines.append(f"prediction_matched_reports={merge_stats.get('prediction_matched_reports', 0)}")
         lines.append(f"missing_prediction_reports={merge_stats.get('missing_prediction_reports', 0)}")
+        if merge_stats.get("merge_keys_used"):
+            lines.append(f"prediction_merge_keys={merge_stats.get('merge_keys_used')}")
+        ppc = merge_stats.get("per_patient_row_check")
+        if isinstance(ppc, pd.DataFrame) and not ppc.empty:
+            lines.extend(["", "Per-patient raw vs exported row counts:", "-" * 44])
+            for pid, row in ppc.iterrows():
+                raw_n = int(row.get("raw_included_reports", 0))
+                exp_n = int(row.get("exported_reports", 0))
+                ok = bool(row.get("match", raw_n == exp_n))
+                lines.append(
+                    f"  PatientenID={pid}: raw={raw_n} exported={exp_n} "
+                    f"[{'OK' if ok else 'MISMATCH'}]"
+                )
     lines.extend(
         [
             "",
@@ -675,6 +699,9 @@ def main(
             target_n,
         )
     selected_ids, _ = select_validation_patient_ids(patient_ctx, target_n=target_n)
+    raw_spine_selected = load_raw_included_report_spine(
+        BERICHTE_INPUT_PATH, patient_ids=selected_ids
+    )
     merge_stats: dict = {}
     cohort = build_patient_validation_cohort(
         preds,
@@ -682,7 +709,9 @@ def main(
         patient_ctx,
         selected_ids,
         berichte_path=BERICHTE_INPUT_PATH,
+        berichte_reports=raw_spine_selected,
         merge_stats=merge_stats,
+        raw_spine_for_assert=raw_spine_selected,
     )
     sampling_stats["exported_unique_patients"] = (
         cohort["validation_patient_id"].nunique() if not cohort.empty else 0

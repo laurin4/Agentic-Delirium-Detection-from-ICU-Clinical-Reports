@@ -89,6 +89,7 @@ def test_berichte_spine_adds_missing_report():
                 "PatientenID": "p1",
                 "bericht": "r1.txt",
                 "bertyp": "Verlaufseintrag",
+                "berdat": "2024-01-01",
                 "klasse": 0,
                 "llm_skipped_by_prefilter": True,
                 "llm_text_reduction_method": METHOD_NO_EVIDENCE,
