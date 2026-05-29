@@ -15,6 +15,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+from src.pipeline.predictions_source import (
+    get_predictions_source,
+    log_predictions_source,
+    resolve_predictions_path,
+)
+
 LOGGER = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +33,12 @@ def _run_module(mod: str) -> None:
 
 
 def main() -> None:
+    pred_path = resolve_predictions_path()
+    log_predictions_source(pred_path)
+    LOGGER.info(
+        "Validation suite using PREDICTIONS_SOURCE=%s",
+        get_predictions_source(),
+    )
     _run_module("src.pipeline.compare_reports_vs_baseline")
     _run_module("src.pipeline.evaluate_predictions")
     _run_module("src.analysis.create_patient_reporttype_matrix")

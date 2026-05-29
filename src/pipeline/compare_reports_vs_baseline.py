@@ -6,7 +6,11 @@ from src.pipeline.paths import (
     STRUCTURED_BASELINE_PATH,
     REPORT_VS_BASELINE_PATH,
     REPORT_VS_BASELINE_EXCLUDED_PATH,
-    PREDICTIONS_DIR,
+)
+from src.pipeline.predictions_source import (
+    FULL_PREDICTIONS_PATH,
+    log_predictions_source,
+    resolve_predictions_path,
 )
 from src.analysis.evidence_snippets import attach_evidence_snippets_to_dataframe
 from src.pipeline.prepare_structured_data import add_reference_class
@@ -16,7 +20,8 @@ from src.pipeline.schema_normalize import (
     require_columns,
 )
 
-REPORT_PREDICTIONS_PATH = PREDICTIONS_DIR / "agent1_agent2_agent3_results_prompt.csv"
+# Default path when no env override; prefer resolve_predictions_path() at runtime.
+REPORT_PREDICTIONS_PATH = FULL_PREDICTIONS_PATH
 
 # Columns that must be present on every evaluable merged row (from structured baseline).
 # Missing values indicate no baseline row or incomplete baseline data for that PatientenID.
@@ -96,8 +101,9 @@ def _build_excluded_export(
 
 def load_data(
     baseline_path: Path = STRUCTURED_BASELINE_PATH,
-    predictions_path: Path = REPORT_PREDICTIONS_PATH,
+    predictions_path: Optional[Path] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    predictions_path = resolve_predictions_path(predictions_path)
     if not baseline_path.exists():
         raise FileNotFoundError(
             f"Structured baseline not found: {baseline_path}. "
@@ -120,7 +126,9 @@ def run_compare(
     excluded_path: Optional[Path] = None,
 ) -> None:
     baseline_path = baseline_path or STRUCTURED_BASELINE_PATH
-    predictions_path = predictions_path or REPORT_PREDICTIONS_PATH
+    explicit_pred = predictions_path is not None
+    predictions_path = resolve_predictions_path(predictions_path)
+    log_predictions_source(predictions_path, explicit_path=explicit_pred)
     output_path = output_path or REPORT_VS_BASELINE_PATH
     excluded_path = excluded_path or REPORT_VS_BASELINE_EXCLUDED_PATH
 

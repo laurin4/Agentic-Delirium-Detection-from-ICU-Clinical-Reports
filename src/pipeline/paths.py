@@ -149,6 +149,9 @@ VALIDATION_SUMMARY_TXT_PATH = VALIDATION_DIR / "validation_summary.txt"
 LLM_DEBUG_DIR = OUTPUTS_DIR / "logs" / "llm_debug"
 SQLITE_PREDICTIONS_DB_PATH = LOGS_DIR / "prediction_run.sqlite"
 
+# Full-run pipeline output (default evaluation / export predictions source).
+FULL_PREDICTIONS_PATH = PREDICTIONS_DIR / "agent1_agent2_agent3_results_prompt.csv"
+
 # Cohort-limited inference (VALIDATION_COHORT_ONLY=true); does not overwrite full-run CSV.
 VALIDATION_COHORT_PREDICTIONS_PATH = PREDICTIONS_DIR / "validation_cohort_predictions.csv"
 

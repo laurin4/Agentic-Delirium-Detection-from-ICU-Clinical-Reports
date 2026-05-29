@@ -27,6 +27,11 @@ from src.pipeline.paths import (
     EVALUATION_SUMMARY_PATH,
     REPORT_VS_BASELINE_PATH,
 )
+from src.pipeline.predictions_source import (
+    get_predictions_source,
+    log_predictions_source,
+    resolve_predictions_path,
+)
 from src.pipeline.prepare_structured_data import add_binary_baselines
 
 
@@ -133,11 +138,14 @@ def _plot_distribution_comparison(df: pd.DataFrame, out_path: Path) -> None:
 
 
 def main() -> None:
+    pred_path = resolve_predictions_path()
+    log_predictions_source(pred_path)
     print(format_baseline_composite_mode_banner())
     if not REPORT_VS_BASELINE_PATH.exists():
         raise FileNotFoundError(
             f"Comparison file not found: {REPORT_VS_BASELINE_PATH}. "
-            "Run 'python -m src.pipeline.compare_reports_vs_baseline' first."
+            f"Run 'python -m src.pipeline.compare_reports_vs_baseline' first "
+            f"(with PREDICTIONS_SOURCE={get_predictions_source()} if using cohort predictions)."
         )
 
     df = pd.read_csv(REPORT_VS_BASELINE_PATH)
@@ -207,6 +215,10 @@ def main() -> None:
         "Binary baseline evaluation",
         "",
         format_baseline_composite_mode_banner(),
+        "",
+        f"PREDICTIONS_SOURCE: {get_predictions_source()}",
+        f"predictions_path: {pred_path}",
+        f"comparison_input: {REPORT_VS_BASELINE_PATH}",
         "",
         f"n_patients: {len(df)}",
         f"best_baseline_by_f1: {best_row['baseline_name']}",
