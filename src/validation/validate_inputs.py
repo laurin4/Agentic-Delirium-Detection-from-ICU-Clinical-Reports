@@ -205,7 +205,7 @@ def run_checks() -> List[Dict[str, Any]]:
                 "check": "structured_baseline_binary_icd10_positive_patients",
                 "status": "ok",
                 "value": str(int((bb["baseline_icd10"] == 1).sum())) if "baseline_icd10" in bb.columns else "n/a",
-                "detail": "baseline_icd10==1 (main diagnosis F05.0/F05.8/F05.9)",
+                "detail": "baseline_icd10==1 (ANY diagnosis F05.0/F05.8/F05.9)",
             }
         )
         rows.append(

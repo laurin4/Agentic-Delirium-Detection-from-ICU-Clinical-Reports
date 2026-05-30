@@ -49,7 +49,8 @@ def test_icdsc_patient_level_icdsc_max_and_thresholds():
     assert row3["baseline_icdsc_ge_4_grouped"] == 1
 
 
-def test_icd_only_main_diagnosis_counts_delir():
+def test_icd_any_diagnosis_counts_delir_not_only_main():
+    """Primary ICD10 baseline: ANY allowed code row counts (icd_hd not required)."""
     df = pd.DataFrame(
         {
             "PatientID": ["p1", "p1", "p2", "p3"],
@@ -61,6 +62,78 @@ def test_icd_only_main_diagnosis_counts_delir():
     assert int(out.loc[out["PatientenID"] == "p1", "has_delir_icd10"].iloc[0]) == 1
     assert int(out.loc[out["PatientenID"] == "p2", "has_delir_icd10"].iloc[0]) == 1
     assert int(out.loc[out["PatientenID"] == "p3", "has_delir_icd10"].iloc[0]) == 0
+
+
+def test_icd_f058_nan_icd_hd_counts():
+    df = pd.DataFrame({"PatientID": ["p1"], "icd_hd": [pd.NA], "icd_code": ["F05.8"]})
+    out = prepare_icd10(df)
+    assert int(out.loc[0, "has_delir_icd10"]) == 1
+    assert int(out.loc[0, "has_delir_icd10_main"]) == 0
+
+
+def test_icd_f058_main_diagnosis_also_counts():
+    df = pd.DataFrame({"PatientID": ["p1"], "icd_hd": [1], "icd_code": ["F05.8"]})
+    out = prepare_icd10(df)
+    assert int(out.loc[0, "has_delir_icd10"]) == 1
+    assert int(out.loc[0, "has_delir_icd10_main"]) == 1
+
+
+def test_icd_f051_does_not_count():
+    df = pd.DataFrame({"PatientID": ["p1"], "icd_hd": [1], "icd_code": ["F05.1"]})
+    out = prepare_icd10(df)
+    assert int(out.loc[0, "has_delir_icd10"]) == 0
+    assert int(out.loc[0, "icd10_f051_only"]) == 1
+
+
+def test_icd_f050_counts_without_main_diagnosis():
+    df = pd.DataFrame({"PatientID": ["p1"], "icd_hd": [0], "icd_code": ["F05.0"]})
+    out = prepare_icd10(df)
+    assert int(out.loc[0, "has_delir_icd10"]) == 1
+
+
+def test_icd_f059_counts():
+    df = pd.DataFrame({"PatientID": ["p1"], "icd_hd": [pd.NA], "icd_code": ["F05.9"]})
+    out = prepare_icd10(df)
+    assert int(out.loc[0, "has_delir_icd10"]) == 1
+
+
+def test_icd_compact_f058_normalized():
+    from src.pipeline.schema_normalize import is_valid_delir_icd10_code, normalize_icd_code
+
+    assert normalize_icd_code("F058") == "F05.8"
+    assert is_valid_delir_icd10_code("F058")
+    df = pd.DataFrame({"PatientID": ["p1"], "icd_hd": [pd.NA], "icd_code": ["F058"]})
+    out = prepare_icd10(df)
+    assert int(out.loc[0, "has_delir_icd10"]) == 1
+
+
+def test_icd_f051_only_flag_when_mixed_with_valid():
+    df = pd.DataFrame(
+        {
+            "PatientID": ["p1", "p1"],
+            "icd_hd": [pd.NA, pd.NA],
+            "icd_code": ["F05.1", "F05.0"],
+        }
+    )
+    out = prepare_icd10(df)
+    assert int(out.loc[0, "has_delir_icd10"]) == 1
+    assert int(out.loc[0, "icd10_f051_only"]) == 0
+
+
+def test_icd10_baseline_report_lines():
+    from src.pipeline.prepare_structured_data import icd10_baseline_report_lines
+
+    merged = pd.DataFrame(
+        {
+            "baseline_icd10": [1, 0, 1],
+            "baseline_icd10_main_diagnosis": [0, 0, 1],
+            "icd10_f051_only": [0, 1, 0],
+        }
+    )
+    lines = icd10_baseline_report_lines(merged)
+    text = "\n".join(lines)
+    assert "baseline_icd10 positive patients: 2" in text
+    assert "patients with excluded F05.1 only: 1" in text
 
 
 def test_icd_valid_delir_codes_thesis_definition():
@@ -85,7 +158,7 @@ def test_icd_valid_delir_codes_thesis_definition():
     ],
 )
 def test_icd10_main_diagnosis_thesis_codes(icd_code, expected):
-    """Thesis ICD-10 delir: icd_hd==1 and F05.0 / F05.8 / F05.9 only."""
+    """Allowed ICD-10 codes count toward baseline regardless of icd_hd."""
     df = pd.DataFrame({"PatientID": ["p1"], "icd_hd": [1], "icd_code": [icd_code]})
     out = prepare_icd10(df)
     assert int(out.loc[0, "has_delir_icd10"]) == expected
@@ -105,15 +178,26 @@ def test_icd_non_f05_excluded_even_as_main():
 
 
 def test_icd_f05_not_counted_when_not_main_diagnosis():
+    """F05.1 never counts, even when icd_hd == 1."""
     df = pd.DataFrame({"PatientID": ["p1"], "icd_hd": [0], "icd_code": ["F05.1"]})
     out = prepare_icd10(df)
     assert int(out.loc[0, "has_delir_icd10"]) == 0
 
 
-def test_icd_f050_not_counted_when_icd_hd_not_main():
+def test_icd_f050_counts_when_icd_hd_not_main():
     df = pd.DataFrame({"PatientID": ["p1"], "icd_hd": [0], "icd_code": ["F05.0"]})
     out = prepare_icd10(df)
-    assert int(out.loc[0, "has_delir_icd10"]) == 0
+    assert int(out.loc[0, "has_delir_icd10"]) == 1
+
+
+def test_build_structured_baseline_includes_icd10_optional_columns():
+    icd = pd.DataFrame({"PatientID": ["p1"], "icd_hd": [pd.NA], "icd_code": ["F05.8"]})
+    icdsc = pd.DataFrame({"PatientID": ["p1"], "ICDSC_Max": [2]})
+    merged = build_structured_baseline(icd, icdsc)
+    assert merged.loc[0, "baseline_icd10"] == 1
+    assert merged.loc[0, "baseline_icd10_any"] == 1
+    assert merged.loc[0, "baseline_icd10_main_diagnosis"] == 0
+    assert merged.loc[0, "icd10_f051_only"] == 0
 
 
 def test_build_structured_baseline_standard_columns():

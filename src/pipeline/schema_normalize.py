@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Sequence
 
 import pandas as pd
@@ -31,7 +32,7 @@ ICDSC_LEGACY_VALUE_ALIASES: tuple[str, ...] = ("ICDSC_Value",)
 
 ICDSC_MAX_ALIASES: tuple[str, ...] = ("ICDSC_Max", "max_icdsc")
 
-# Thesis baseline: only these F05 subcodes (main diagnosis icd_hd==1 applied in prepare_icd10).
+# Thesis baseline: F05.0 / F05.8 / F05.9 (any diagnosis row; icd_hd not required for primary signal).
 VALID_DELIR_ICD10_CODES: frozenset[str] = frozenset({"F05.0", "F05.8", "F05.9"})
 # F05.1 = alcohol-related / withdrawal delirium — excluded from intended delirium cohort.
 EXCLUDED_DELIR_ICD10_CODE = "F05.1"
@@ -189,16 +190,28 @@ def is_main_diagnosis_flag(value: object) -> bool:
 
 
 def normalize_icd_code(code: object) -> str:
-    return str(code or "").strip().upper()
+    """Strip, uppercase, and normalize compact F05x codes (e.g. F058 -> F05.8)."""
+    s = str(code or "").strip().upper()
+    if not s or s.lower() in ("nan", "none", "null"):
+        return ""
+    compact = re.match(r"^F05(\d)$", s)
+    if compact:
+        return f"F05.{compact.group(1)}"
+    return s
+
+
+def is_excluded_delir_icd10_code(code: object) -> bool:
+    """True for F05.1 (alcohol-related delirium), explicitly excluded from baseline."""
+    return normalize_icd_code(code) == EXCLUDED_DELIR_ICD10_CODE
 
 
 def is_valid_delir_icd10_code(code: object) -> bool:
     """
-    Return whether an ICD-10 code counts toward delirium baseline (main diagnosis applied separately).
+    Return whether an ICD-10 code counts toward delirium baseline (any diagnosis row).
 
     Included: F05.0, F05.8, F05.9 only.
     Excluded: F05.1 (alcohol-related delirium / Entzugsdelir — outside intended cohort)
-    and all other F05 subcodes.
+    and all other F05 subcodes. Main diagnosis (icd_hd) is applied separately when needed.
     """
     normalized = normalize_icd_code(code)
     if not normalized:
