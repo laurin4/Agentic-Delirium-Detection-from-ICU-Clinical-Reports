@@ -27,9 +27,14 @@ from src.pipeline.paths import (
     VALIDATION_COHORT_PREDICTIONS_PATH,
 )
 from src.preprocessing.berichte_mapper import load_berichte_dataframe
+from src.pipeline.frozen_cohort_inference import (
+    build_stable_report_text_index,
+    resolve_frozen_cohort_report_text,
+)
 from src.preprocessing.report_identity import (
     PIPELINE_BERICHT_COL,
     SOURCE_REPORT_ROW_ID_COL,
+    VALIDATION_REPORT_ID_COL,
     assign_source_report_row_ids,
 )
 
@@ -54,6 +59,7 @@ LABEL_TRACE_FIELDS: tuple[str, ...] = (
 
 PREDICTION_TRACE_FIELDS: tuple[str, ...] = (
     "PatientenID",
+    VALIDATION_REPORT_ID_COL,
     SOURCE_REPORT_ROW_ID_COL,
     "bertyp",
     "berdat",
@@ -218,6 +224,9 @@ def compute_trace_verdict(issues: List[str]) -> str:
         "evidence_not_in_raw_report",
         "no_prediction_row",
         "no_cohort_row",
+        "validation_report_id_missing",
+        "validation_report_id_duplicate",
+        "no_prediction_row_for_validation_report_id",
     )
     lowered = [i.lower() for i in issues]
     if any(any(m in i for m in fail_markers) for i in lowered):
@@ -262,54 +271,94 @@ def build_report_trace(
             trace.label_row = _series_to_dict(lab_hits.iloc[0], LABEL_TRACE_FIELDS)
 
     lookup, strategy, merge_on, _ = build_prediction_lookup(preds, spine)
-    trace.merge_strategy = strategy
-    if merge_on and all(k in cohort_row.index for k in merge_on):
-        key = _merge_key_tuple(cohort_row, merge_on)
-        trace.merge_key = "|".join(key)
-        pred_row = lookup.get(key)
+    pred_row = None
+
+    if VALIDATION_REPORT_ID_COL in preds.columns:
+        pred_hits = preds[preds[VALIDATION_REPORT_ID_COL].astype(str) == validation_report_id]
+        if not pred_hits.empty:
+            pred_row = pred_hits.iloc[0]
+            trace.merge_strategy = "validation_report_id"
+            trace.merge_key = validation_report_id
+        else:
+            issues.append(f"no_prediction_row_for_validation_report_id: {validation_report_id}")
+            trace.merge_strategy = "validation_report_id"
+            trace.merge_key = validation_report_id
     else:
-        pred_row = None
-        issues.append("merge_keys_unavailable")
+        trace.merge_strategy = strategy
+        if merge_on and all(k in cohort_row.index for k in merge_on):
+            key = _merge_key_tuple(cohort_row, merge_on)
+            trace.merge_key = "|".join(key)
+            pred_row = lookup.get(key)
+        else:
+            issues.append("merge_keys_unavailable")
+
+        status = str(cohort_row.get("status", "")).strip()
+        if pred_row is None and status != "missing_prediction":
+            issues.append(f"no_prediction_row_for_merge_key: {trace.merge_key}")
 
     status = str(cohort_row.get("status", "")).strip()
     if status == "missing_prediction":
         issues.append("cohort_status_missing_prediction")
 
-    if pred_row is None and status != "missing_prediction":
-        issues.append(f"no_prediction_row_for_merge_key: {trace.merge_key}")
-    elif pred_row is not None:
+    if pred_row is not None:
         trace.prediction_row = _series_to_dict(pred_row, PREDICTION_TRACE_FIELDS)
-        for field in ("PatientenID", SOURCE_REPORT_ROW_ID_COL, "bertyp", "berdat"):
-            msg = compare_field(field, cohort_row.get(field), pred_row.get(field))
-            if msg:
-                issues.append(msg)
+        if VALIDATION_REPORT_ID_COL in pred_row.index:
+            pred_vid = str(pred_row.get(VALIDATION_REPORT_ID_COL, "")).strip()
+            if not pred_vid:
+                issues.append("validation_report_id_missing_in_prediction")
+            elif pred_vid != validation_report_id:
+                issues.append(
+                    f"validation_report_id_mismatch: expected '{validation_report_id}' got '{pred_vid}'"
+                )
+        if trace.merge_strategy != "validation_report_id":
+            for field in ("PatientenID", SOURCE_REPORT_ROW_ID_COL, "bertyp", "berdat"):
+                msg = compare_field(field, cohort_row.get(field), pred_row.get(field))
+                if msg:
+                    issues.append(msg)
 
-    sid = str(cohort_row.get(SOURCE_REPORT_ROW_ID_COL, "")).strip()
-    raw_row, raw_idx = lookup_raw_berichte_row(
-        raw_full,
-        sid,
-        patienten_id=str(cohort_row.get("PatientenID", "")),
-        bertyp=str(cohort_row.get("bertyp", "")),
-        berdat=str(cohort_row.get("berdat", "")),
-    )
-    trace.raw_row_index = raw_idx
-    if raw_row is not None:
-        raw_dict: Dict[str, Any] = {"raw_row_index": raw_idx}
-        if "PatientID" in raw_row.index:
-            raw_dict["PatientID"] = raw_row.get("PatientID", "")
-        for f in ("bertyp", "berdat") + RAW_BERICHTE_TEXT_FIELDS:
-            if f in raw_row.index:
-                raw_dict[f] = raw_row.get(f, "")
-        if SOURCE_REPORT_ROW_ID_COL in raw_row.index:
-            raw_dict[SOURCE_REPORT_ROW_ID_COL] = raw_row.get(SOURCE_REPORT_ROW_ID_COL, "")
-        trace.raw_berichte_row = raw_dict
-        trace.raw_report_text = reconstruct_report_text_from_row(raw_row)
+    text_index = build_stable_report_text_index()
+    cohort_text = resolve_frozen_cohort_report_text(cohort_row, text_index)
+    if cohort_text.strip():
+        trace.raw_report_text = cohort_text
+        trace.raw_berichte_row = {
+            "source": "frozen_cohort_stable_text",
+            "PatientenID": cohort_row.get("PatientenID", ""),
+            "bertyp": cohort_row.get("bertyp", ""),
+            "berdat": cohort_row.get("berdat", ""),
+        }
     else:
-        issues.append("raw_berichte_row_not_found")
+        sid = str(cohort_row.get(SOURCE_REPORT_ROW_ID_COL, "")).strip()
+        raw_row, raw_idx = lookup_raw_berichte_row(
+            raw_full,
+            sid,
+            patienten_id=str(cohort_row.get("PatientenID", "")),
+            bertyp=str(cohort_row.get("bertyp", "")),
+            berdat=str(cohort_row.get("berdat", "")),
+        )
+        trace.raw_row_index = raw_idx
+        if raw_row is not None:
+            raw_dict: Dict[str, Any] = {"raw_row_index": raw_idx}
+            if "PatientID" in raw_row.index:
+                raw_dict["PatientID"] = raw_row.get("PatientID", "")
+            for f in ("bertyp", "berdat") + RAW_BERICHTE_TEXT_FIELDS:
+                if f in raw_row.index:
+                    raw_dict[f] = raw_row.get(f, "")
+            if SOURCE_REPORT_ROW_ID_COL in raw_row.index:
+                raw_dict[SOURCE_REPORT_ROW_ID_COL] = raw_row.get(SOURCE_REPORT_ROW_ID_COL, "")
+            trace.raw_berichte_row = raw_dict
+            trace.raw_report_text = reconstruct_report_text_from_row(raw_row)
+        else:
+            issues.append("raw_berichte_row_not_found")
 
     if pred_row is not None and trace.raw_report_text:
         pred_sid = str(pred_row.get(SOURCE_REPORT_ROW_ID_COL, "")).strip()
-        if sid and pred_sid and sid != pred_sid:
+        sid = str(cohort_row.get(SOURCE_REPORT_ROW_ID_COL, "")).strip()
+        if (
+            trace.merge_strategy != "validation_report_id"
+            and sid
+            and pred_sid
+            and sid != pred_sid
+        ):
             issues.append(
                 f"source_report_row_id_mismatch: cohort '{sid}' vs prediction '{pred_sid}'"
             )

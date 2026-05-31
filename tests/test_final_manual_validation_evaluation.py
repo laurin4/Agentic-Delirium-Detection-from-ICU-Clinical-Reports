@@ -235,6 +235,7 @@ def test_final_evaluation_refreshes_baseline_from_structured_baseline(tmp_path):
     cohort_path = tmp_path / "patient_validation_cohort_frozen.csv"
     labels_path = tmp_path / "manual_report_labels_frozen.csv"
     baseline_path = tmp_path / "structured_baseline.csv"
+    predictions_path = tmp_path / "validation_cohort_predictions.csv"
 
     pd.DataFrame(
         {
@@ -254,6 +255,20 @@ def test_final_evaluation_refreshes_baseline_from_structured_baseline(tmp_path):
             "manual_comment": ["pos", ""],
         }
     ).to_csv(labels_path, index=False)
+    pd.DataFrame(
+        {
+            "validation_report_id": ["Patient_0001_Report_0001", "Patient_0002_Report_0001"],
+            "PatientenID": ["p1", "p2"],
+            "klasse": [1, 0],
+            "status": ["processed", "skipped"],
+            "llm_called": [1, 0],
+            "skipped_reason": ["direct", "no_evidence"],
+            "evidence_snippets": ["[]", "[]"],
+            "signalstaerke": ["hoch", "niedrig"],
+            "delir_probability_estimate": [70, 0],
+            "decision_rule_applied": ["direct", "no_evidence"],
+        }
+    ).to_csv(predictions_path, index=False)
     labels_before = labels_path.read_bytes()
 
     pd.DataFrame(
@@ -265,7 +280,9 @@ def test_final_evaluation_refreshes_baseline_from_structured_baseline(tmp_path):
         }
     ).to_csv(baseline_path, index=False)
 
-    merged, _ = load_merged_frozen_cohort(cohort_path, labels_path, baseline_path)
+    merged, _, _ = load_merged_frozen_cohort(
+        cohort_path, labels_path, baseline_path, predictions_path
+    )
     gt = build_patient_level_ground_truth(merged)
     p1 = gt.loc[gt["validation_patient_id"] == "Patient_0001"].iloc[0]
     p2 = gt.loc[gt["validation_patient_id"] == "Patient_0002"].iloc[0]

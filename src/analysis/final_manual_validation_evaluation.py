@@ -30,8 +30,14 @@ from src.pipeline.paths import (
     FROZEN_MANUAL_REPORT_LABELS_PATH,
     FROZEN_PATIENT_VALIDATION_COHORT_PATH,
     STRUCTURED_BASELINE_PATH,
+    VALIDATION_COHORT_PREDICTIONS_PATH,
 )
 from src.pipeline.schema_normalize import normalize_patient_id_columns
+from src.pipeline.validation_report_identity import (
+    VALIDATION_REPORT_ID_COL,
+    fill_missing_predictions_as_zero_enabled,
+    merge_predictions_by_validation_report_id,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -435,6 +441,8 @@ def format_final_report(
     *,
     incomplete_patient_ids: Sequence[str],
     baseline_source: Path = STRUCTURED_BASELINE_PATH,
+    prediction_warnings: Optional[Sequence[str]] = None,
+    predictions_source: Path = VALIDATION_COHORT_PREDICTIONS_PATH,
 ) -> str:
     n_total = len(patient_gt)
     n_complete = len(complete)
@@ -449,19 +457,31 @@ def format_final_report(
         "=" * 44,
         "",
         f"baseline_source={baseline_source}",
-        "",
-        "Cohort counts",
-        "-" * 44,
-        f"total_frozen_patients={n_total}",
-        f"complete_patients={n_complete}",
-        f"incomplete_patients={n_incomplete}",
-        f"manual_positive_patients={n_manual_pos}",
-        f"manual_negative_patients={n_manual_neg}",
-        "",
-        "WARNING: Incomplete patients are EXCLUDED from primary evaluation.",
-        "Empty manual labels are NOT treated as 0.",
+        f"predictions_source={predictions_source}",
+        f"prediction_merge_key={VALIDATION_REPORT_ID_COL}",
         "",
     ]
+    if prediction_warnings:
+        lines.extend(["Prediction merge warnings", "-" * 44])
+        for w in prediction_warnings[:30]:
+            lines.append(f"  - {w}")
+        lines.append("")
+
+    lines.extend(
+        [
+            "Cohort counts",
+            "-" * 44,
+            f"total_frozen_patients={n_total}",
+            f"complete_patients={n_complete}",
+            f"incomplete_patients={n_incomplete}",
+            f"manual_positive_patients={n_manual_pos}",
+            f"manual_negative_patients={n_manual_neg}",
+            "",
+            "WARNING: Incomplete patients are EXCLUDED from primary evaluation.",
+            "Empty manual labels are NOT treated as 0.",
+            "",
+        ]
+    )
     if incomplete_patient_ids:
         preview = list(incomplete_patient_ids)[:20]
         lines.append(f"incomplete_patient_ids (first {len(preview)}): {preview}")
@@ -499,6 +519,8 @@ def run_final_evaluation(
     output_dir: Path = FINAL_MANUAL_VALIDATION_EVAL_DIR,
     *,
     baseline_source: Path = STRUCTURED_BASELINE_PATH,
+    prediction_warnings: Optional[Sequence[str]] = None,
+    predictions_source: Path = VALIDATION_COHORT_PREDICTIONS_PATH,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
     """Build patient GT, evaluate complete patients, write all outputs."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -526,6 +548,8 @@ def run_final_evaluation(
         metrics,
         incomplete_patient_ids=incomplete_ids,
         baseline_source=baseline_source,
+        prediction_warnings=prediction_warnings,
+        predictions_source=predictions_source,
     )
     (output_dir / "report.txt").write_text(report, encoding="utf-8")
 
@@ -542,9 +566,13 @@ def load_merged_frozen_cohort(
     cohort_path: Path = FROZEN_PATIENT_VALIDATION_COHORT_PATH,
     labels_path: Path = FROZEN_MANUAL_REPORT_LABELS_PATH,
     baseline_path: Path = STRUCTURED_BASELINE_PATH,
-) -> Tuple[pd.DataFrame, Path]:
+    predictions_path: Path = VALIDATION_COHORT_PREDICTIONS_PATH,
+    *,
+    fill_missing_predictions: Optional[bool] = None,
+) -> Tuple[pd.DataFrame, Path, List[str]]:
     """
-    Load frozen cohort structure + manual labels; refresh baseline from structured_baseline.csv.
+    Load frozen cohort structure + manual labels; merge predictions by validation_report_id;
+    refresh baseline from structured_baseline.csv.
 
     Manual labels are read-only and never modified.
     """
@@ -552,25 +580,50 @@ def load_merged_frozen_cohort(
         raise FileNotFoundError(f"Frozen patient validation cohort missing: {cohort_path}")
     if not labels_path.exists():
         raise FileNotFoundError(f"Frozen manual report labels missing: {labels_path}")
+    if not predictions_path.exists():
+        raise FileNotFoundError(
+            f"Validation cohort predictions missing: {predictions_path}. "
+            "Run VALIDATION_COHORT_ONLY=true python -m src.pipeline.run_pipeline first."
+        )
+
     cohort = pd.read_csv(cohort_path)
     labels = pd.read_csv(labels_path)
+    preds = pd.read_csv(predictions_path)
+
     merged = merge_manual_report_labels(cohort, labels, log_context="final manual validation")
+    merged, pred_warnings = merge_predictions_by_validation_report_id(
+        merged,
+        preds,
+        fill_missing_as_zero=fill_missing_predictions,
+        log_context="final manual validation",
+    )
     merged = attach_structured_baseline(merged, baseline_path)
-    LOGGER.info("Final evaluation baseline_source=%s", baseline_path)
-    return merged, baseline_path
+    LOGGER.info(
+        "Final evaluation baseline_source=%s predictions_source=%s",
+        baseline_path,
+        predictions_path,
+    )
+    return merged, baseline_path, pred_warnings
 
 
 def main(
     cohort_path: Path = FROZEN_PATIENT_VALIDATION_COHORT_PATH,
     labels_path: Path = FROZEN_MANUAL_REPORT_LABELS_PATH,
     baseline_path: Path = STRUCTURED_BASELINE_PATH,
+    predictions_path: Path = VALIDATION_COHORT_PREDICTIONS_PATH,
     output_dir: Path = FINAL_MANUAL_VALIDATION_EVAL_DIR,
 ) -> None:
-    merged, resolved_baseline = load_merged_frozen_cohort(
-        cohort_path, labels_path, baseline_path
+    merged, resolved_baseline, pred_warnings = load_merged_frozen_cohort(
+        cohort_path, labels_path, baseline_path, predictions_path
     )
+    for w in pred_warnings:
+        LOGGER.warning("Final evaluation: %s", w)
     _, metrics, _, report = run_final_evaluation(
-        merged, output_dir=output_dir, baseline_source=resolved_baseline
+        merged,
+        output_dir=output_dir,
+        baseline_source=resolved_baseline,
+        prediction_warnings=pred_warnings,
+        predictions_source=predictions_path,
     )
     print(report)
     if not metrics.empty:

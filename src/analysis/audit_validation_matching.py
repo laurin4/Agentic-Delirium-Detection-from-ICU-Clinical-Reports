@@ -28,6 +28,14 @@ from src.pipeline.paths import (
     VALIDATION_COHORT_PREDICTIONS_PATH,
 )
 from src.preprocessing.berichte_mapper import _row_blocks
+from src.pipeline.frozen_cohort_inference import (
+    build_stable_report_text_index,
+    resolve_frozen_cohort_report_text,
+)
+from src.pipeline.validation_report_identity import (
+    VALIDATION_REPORT_ID_COL,
+    check_cohort_prediction_alignment,
+)
 from src.preprocessing.report_identity import (
     PIPELINE_BERICHT_COL,
     SOURCE_REPORT_ROW_ID_COL,
@@ -239,28 +247,47 @@ def check_duplicate_ambiguous_keys(
                     }
                 )
 
-    _, _, merge_on, pred_dupes = build_prediction_lookup(preds, spine)
-    issues.extend(pred_dupes)
+    merge_on: List[str] = []
+    if VALIDATION_REPORT_ID_COL in preds.columns:
+        dup_p = preds[preds[VALIDATION_REPORT_ID_COL].astype(str).duplicated(keep=False)]
+        for vid in dup_p[VALIDATION_REPORT_ID_COL].astype(str).unique():
+            if vid and vid.lower() not in ("nan", "none"):
+                issues.append(
+                    {
+                        "issue_type": "duplicate_validation_report_id_in_predictions",
+                        "validation_report_id": vid,
+                        "count": int(
+                            (preds[VALIDATION_REPORT_ID_COL].astype(str) == vid).sum()
+                        ),
+                    }
+                )
+    else:
+        _, _, merge_on, pred_dupes = build_prediction_lookup(preds, spine)
+        issues.extend(pred_dupes)
 
-    if merge_on:
-        if all(k in cohort.columns for k in merge_on):
-            dup_c = cohort.duplicated(subset=list(merge_on), keep=False)
-            if dup_c.any():
-                for _, row in cohort.loc[dup_c, list(merge_on)].drop_duplicates().iterrows():
-                    issues.append(
-                        {
-                            "issue_type": "duplicate_cohort_merge_key",
-                            "merge_key": "|".join(
-                                str(row[k]) for k in merge_on
-                            ),
-                        }
-                    )
+    if merge_on and all(k in cohort.columns for k in merge_on):
+        dup_c = cohort.duplicated(subset=list(merge_on), keep=False)
+        if dup_c.any():
+            for _, row in cohort.loc[dup_c, list(merge_on)].drop_duplicates().iterrows():
+                issues.append(
+                    {
+                        "issue_type": "duplicate_cohort_merge_key",
+                        "merge_key": "|".join(str(row[k]) for k in merge_on),
+                    }
+                )
     return issues
 
 
 def check_prediction_merge_integrity(
     cohort: pd.DataFrame, preds: pd.DataFrame, spine: pd.DataFrame
 ) -> Tuple[List[Dict[str, Any]], int, int]:
+    if (
+        VALIDATION_REPORT_ID_COL in cohort.columns
+        and VALIDATION_REPORT_ID_COL in preds.columns
+        and preds[VALIDATION_REPORT_ID_COL].astype(str).str.strip().ne("").any()
+    ):
+        return _check_prediction_merge_by_validation_report_id(cohort, preds)
+
     failures: List[Dict[str, Any]] = []
     lookup, strategy, merge_on, _ = build_prediction_lookup(preds, spine)
     if not merge_on or not all(k in cohort.columns for k in merge_on):
@@ -320,6 +347,71 @@ def check_prediction_merge_integrity(
     return failures, matched, checked
 
 
+def _check_prediction_merge_by_validation_report_id(
+    cohort: pd.DataFrame,
+    preds: pd.DataFrame,
+) -> Tuple[List[Dict[str, Any]], int, int]:
+    failures: List[Dict[str, Any]] = []
+    alignment_errors, _ = check_cohort_prediction_alignment(cohort, preds)
+    for err in alignment_errors:
+        failures.append(
+            {
+                "validation_report_id": "",
+                "issue": err,
+                "merge_strategy": "validation_report_id",
+            }
+        )
+
+    pred_lookup = {
+        str(row[VALIDATION_REPORT_ID_COL]).strip(): row
+        for _, row in preds.iterrows()
+        if str(row.get(VALIDATION_REPORT_ID_COL, "")).strip()
+    }
+
+    matched = 0
+    checked = 0
+    for _, row in cohort.iterrows():
+        status = str(row.get("status", "")).strip()
+        if status == "missing_prediction":
+            continue
+        checked += 1
+        vid = str(row.get(VALIDATION_REPORT_ID_COL, "")).strip()
+        if not vid:
+            failures.append(
+                {
+                    "validation_report_id": "",
+                    "issue": "validation_report_id_missing_in_cohort",
+                    "merge_strategy": "validation_report_id",
+                }
+            )
+            continue
+        pred_row = pred_lookup.get(vid)
+        if pred_row is None:
+            failures.append(
+                {
+                    "validation_report_id": vid,
+                    "issue": "no_prediction_row_for_validation_report_id",
+                    "merge_strategy": "validation_report_id",
+                }
+            )
+            continue
+        matched += 1
+        for field in ("PatientenID", "bertyp", "berdat"):
+            ls = str(row.get(field, "") or "").strip()
+            rs = str(pred_row.get(field, "") or "").strip()
+            if ls and rs and ls != rs:
+                failures.append(
+                    {
+                        "validation_report_id": vid,
+                        "issue": f"field_mismatch_{field}",
+                        "cohort_value": ls,
+                        "prediction_value": rs,
+                        "merge_strategy": "validation_report_id",
+                    }
+                )
+    return failures, matched, checked
+
+
 def build_report_text_index(
     spine: pd.DataFrame,
 ) -> Tuple[Dict[str, str], Dict[Tuple[str, ...], str]]:
@@ -365,6 +457,7 @@ def check_evidence_in_report(
     high_risk: List[Dict[str, Any]] = []
     checked = 0
     trivial_miss = 0
+    text_index = build_stable_report_text_index()
 
     for _, row in cohort.iterrows():
         status = str(row.get("status", "")).strip()
@@ -375,7 +468,9 @@ def check_evidence_in_report(
         if not snippets:
             continue
         checked += 1
-        report_text = resolve_raw_report_text(row, by_source_id, by_fallback)
+        report_text = resolve_frozen_cohort_report_text(row, text_index)
+        if not report_text.strip():
+            report_text = resolve_raw_report_text(row, by_source_id, by_fallback)
         if not report_text.strip():
             not_found.append(
                 {

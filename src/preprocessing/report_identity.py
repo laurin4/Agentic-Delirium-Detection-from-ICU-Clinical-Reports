@@ -14,6 +14,7 @@ import pandas as pd
 from src.preprocessing.berichte_filters import normalize_bertyp
 
 SOURCE_REPORT_ROW_ID_COL = "source_report_row_id"
+VALIDATION_REPORT_ID_COL = "validation_report_id"
 PIPELINE_BERICHT_COL = "pipeline_bericht"
 FALLBACK_MERGE_KEYS: tuple[str, ...] = ("PatientenID", "bertyp", "berdat", "bericht")
 PRIMARY_MERGE_KEYS: tuple[str, ...] = (SOURCE_REPORT_ROW_ID_COL,)
@@ -87,9 +88,18 @@ def choose_prediction_merge_keys(
     """
     Return (merge_columns, strategy_name).
 
-    Prefer ``source_report_row_id`` when present in both frames with coverage.
-    Else ``PatientenID`` + ``pipeline_bericht`` (legacy predictions use ``bericht`` = pipeline id).
+    Prefer ``validation_report_id`` when present in both frames with coverage.
+    Else ``source_report_row_id``, then ``PatientenID`` + ``pipeline_bericht``.
     """
+    if (
+        VALIDATION_REPORT_ID_COL in spine.columns
+        and VALIDATION_REPORT_ID_COL in preds.columns
+        and preds[VALIDATION_REPORT_ID_COL].astype(str).str.strip().ne("").any()
+    ):
+        covered = preds[VALIDATION_REPORT_ID_COL].isin(spine[VALIDATION_REPORT_ID_COL]).sum()
+        if covered > 0:
+            return [VALIDATION_REPORT_ID_COL], "validation_report_id"
+
     if (
         SOURCE_REPORT_ROW_ID_COL in spine.columns
         and SOURCE_REPORT_ROW_ID_COL in preds.columns

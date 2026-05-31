@@ -23,9 +23,12 @@ from src.pipeline.paths import (
     SQLITE_PREDICTIONS_DB_PATH,
     VALIDATION_COHORT_PREDICTIONS_PATH,
 )
-from src.pipeline.validation_cohort_filter import (
-    filter_report_records_for_validation_cohort,
-    validation_cohort_only_enabled,
+from src.pipeline.frozen_cohort_inference import build_pipeline_records_from_frozen_cohort
+from src.pipeline.validation_cohort_filter import validation_cohort_only_enabled
+from src.pipeline.validation_report_identity import (
+    VALIDATION_PATIENT_ID_COL,
+    VALIDATION_REPORT_ID_COL,
+    check_cohort_prediction_alignment,
 )
 from src.agents.delirium_probability import delirium_probability_estimate
 from src.preprocessing.berichte_filters import normalize_bertyp
@@ -158,10 +161,17 @@ def _processing_status_fields(
 
 def _report_identity_fields(report: dict) -> Dict[str, Any]:
     """Stable keys for cohort export merge (from Berichte.csv row identity)."""
-    return {
+    out = {
         SOURCE_REPORT_ROW_ID_COL: str(report.get(SOURCE_REPORT_ROW_ID_COL, "") or "").strip(),
         "berdat": str(report.get("berdat", "") or "").strip(),
     }
+    vid = str(report.get(VALIDATION_REPORT_ID_COL, "") or "").strip()
+    vpid = str(report.get(VALIDATION_PATIENT_ID_COL, "") or "").strip()
+    if vid:
+        out[VALIDATION_REPORT_ID_COL] = vid
+    if vpid:
+        out[VALIDATION_PATIENT_ID_COL] = vpid
+    return out
 
 
 def _prediction_row_no_evidence(
@@ -263,6 +273,20 @@ def _load_txt_reports():
 
 
 def _get_report_records():
+    if validation_cohort_only_enabled():
+        records = build_pipeline_records_from_frozen_cohort()
+        print(
+            f"VALIDATION_COHORT_ONLY=true: processing {len(records)} reports "
+            f"from frozen cohort ({FROZEN_PATIENT_VALIDATION_COHORT_PATH.name}, "
+            f"identity={VALIDATION_REPORT_ID_COL})"
+        )
+        if MAX_REPORTS is not None:
+            LOGGER.warning(
+                "MAX_REPORTS is ignored when VALIDATION_COHORT_ONLY=true "
+                "(frozen cohort row set defines the run)."
+            )
+        return [_normalize_report_record_bertyp(r) for r in records]
+
     if INPUT_MODE == "berichte":
         if not BERICHTE_INPUT_PATH.exists():
             raise FileNotFoundError(
@@ -274,7 +298,6 @@ def _get_report_records():
         print(f"excluded_dokumentationsblatt_count={excluded_db}")
         LOGGER.info("excluded_dokumentationsblatt_count=%d", excluded_db)
     elif INPUT_MODE == "diagnosis":
-        # Legacy: Diagnosenliste-style CSV (synthetic mode only).
         report_records = [
             _normalize_report_record_bertyp(r) for r in build_patient_level_report_records()
         ]
@@ -283,19 +306,7 @@ def _get_report_records():
     else:
         raise ValueError(f"Ungültiger INPUT_MODE: {INPUT_MODE}")
 
-    if validation_cohort_only_enabled():
-        report_records, spec = filter_report_records_for_validation_cohort(report_records)
-        print(
-            f"VALIDATION_COHORT_ONLY=true: processing {len(report_records)} reports "
-            f"from frozen cohort ({FROZEN_PATIENT_VALIDATION_COHORT_PATH.name}, "
-            f"filter_mode={spec.filter_mode})"
-        )
-        if MAX_REPORTS is not None:
-            LOGGER.warning(
-                "MAX_REPORTS is ignored when VALIDATION_COHORT_ONLY=true "
-                "(cohort row set defines the run)."
-            )
-    elif MAX_REPORTS is not None:
+    if MAX_REPORTS is not None:
         if isinstance(MAX_REPORTS, int) and MAX_REPORTS > 0:
             report_records = report_records[:MAX_REPORTS]
             print(
@@ -625,7 +636,7 @@ def main():
 
     _assert_binary_klassen(rows)
 
-    fieldnames = [
+    base_fieldnames = [
         "PatientenID",
         "bericht",
         "bertyp",
@@ -659,10 +670,32 @@ def main():
         "klassifikation",
         "klassifikation_begruendung",
     ]
+    fieldnames = list(base_fieldnames)
+    if validation_cohort_only_enabled():
+        fieldnames = [VALIDATION_PATIENT_ID_COL, VALIDATION_REPORT_ID_COL] + fieldnames
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+
+    if validation_cohort_only_enabled():
+        import pandas as pd
+
+        from src.pipeline.validation_cohort_filter import load_frozen_validation_cohort
+
+        cohort_df = load_frozen_validation_cohort(FROZEN_PATIENT_VALIDATION_COHORT_PATH)
+        pred_df = pd.DataFrame(rows)
+        errors, warnings = check_cohort_prediction_alignment(cohort_df, pred_df)
+        for w in warnings:
+            LOGGER.warning("Cohort prediction alignment: %s", w)
+        if errors:
+            raise ValueError(
+                "VALIDATION_COHORT_ONLY output failed alignment checks: " + "; ".join(errors)
+            )
+        print(
+            f"VALIDATION_COHORT_ONLY alignment OK: {len(pred_df)} predictions "
+            f"match {len(cohort_df)} frozen cohort rows by {VALIDATION_REPORT_ID_COL}"
+        )
 
     if os.environ.get("ENABLE_SQLITE_LOGGING", "").strip().lower() in ("1", "true", "yes"):
         from src.pipeline.sqlite_logging import init_prediction_db, log_prediction_row

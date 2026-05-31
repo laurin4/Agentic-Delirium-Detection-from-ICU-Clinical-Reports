@@ -112,6 +112,10 @@ def test_run_pipeline_cohort_only_writes_separate_file(monkeypatch, tmp_path):
     full_pred = pred_dir / "agent1_agent2_agent3_results_prompt.csv"
     full_pred.write_text("PatientenID,bericht\nold,row\n", encoding="utf-8")
 
+    frozen = _frozen_cohort_df().iloc[:1].copy()
+    frozen_path = tmp_path / "frozen.csv"
+    frozen.to_csv(frozen_path, index=False)
+
     monkeypatch.setenv("VALIDATION_COHORT_ONLY", "true")
     monkeypatch.setattr(run_pipeline, "PREDICTIONS_DIR", pred_dir)
     monkeypatch.setattr(
@@ -119,11 +123,12 @@ def test_run_pipeline_cohort_only_writes_separate_file(monkeypatch, tmp_path):
         "VALIDATION_COHORT_PREDICTIONS_PATH",
         pred_dir / "validation_cohort_predictions.csv",
     )
-    monkeypatch.setattr(run_pipeline, "FROZEN_PATIENT_VALIDATION_COHORT_PATH", tmp_path / "frozen.csv")
-    _frozen_cohort_df().to_csv(tmp_path / "frozen.csv", index=False)
+    monkeypatch.setattr(run_pipeline, "FROZEN_PATIENT_VALIDATION_COHORT_PATH", frozen_path)
 
     records = [
         {
+            "validation_patient_id": "Patient_0001",
+            "validation_report_id": "Patient_0001_Report_0001",
             "PatientenID": "p1",
             "bericht": "doc_a",
             "bertyp": "Verlaufseintrag",
@@ -136,6 +141,8 @@ def test_run_pipeline_cohort_only_writes_separate_file(monkeypatch, tmp_path):
 
     def _fake_run(report, idx, total):
         row = {
+            "validation_patient_id": report.get("validation_patient_id", ""),
+            "validation_report_id": report.get("validation_report_id", ""),
             "PatientenID": report["PatientenID"],
             "bericht": report["bericht"],
             "bertyp": report["bertyp"],
@@ -175,6 +182,7 @@ def test_run_pipeline_cohort_only_writes_separate_file(monkeypatch, tmp_path):
     assert (pred_dir / "validation_cohort_predictions.csv").exists()
     out = pd.read_csv(pred_dir / "validation_cohort_predictions.csv")
     assert len(out) == 1
+    assert out.iloc[0]["validation_report_id"] == "Patient_0001_Report_0001"
     assert out.iloc[0]["status"] == "skipped"
     assert "old" in full_pred.read_text(encoding="utf-8")
 
