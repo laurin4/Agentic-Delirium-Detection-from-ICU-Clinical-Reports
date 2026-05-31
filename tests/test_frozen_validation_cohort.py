@@ -1,19 +1,33 @@
 """Frozen manual validation cohort workflow."""
 
 import json
-import os
 
 import pandas as pd
 import pytest
 
 from src.analysis.freeze_validation_cohort import freeze_validation_cohort
 from src.analysis.frozen_validation_cohort import (
-    assert_can_write_frozen,
     frozen_cohort_exists,
     resolve_validation_input_paths,
     sha256_file,
 )
 from src.analysis.evaluate_manual_validation import main as eval_main
+
+
+def _patch_frozen_paths(monkeypatch, frozen_dir):
+    monkeypatch.setattr("src.pipeline.paths.FROZEN_VALIDATION_COHORT_DIR", frozen_dir)
+    monkeypatch.setattr(
+        "src.pipeline.paths.FROZEN_PATIENT_VALIDATION_COHORT_PATH",
+        frozen_dir / "patient_validation_cohort_frozen.csv",
+    )
+    monkeypatch.setattr(
+        "src.pipeline.paths.FROZEN_MANUAL_REPORT_LABELS_PATH",
+        frozen_dir / "manual_report_labels_frozen.csv",
+    )
+    monkeypatch.setattr(
+        "src.pipeline.paths.FROZEN_COHORT_METADATA_PATH",
+        frozen_dir / "frozen_cohort_metadata.json",
+    )
 
 
 def _cohort_and_labels(tmp_path):
@@ -47,19 +61,7 @@ def _cohort_and_labels(tmp_path):
 def test_freeze_creates_files_and_metadata(tmp_path, monkeypatch):
     cohort, labels, preds, base = _cohort_and_labels(tmp_path)
     frozen_dir = tmp_path / "frozen_validation_cohort"
-    monkeypatch.setattr("src.pipeline.paths.FROZEN_VALIDATION_COHORT_DIR", frozen_dir)
-    monkeypatch.setattr(
-        "src.pipeline.paths.FROZEN_PATIENT_VALIDATION_COHORT_PATH",
-        frozen_dir / "patient_validation_cohort_frozen.csv",
-    )
-    monkeypatch.setattr(
-        "src.pipeline.paths.FROZEN_MANUAL_REPORT_LABELS_PATH",
-        frozen_dir / "manual_report_labels_frozen.csv",
-    )
-    monkeypatch.setattr(
-        "src.pipeline.paths.FROZEN_COHORT_METADATA_PATH",
-        frozen_dir / "frozen_cohort_metadata.json",
-    )
+    _patch_frozen_paths(monkeypatch, frozen_dir)
 
     meta_path = freeze_validation_cohort(
         cohort_path=cohort,
@@ -82,19 +84,7 @@ def test_freeze_creates_files_and_metadata(tmp_path, monkeypatch):
 def test_freeze_blocks_overwrite_without_env(tmp_path, monkeypatch):
     cohort, labels, preds, base = _cohort_and_labels(tmp_path)
     frozen_dir = tmp_path / "frozen_validation_cohort"
-    monkeypatch.setattr("src.pipeline.paths.FROZEN_VALIDATION_COHORT_DIR", frozen_dir)
-    monkeypatch.setattr(
-        "src.pipeline.paths.FROZEN_PATIENT_VALIDATION_COHORT_PATH",
-        frozen_dir / "patient_validation_cohort_frozen.csv",
-    )
-    monkeypatch.setattr(
-        "src.pipeline.paths.FROZEN_MANUAL_REPORT_LABELS_PATH",
-        frozen_dir / "manual_report_labels_frozen.csv",
-    )
-    monkeypatch.setattr(
-        "src.pipeline.paths.FROZEN_COHORT_METADATA_PATH",
-        frozen_dir / "frozen_cohort_metadata.json",
-    )
+    _patch_frozen_paths(monkeypatch, frozen_dir)
 
     freeze_validation_cohort(
         cohort_path=cohort,
@@ -116,22 +106,11 @@ def test_freeze_blocks_overwrite_without_env(tmp_path, monkeypatch):
         )
 
 
-def test_freeze_allows_overwrite_with_env(tmp_path, monkeypatch):
+def test_freeze_blocks_label_overwrite_with_only_frozen_env(tmp_path, monkeypatch):
+    """OVERWRITE_FROZEN_VALIDATION alone cannot overwrite annotated frozen labels."""
     cohort, labels, preds, base = _cohort_and_labels(tmp_path)
     frozen_dir = tmp_path / "frozen_validation_cohort"
-    monkeypatch.setattr("src.pipeline.paths.FROZEN_VALIDATION_COHORT_DIR", frozen_dir)
-    monkeypatch.setattr(
-        "src.pipeline.paths.FROZEN_PATIENT_VALIDATION_COHORT_PATH",
-        frozen_dir / "patient_validation_cohort_frozen.csv",
-    )
-    monkeypatch.setattr(
-        "src.pipeline.paths.FROZEN_MANUAL_REPORT_LABELS_PATH",
-        frozen_dir / "manual_report_labels_frozen.csv",
-    )
-    monkeypatch.setattr(
-        "src.pipeline.paths.FROZEN_COHORT_METADATA_PATH",
-        frozen_dir / "frozen_cohort_metadata.json",
-    )
+    _patch_frozen_paths(monkeypatch, frozen_dir)
 
     freeze_validation_cohort(
         cohort_path=cohort,
@@ -141,6 +120,22 @@ def test_freeze_allows_overwrite_with_env(tmp_path, monkeypatch):
         output_dir=frozen_dir,
     )
     monkeypatch.setenv("OVERWRITE_FROZEN_VALIDATION", "true")
+    monkeypatch.delenv("OVERWRITE_MANUAL_LABELS", raising=False)
+    with pytest.raises(FileExistsError, match="OVERWRITE_MANUAL_LABELS"):
+        freeze_validation_cohort(
+            cohort_path=cohort,
+            labels_path=labels,
+            predictions_path=preds,
+            baseline_path=base,
+            output_dir=frozen_dir,
+        )
+
+
+def test_freeze_annotated_labels_unchanged_without_manual_labels_env(tmp_path, monkeypatch):
+    cohort, labels, preds, base = _cohort_and_labels(tmp_path)
+    frozen_dir = tmp_path / "frozen_validation_cohort"
+    _patch_frozen_paths(monkeypatch, frozen_dir)
+
     freeze_validation_cohort(
         cohort_path=cohort,
         labels_path=labels,
@@ -148,6 +143,52 @@ def test_freeze_allows_overwrite_with_env(tmp_path, monkeypatch):
         baseline_path=base,
         output_dir=frozen_dir,
     )
+    frozen_labels = frozen_dir / "manual_report_labels_frozen.csv"
+    before = frozen_labels.read_bytes()
+
+    pd.DataFrame(
+        {
+            "validation_report_id": ["Patient_0001_Report_0001", "Patient_0002_Report_0001"],
+            "manual_report_ground_truth": [0, 1],
+        }
+    ).to_csv(labels, index=False)
+
+    monkeypatch.setenv("OVERWRITE_FROZEN_VALIDATION", "true")
+    monkeypatch.delenv("OVERWRITE_MANUAL_LABELS", raising=False)
+    with pytest.raises(FileExistsError, match="OVERWRITE_MANUAL_LABELS"):
+        freeze_validation_cohort(
+            cohort_path=cohort,
+            labels_path=labels,
+            predictions_path=preds,
+            baseline_path=base,
+            output_dir=frozen_dir,
+        )
+    assert frozen_labels.read_bytes() == before
+
+
+def test_freeze_allows_overwrite_with_both_env_vars_and_backup(tmp_path, monkeypatch):
+    cohort, labels, preds, base = _cohort_and_labels(tmp_path)
+    frozen_dir = tmp_path / "frozen_validation_cohort"
+    _patch_frozen_paths(monkeypatch, frozen_dir)
+
+    freeze_validation_cohort(
+        cohort_path=cohort,
+        labels_path=labels,
+        predictions_path=preds,
+        baseline_path=base,
+        output_dir=frozen_dir,
+    )
+    monkeypatch.setenv("OVERWRITE_FROZEN_VALIDATION", "true")
+    monkeypatch.setenv("OVERWRITE_MANUAL_LABELS", "true")
+    freeze_validation_cohort(
+        cohort_path=cohort,
+        labels_path=labels,
+        predictions_path=preds,
+        baseline_path=base,
+        output_dir=frozen_dir,
+    )
+    backups = list(frozen_dir.glob("manual_report_labels_frozen_BACKUP_*.csv"))
+    assert len(backups) == 1
 
 
 def test_evaluation_prefers_frozen_cohort(tmp_path, monkeypatch):
@@ -155,15 +196,9 @@ def test_evaluation_prefers_frozen_cohort(tmp_path, monkeypatch):
     frozen_dir = tmp_path / "frozen_validation_cohort"
     eval_dir = tmp_path / "evaluation"
 
-    monkeypatch.setattr("src.pipeline.paths.FROZEN_VALIDATION_COHORT_DIR", frozen_dir)
+    _patch_frozen_paths(monkeypatch, frozen_dir)
     fc = frozen_dir / "patient_validation_cohort_frozen.csv"
     fl = frozen_dir / "manual_report_labels_frozen.csv"
-    monkeypatch.setattr("src.pipeline.paths.FROZEN_PATIENT_VALIDATION_COHORT_PATH", fc)
-    monkeypatch.setattr("src.pipeline.paths.FROZEN_MANUAL_REPORT_LABELS_PATH", fl)
-    monkeypatch.setattr(
-        "src.pipeline.paths.FROZEN_COHORT_METADATA_PATH",
-        frozen_dir / "frozen_cohort_metadata.json",
-    )
     monkeypatch.setattr("src.pipeline.paths.PATIENT_VALIDATION_COHORT_PATH", tmp_path / "mutable_cohort.csv")
     monkeypatch.setattr("src.pipeline.paths.MANUAL_REPORT_LABELS_PATH", tmp_path / "mutable_labels.csv")
 

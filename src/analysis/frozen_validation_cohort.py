@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -19,6 +20,7 @@ FROZEN_VALIDATION_NOTE = (
 )
 
 OVERWRITE_FROZEN_VALIDATION_ENV = "OVERWRITE_FROZEN_VALIDATION"
+OVERWRITE_MANUAL_LABELS_ENV = "OVERWRITE_MANUAL_LABELS"
 
 
 def overwrite_frozen_validation_enabled() -> bool:
@@ -27,6 +29,76 @@ def overwrite_frozen_validation_enabled() -> bool:
         "true",
         "yes",
     )
+
+
+def overwrite_manual_labels_enabled() -> bool:
+    return os.environ.get(OVERWRITE_MANUAL_LABELS_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def frozen_labels_have_annotations(labels_path: Path) -> bool:
+    """True when *labels_path* contains at least one manual_report_ground_truth in {0,1}."""
+    if not labels_path.exists():
+        return False
+    df = pd.read_csv(labels_path)
+    if "manual_report_ground_truth" not in df.columns:
+        return False
+    from src.analysis.manual_report_labels import _normalize_manual_report_gt
+
+    return bool(df["manual_report_ground_truth"].map(_normalize_manual_report_gt).notna().any())
+
+
+def assert_can_overwrite_frozen_labels(labels_path: Path, *, force: bool = False) -> None:
+    """
+    Block overwrite of annotated frozen labels unless ``OVERWRITE_MANUAL_LABELS=true``.
+
+    Applies even when ``OVERWRITE_FROZEN_VALIDATION=true``.
+    """
+    if not labels_path.exists():
+        return
+    if not frozen_labels_have_annotations(labels_path):
+        return
+    if force or overwrite_manual_labels_enabled():
+        LOGGER.warning(
+            "Overwriting annotated frozen manual labels (%s=true). "
+            "A timestamped backup will be created first.",
+            OVERWRITE_MANUAL_LABELS_ENV,
+        )
+        return
+    raise FileExistsError(
+        f"Refusing to overwrite annotated manual labels: {labels_path}. "
+        f"The file contains manual_report_ground_truth values and is the core evaluation basis. "
+        f"Set {OVERWRITE_MANUAL_LABELS_ENV}=true to overwrite "
+        f"(requires explicit confirmation; a timestamped backup is created first). "
+        f"Note: {OVERWRITE_FROZEN_VALIDATION_ENV}=true alone is NOT sufficient."
+    )
+
+
+def backup_frozen_labels(labels_path: Path) -> Path:
+    """Copy ``manual_report_labels_frozen.csv`` to a timestamped backup before overwrite."""
+    if not labels_path.exists():
+        raise FileNotFoundError(f"Cannot backup missing labels file: {labels_path}")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = labels_path.with_name(f"manual_report_labels_frozen_BACKUP_{ts}.csv")
+    shutil.copy2(labels_path, backup_path)
+    LOGGER.warning("Created manual labels backup: %s", backup_path)
+    return backup_path
+
+
+def copy_frozen_labels_safely(
+    source: Path,
+    dest: Path,
+    *,
+    force_labels_overwrite: bool = False,
+) -> None:
+    """Copy labels to frozen path with annotation protection and optional backup."""
+    if dest.exists() and frozen_labels_have_annotations(dest):
+        assert_can_overwrite_frozen_labels(dest, force=force_labels_overwrite)
+        backup_frozen_labels(dest)
+    shutil.copy2(source, dest)
 
 
 def sha256_file(path: Path) -> str:

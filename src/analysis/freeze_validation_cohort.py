@@ -3,6 +3,9 @@ Freeze the manual validation cohort for fixed manual annotation / evaluation.
 
 Copies patient_validation_cohort.csv and manual_report_labels.csv into
 outputs/analysis/manual_validation/frozen_validation_cohort/ with checksum metadata.
+
+Annotated ``manual_report_labels_frozen.csv`` is protected: overwrite requires
+``OVERWRITE_MANUAL_LABELS=true`` (``OVERWRITE_FROZEN_VALIDATION`` alone is not enough).
 """
 
 from __future__ import annotations
@@ -15,8 +18,10 @@ from pathlib import Path
 from src.analysis.frozen_validation_cohort import (
     assert_can_write_frozen,
     build_frozen_metadata,
+    copy_frozen_labels_safely,
     frozen_cohort_paths,
     overwrite_frozen_validation_enabled,
+    overwrite_manual_labels_enabled,
 )
 from src.pipeline.paths import (
     FROZEN_VALIDATION_COHORT_DIR,
@@ -39,6 +44,7 @@ def freeze_validation_cohort(
     baseline_path: Path = STRUCTURED_BASELINE_PATH,
     output_dir: Path = FROZEN_VALIDATION_COHORT_DIR,
     force_overwrite: bool = False,
+    force_labels_overwrite: bool = False,
 ) -> Path:
     if not cohort_path.exists():
         raise FileNotFoundError(
@@ -51,12 +57,18 @@ def freeze_validation_cohort(
             "Run python -m src.analysis.export_manual_report_labels first."
         )
 
-    assert_can_write_frozen(force=force_overwrite or overwrite_frozen_validation_enabled())
+    allow_frozen_overwrite = force_overwrite or overwrite_frozen_validation_enabled()
+    allow_labels_overwrite = force_labels_overwrite or overwrite_manual_labels_enabled()
+    assert_can_write_frozen(force=allow_frozen_overwrite)
 
     frozen_cohort, frozen_labels, metadata_path = frozen_cohort_paths()
     output_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(cohort_path, frozen_cohort)
-    shutil.copy2(labels_path, frozen_labels)
+    copy_frozen_labels_safely(
+        labels_path,
+        frozen_labels,
+        force_labels_overwrite=allow_labels_overwrite,
+    )
 
     meta = build_frozen_metadata(
         cohort_path,

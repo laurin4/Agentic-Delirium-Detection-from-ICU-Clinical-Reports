@@ -5,10 +5,12 @@ import pytest
 
 from src.analysis.final_manual_validation_evaluation import (
     ERROR_EXPORT_COLUMNS,
+    attach_structured_baseline,
     build_patient_level_ground_truth,
     compute_method_metrics,
     derive_composite_baselines,
     export_model_error_slices,
+    load_merged_frozen_cohort,
     primary_evaluation_cohort,
     run_final_evaluation,
 )
@@ -227,3 +229,78 @@ def test_primary_metrics_ignore_incomplete_in_counts(tmp_path):
     model_row = metrics[metrics["method"] == "model"].iloc[0]
     assert model_row["n_patients"] == 1
     assert model_row["tp"] == 1
+
+
+def test_final_evaluation_refreshes_baseline_from_structured_baseline(tmp_path):
+    cohort_path = tmp_path / "patient_validation_cohort_frozen.csv"
+    labels_path = tmp_path / "manual_report_labels_frozen.csv"
+    baseline_path = tmp_path / "structured_baseline.csv"
+
+    pd.DataFrame(
+        {
+            "validation_patient_id": ["Patient_0001", "Patient_0002"],
+            "validation_report_id": ["Patient_0001_Report_0001", "Patient_0002_Report_0001"],
+            "PatientenID": ["p1", "p2"],
+            "model_report_prediction": [1, 0],
+            "model_patient_positive": [1, 0],
+            "baseline_icdsc_ge_4": [0, 0],
+            "baseline_icd10": [0, 0],
+        }
+    ).to_csv(cohort_path, index=False)
+    pd.DataFrame(
+        {
+            "validation_report_id": ["Patient_0001_Report_0001", "Patient_0002_Report_0001"],
+            "manual_report_ground_truth": [1, 0],
+            "manual_comment": ["pos", ""],
+        }
+    ).to_csv(labels_path, index=False)
+    labels_before = labels_path.read_bytes()
+
+    pd.DataFrame(
+        {
+            "PatientenID": ["p1", "p2"],
+            "baseline_icd10": [1, 0],
+            "baseline_icdsc_ge_4": [0, 1],
+            "max_icdsc": [2, 5],
+        }
+    ).to_csv(baseline_path, index=False)
+
+    merged, _ = load_merged_frozen_cohort(cohort_path, labels_path, baseline_path)
+    gt = build_patient_level_ground_truth(merged)
+    p1 = gt.loc[gt["validation_patient_id"] == "Patient_0001"].iloc[0]
+    p2 = gt.loc[gt["validation_patient_id"] == "Patient_0002"].iloc[0]
+    assert int(p1["baseline_icd10"]) == 1
+    assert int(p2["baseline_icdsc_ge_4"]) == 1
+    assert int(p1["derived_manual_patient_ground_truth"]) == 1
+    assert labels_path.read_bytes() == labels_before
+
+    out_dir = tmp_path / "final_evaluation"
+    _, metrics, _, report = run_final_evaluation(
+        merged, output_dir=out_dir, baseline_source=baseline_path
+    )
+    assert f"baseline_source={baseline_path}" in report
+    icd10_row = metrics[metrics["method"] == "icd10"].iloc[0]
+    assert icd10_row["tp"] == 1
+
+
+def test_attach_structured_baseline_does_not_change_manual_labels(tmp_path):
+    baseline_path = tmp_path / "structured_baseline.csv"
+    pd.DataFrame(
+        {
+            "PatientenID": ["p1"],
+            "baseline_icd10": [1],
+            "baseline_icdsc_ge_4": [0],
+        }
+    ).to_csv(baseline_path, index=False)
+
+    merged = pd.DataFrame(
+        {
+            "PatientenID": ["p1"],
+            "validation_report_id": ["Patient_0001_Report_0001"],
+            "manual_report_ground_truth": ["1"],
+            "baseline_icd10": [0],
+        }
+    )
+    out = attach_structured_baseline(merged, baseline_path)
+    assert str(out.iloc[0]["manual_report_ground_truth"]) == "1"
+    assert int(out.iloc[0]["baseline_icd10"]) == 1

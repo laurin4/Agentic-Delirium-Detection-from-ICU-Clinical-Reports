@@ -29,11 +29,32 @@ from src.pipeline.paths import (
     FINAL_MANUAL_VALIDATION_EVAL_DIR,
     FROZEN_MANUAL_REPORT_LABELS_PATH,
     FROZEN_PATIENT_VALIDATION_COHORT_PATH,
+    STRUCTURED_BASELINE_PATH,
 )
+from src.pipeline.schema_normalize import normalize_patient_id_columns
 
 LOGGER = logging.getLogger(__name__)
 
 MANUAL_GT_COL = "derived_manual_patient_ground_truth"
+
+STRUCTURED_BASELINE_PATIENT_COLUMNS: tuple[str, ...] = (
+    "baseline_icd10",
+    "baseline_icdsc_ge_4",
+    "baseline_icd10_any",
+    "baseline_icd10_main_diagnosis",
+    "max_icdsc",
+)
+
+COHORT_BASELINE_COLUMNS_TO_REPLACE: tuple[str, ...] = (
+    "baseline_icd10",
+    "baseline_icdsc_ge_4",
+    "baseline_composite_or",
+    "baseline_composite_and",
+    "baseline_icd10_any",
+    "baseline_icd10_main_diagnosis",
+    "max_icdsc",
+    "ICDSC_max",
+)
 
 PATIENT_GT_COLUMNS: tuple[str, ...] = (
     "validation_patient_id",
@@ -132,6 +153,44 @@ def _representative_evidence(grp: pd.DataFrame, gt_parsed: pd.Series) -> str:
     ev = grp["evidence_snippets"].dropna().astype(str).str.strip()
     ev = ev[ev != ""]
     return ev.iloc[0] if not ev.empty else ""
+
+
+def attach_structured_baseline(
+    merged_cohort: pd.DataFrame,
+    baseline_path: Path = STRUCTURED_BASELINE_PATH,
+) -> pd.DataFrame:
+    """
+    Replace cohort baseline columns with current patient-level values from structured_baseline.csv.
+
+    Manual labels in *merged_cohort* are not modified.
+    """
+    if not baseline_path.exists():
+        raise FileNotFoundError(
+            f"Structured baseline missing: {baseline_path}. "
+            "Run python -m src.pipeline.prepare_structured_data first."
+        )
+    baseline = normalize_patient_id_columns(pd.read_csv(baseline_path))
+    if "PatientenID" not in baseline.columns:
+        raise ValueError(f"structured baseline missing PatientenID: {baseline_path}")
+
+    use_cols = ["PatientenID"] + [
+        c for c in STRUCTURED_BASELINE_PATIENT_COLUMNS if c in baseline.columns
+    ]
+    base_pat = baseline[use_cols].drop_duplicates("PatientenID", keep="first")
+
+    out = normalize_patient_id_columns(merged_cohort.copy())
+    drop_cols = [c for c in COHORT_BASELINE_COLUMNS_TO_REPLACE if c in out.columns]
+    if drop_cols:
+        out = out.drop(columns=drop_cols)
+    out = out.merge(base_pat, on="PatientenID", how="left")
+
+    icdsc = pd.to_numeric(out.get("baseline_icdsc_ge_4"), errors="coerce").fillna(0).astype(int)
+    icd10 = pd.to_numeric(out.get("baseline_icd10"), errors="coerce").fillna(0).astype(int)
+    out["baseline_composite_or"] = pd.concat([icdsc, icd10], axis=1).max(axis=1)
+    out["baseline_composite_and"] = pd.concat([icdsc, icd10], axis=1).min(axis=1)
+    if "max_icdsc" in out.columns and "ICDSC_max" not in out.columns:
+        out["ICDSC_max"] = out["max_icdsc"]
+    return out
 
 
 def _patient_baseline_row(grp: pd.DataFrame) -> Dict[str, Any]:
@@ -375,6 +434,7 @@ def format_final_report(
     metrics: pd.DataFrame,
     *,
     incomplete_patient_ids: Sequence[str],
+    baseline_source: Path = STRUCTURED_BASELINE_PATH,
 ) -> str:
     n_total = len(patient_gt)
     n_complete = len(complete)
@@ -387,6 +447,8 @@ def format_final_report(
     lines = [
         "Final manual validation evaluation",
         "=" * 44,
+        "",
+        f"baseline_source={baseline_source}",
         "",
         "Cohort counts",
         "-" * 44,
@@ -435,6 +497,8 @@ def format_final_report(
 def run_final_evaluation(
     merged_cohort: pd.DataFrame,
     output_dir: Path = FINAL_MANUAL_VALIDATION_EVAL_DIR,
+    *,
+    baseline_source: Path = STRUCTURED_BASELINE_PATH,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
     """Build patient GT, evaluate complete patients, write all outputs."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -461,6 +525,7 @@ def run_final_evaluation(
         complete,
         metrics,
         incomplete_patient_ids=incomplete_ids,
+        baseline_source=baseline_source,
     )
     (output_dir / "report.txt").write_text(report, encoding="utf-8")
 
@@ -476,23 +541,37 @@ def run_final_evaluation(
 def load_merged_frozen_cohort(
     cohort_path: Path = FROZEN_PATIENT_VALIDATION_COHORT_PATH,
     labels_path: Path = FROZEN_MANUAL_REPORT_LABELS_PATH,
-) -> pd.DataFrame:
+    baseline_path: Path = STRUCTURED_BASELINE_PATH,
+) -> Tuple[pd.DataFrame, Path]:
+    """
+    Load frozen cohort structure + manual labels; refresh baseline from structured_baseline.csv.
+
+    Manual labels are read-only and never modified.
+    """
     if not cohort_path.exists():
         raise FileNotFoundError(f"Frozen patient validation cohort missing: {cohort_path}")
     if not labels_path.exists():
         raise FileNotFoundError(f"Frozen manual report labels missing: {labels_path}")
     cohort = pd.read_csv(cohort_path)
     labels = pd.read_csv(labels_path)
-    return merge_manual_report_labels(cohort, labels, log_context="final manual validation")
+    merged = merge_manual_report_labels(cohort, labels, log_context="final manual validation")
+    merged = attach_structured_baseline(merged, baseline_path)
+    LOGGER.info("Final evaluation baseline_source=%s", baseline_path)
+    return merged, baseline_path
 
 
 def main(
     cohort_path: Path = FROZEN_PATIENT_VALIDATION_COHORT_PATH,
     labels_path: Path = FROZEN_MANUAL_REPORT_LABELS_PATH,
+    baseline_path: Path = STRUCTURED_BASELINE_PATH,
     output_dir: Path = FINAL_MANUAL_VALIDATION_EVAL_DIR,
 ) -> None:
-    merged = load_merged_frozen_cohort(cohort_path, labels_path)
-    _, metrics, _, report = run_final_evaluation(merged, output_dir=output_dir)
+    merged, resolved_baseline = load_merged_frozen_cohort(
+        cohort_path, labels_path, baseline_path
+    )
+    _, metrics, _, report = run_final_evaluation(
+        merged, output_dir=output_dir, baseline_source=resolved_baseline
+    )
     print(report)
     if not metrics.empty:
         print(f"Wrote outputs to {output_dir}")
