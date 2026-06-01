@@ -153,6 +153,60 @@ Outputs: `outputs/analysis/manual_validation/evaluation/`. **Patient-level** met
 
 Legacy: `export_manual_validation_sample`, `run_error_review_export` (multiclass `manual_label_0_1_2`).
 
+### Prompt V1 / V2 and versioned validation runs
+
+**Prompt files** (Agent 2 interpretation; `agent_interpretation.txt` stays as legacy reference):
+
+| Version | File |
+|---------|------|
+| V1 (default) | `prompts/delirium_case_classification_v1.txt` |
+| V2 (FP-tuned) | `prompts/delirium_case_classification_v2.txt` |
+
+**Archive current baseline into V1 run_01** (copy only — does not move or touch frozen cohort/labels):
+
+```bash
+python -m src.analysis.archive_current_v1_results
+```
+
+**V2 run_01** (frozen cohort inference + final evaluation in versioned folders):
+
+```bash
+export VALIDATION_COHORT_ONLY=true
+export DELIRIUM_PROMPT_VERSION=v2
+export VALIDATION_RUN_ID=run_01
+
+python -m src.pipeline.run_pipeline
+python -m src.analysis.final_manual_validation_evaluation
+python -m src.analysis.check_final_eval_alignment
+python -m src.analysis.audit_validation_matching
+python -m src.analysis.audit_all_positive_predictions_matching
+```
+
+Outputs:
+
+- `outputs/analysis/manual_validation/prompt_runs/v2/run_01/predictions/validation_cohort_predictions.csv`
+- `outputs/analysis/manual_validation/prompt_runs/v2/run_01/final_evaluation/`
+- `outputs/analysis/manual_validation/prompt_runs/v2/run_01/audits/`
+
+**Compare V1 vs V2** (after `v1/run_01` and `v2/run_01` exist):
+
+```bash
+python -m src.analysis.compare_prompt_runs
+```
+
+**Repeated runs for stability** (same env, change only `VALIDATION_RUN_ID`):
+
+```bash
+export DELIRIUM_PROMPT_VERSION=v2
+export VALIDATION_RUN_ID=run_02   # then run_03
+# re-run pipeline + final evaluation each time
+python -m src.analysis.analyze_prompt_run_stability
+```
+
+**Warning:** V2 was developed after FP analysis on the **same** frozen validation cohort. Metrics on that cohort may be **optimistic** (not an independent hold-out). Use V1 `run_01` as the locked baseline; treat V2 as an exploratory improvement.
+
+Without `DELIRIUM_PROMPT_VERSION` and `VALIDATION_RUN_ID`, legacy paths are unchanged (`outputs/predictions/validation_cohort_predictions.csv`, `final_evaluation/`, etc.). `DELIRIUM_PROMPT_VERSION` alone defaults interpretation to V1.
+
 ## Compile / tests (CI-style)
 
 ```bash

@@ -32,6 +32,10 @@ from src.pipeline.paths import (
     STRUCTURED_BASELINE_PATH,
     VALIDATION_COHORT_PREDICTIONS_PATH,
 )
+from src.pipeline.prompt_run_paths import (
+    get_versioned_final_eval_dir,
+    resolve_validation_predictions_path,
+)
 from src.pipeline.schema_normalize import normalize_patient_id_columns
 from src.pipeline.validation_report_identity import (
     VALIDATION_REPORT_ID_COL,
@@ -610,24 +614,32 @@ def main(
     cohort_path: Path = FROZEN_PATIENT_VALIDATION_COHORT_PATH,
     labels_path: Path = FROZEN_MANUAL_REPORT_LABELS_PATH,
     baseline_path: Path = STRUCTURED_BASELINE_PATH,
-    predictions_path: Path = VALIDATION_COHORT_PREDICTIONS_PATH,
-    output_dir: Path = FINAL_MANUAL_VALIDATION_EVAL_DIR,
+    predictions_path: Path | None = None,
+    output_dir: Path | None = None,
 ) -> None:
+    resolved_predictions = (
+        predictions_path
+        if predictions_path is not None
+        else resolve_validation_predictions_path()
+    )
+    resolved_output = (
+        output_dir if output_dir is not None else get_versioned_final_eval_dir()
+    )
     merged, resolved_baseline, pred_warnings = load_merged_frozen_cohort(
-        cohort_path, labels_path, baseline_path, predictions_path
+        cohort_path, labels_path, baseline_path, resolved_predictions
     )
     for w in pred_warnings:
         LOGGER.warning("Final evaluation: %s", w)
     _, metrics, _, report = run_final_evaluation(
         merged,
-        output_dir=output_dir,
+        output_dir=resolved_output,
         baseline_source=resolved_baseline,
         prediction_warnings=pred_warnings,
-        predictions_source=predictions_path,
+        predictions_source=resolved_predictions,
     )
     print(report)
     if not metrics.empty:
-        print(f"Wrote outputs to {output_dir}")
+        print(f"Wrote outputs to {resolved_output}")
 
 
 if __name__ == "__main__":

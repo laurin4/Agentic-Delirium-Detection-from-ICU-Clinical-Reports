@@ -21,7 +21,7 @@
 - **Negated** delirium phrases are **not** treated as positive evidence; **prophylaxis / screening / risk-only** mentions are **not** auto-positive for delirium (the LLM is instructed; final class still flows through signal strength).
 - If **no** snippet qualifies for LLM review, the LLM is normally **skipped** (`no_evidence_prefilter_skip`, `klasse=0`). Optional **short-report fallback** (see env below) sends capped full text for brief `Verlaufseintrag` / `Verlegungsbericht` / `Austrittsbericht` without keyword hits.
 - If actionable snippets exist, `llm_text_reduction_method=structured_evidence_extraction` and the LLM receives **`llm_report_text`**: labeled snippets — **not** the full chart.
-- **LLM prompts** (`prompts/agent_extraction.txt`, `prompts/agent_interpretation.txt`) are **German**; JSON field names (`signalstaerke`, `alternative_erklaerung`, …) stay English for parsers.
+- **LLM prompts** (`prompts/agent_extraction.txt`, `prompts/agent_interpretation.txt` legacy; active interpretation via `prompts/delirium_case_classification_v1.txt` / `v2.txt` with `DELIRIUM_PROMPT_VERSION`) are **German**; JSON field names (`signalstaerke`, `alternative_erklaerung`, …) stay English for parsers.
 - **Transparency**: describe this two-stage design (rules → LLM) in thesis/defense materials; CSV stores structured `evidence_snippets` (JSON list) plus boolean flags for audit.
 - **Clinical guardrails** (`src/agents/clinical_guardrails.py`, after Agent 2): hard-excludes **no evidence**, **prophylaxis/conditional-only**, **negated delirium**, and **isolated weak indirect symptoms** (single agitation/vigilance/GCS-only). **Direct delir** and **delirium-compatible symptom clusters** (≥2 indirect dimensions or therapy+symptoms) may stay `klasse=1`; clusters with `alternative_erklaerung` are flagged for review. **Isolated indirect + dominant alternative** → `klasse=0`, `alternative_explanation_downgrade`.
 
@@ -267,6 +267,23 @@ Uses **frozen** cohort + frozen labels when `frozen_validation_cohort/` exists.
 - **Skipped / prefilter-negative reports belong in the cohort** — excluding them inflates performance.
 - **`Dokumentationsblatt` stays excluded** from processing and validation (raw CSV unchanged).
 - **ICDSC / ICD10** in the cohort are reference signals, not manual ground truth.
+
+### 7. Prompt V1 / V2 (versioned validation runs)
+
+| Item | Location / command |
+|------|-------------------|
+| V1 prompt | `prompts/delirium_case_classification_v1.txt` (copy of legacy `agent_interpretation.txt`) |
+| V2 prompt | `prompts/delirium_case_classification_v2.txt` (FP-tuned; includes mandatory negative example) |
+| Archive baseline | `python -m src.analysis.archive_current_v1_results` → `prompt_runs/v1/run_01/` |
+| Versioned outputs | Set `DELIRIUM_PROMPT_VERSION=v1\|v2` **and** `VALIDATION_RUN_ID=run_01\|run_02\|run_03` |
+| Compare | `python -m src.analysis.compare_prompt_runs` → `prompt_runs/comparison/` |
+| Stability (placeholder) | `python -m src.analysis.analyze_prompt_run_stability` |
+
+**Folder layout:** `outputs/analysis/manual_validation/prompt_runs/<version>/<run_id>/{predictions,final_evaluation,audits}/`
+
+**Caution:** V2 was written after FP review on the **same** frozen cohort — same-cohort metrics may be optimistic. Do not overwrite `manual_report_labels_frozen.csv` or frozen cohort files when running V2.
+
+Without both env vars, default paths and V1 prompt behavior are unchanged.
 
 ---
 

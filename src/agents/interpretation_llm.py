@@ -4,11 +4,11 @@ from typing import Dict, Any
 from src.models.llm_interface import call_llm
 from src.models.json_parsing import parse_llm_json_output
 from src.models.llm_debug import write_llm_debug
+from src.pipeline.prompt_selector import load_interpretation_prompt
 
 
 def load_prompt() -> str:
-    with open("prompts/agent_interpretation.txt", "r", encoding="utf-8") as f:
-        return f.read()
+    return load_interpretation_prompt()
 
 
 def empty_result() -> Dict[str, Any]:

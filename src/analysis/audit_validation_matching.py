@@ -27,6 +27,10 @@ from src.pipeline.paths import (
     MATCHING_AUDIT_DIR,
     VALIDATION_COHORT_PREDICTIONS_PATH,
 )
+from src.pipeline.prompt_run_paths import (
+    get_versioned_matching_audit_dir,
+    resolve_validation_predictions_path,
+)
 from src.preprocessing.berichte_mapper import _row_blocks
 from src.pipeline.frozen_cohort_inference import (
     build_stable_report_text_index,
@@ -619,20 +623,28 @@ def format_audit_report(result: AuditResult) -> str:
 def run_matching_audit(
     cohort_path: Path = FROZEN_PATIENT_VALIDATION_COHORT_PATH,
     labels_path: Path = FROZEN_MANUAL_REPORT_LABELS_PATH,
-    predictions_path: Path = VALIDATION_COHORT_PREDICTIONS_PATH,
+    predictions_path: Path | None = None,
     berichte_path: Path = BERICHTE_INPUT_PATH,
-    output_dir: Path = MATCHING_AUDIT_DIR,
+    output_dir: Path | None = None,
 ) -> AuditResult:
+    resolved_predictions = (
+        predictions_path
+        if predictions_path is not None
+        else resolve_validation_predictions_path()
+    )
+    resolved_output = (
+        output_dir if output_dir is not None else get_versioned_matching_audit_dir()
+    )
     if not cohort_path.exists():
         raise FileNotFoundError(f"Cohort missing: {cohort_path}")
     if not labels_path.exists():
         raise FileNotFoundError(f"Manual labels missing: {labels_path}")
-    if not predictions_path.exists():
-        raise FileNotFoundError(f"Predictions missing: {predictions_path}")
+    if not resolved_predictions.exists():
+        raise FileNotFoundError(f"Predictions missing: {resolved_predictions}")
 
     cohort = pd.read_csv(cohort_path)
     labels = pd.read_csv(labels_path)
-    preds = pd.read_csv(predictions_path)
+    preds = pd.read_csv(resolved_predictions)
 
     patient_ids = sorted(cohort["PatientenID"].astype(str).unique()) if "PatientenID" in cohort.columns else None
     spine = load_raw_included_report_spine(berichte_path, patient_ids=patient_ids)
@@ -686,31 +698,31 @@ def run_matching_audit(
 
     result.verdict = compute_verdict(result)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "matching_audit_report.txt").write_text(
+    resolved_output.mkdir(parents=True, exist_ok=True)
+    (resolved_output / "matching_audit_report.txt").write_text(
         format_audit_report(result), encoding="utf-8"
     )
     pd.DataFrame(result.evidence_not_found).to_csv(
-        output_dir / "evidence_not_found_in_report.csv", index=False
+        resolved_output / "evidence_not_found_in_report.csv", index=False
     )
     pd.DataFrame(result.duplicate_keys).to_csv(
-        output_dir / "duplicate_or_ambiguous_report_keys.csv", index=False
+        resolved_output / "duplicate_or_ambiguous_report_keys.csv", index=False
     )
     pd.DataFrame(result.patient_count_mismatches).to_csv(
-        output_dir / "patient_report_count_mismatches.csv", index=False
+        resolved_output / "patient_report_count_mismatches.csv", index=False
     )
     pd.DataFrame(result.sample_mismatch_cases).to_csv(
-        output_dir / "sample_mismatch_cases.csv", index=False
+        resolved_output / "sample_mismatch_cases.csv", index=False
     )
 
-    LOGGER.info("Matching audit verdict=%s output=%s", result.verdict, output_dir)
+    LOGGER.info("Matching audit verdict=%s output=%s", result.verdict, resolved_output)
     return result
 
 
 def main() -> None:
     result = run_matching_audit()
     print(format_audit_report(result))
-    print(f"Wrote audit outputs to {MATCHING_AUDIT_DIR}")
+    print(f"Wrote audit outputs to {get_versioned_matching_audit_dir()}")
 
 
 if __name__ == "__main__":

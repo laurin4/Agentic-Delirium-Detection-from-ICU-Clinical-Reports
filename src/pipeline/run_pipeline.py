@@ -24,6 +24,10 @@ from src.pipeline.paths import (
     VALIDATION_COHORT_PREDICTIONS_PATH,
 )
 from src.pipeline.frozen_cohort_inference import build_pipeline_records_from_frozen_cohort
+from src.pipeline.prompt_run_paths import (
+    is_versioned_validation_run,
+    get_versioned_predictions_path,
+)
 from src.pipeline.validation_cohort_filter import validation_cohort_only_enabled
 from src.pipeline.validation_report_identity import (
     VALIDATION_PATIENT_ID_COL,
@@ -322,6 +326,10 @@ def _get_report_records():
 def _get_output_path() -> Path:
     PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
     if validation_cohort_only_enabled():
+        if is_versioned_validation_run():
+            out = get_versioned_predictions_path()
+            out.parent.mkdir(parents=True, exist_ok=True)
+            return out
         return VALIDATION_COHORT_PREDICTIONS_PATH
     return PREDICTIONS_DIR / f"agent1_agent2_agent3_results_{INTERPRETATION_MODE}.csv"
 

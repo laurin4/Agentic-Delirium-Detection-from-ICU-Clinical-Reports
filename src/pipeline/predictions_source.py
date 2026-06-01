@@ -16,6 +16,10 @@ from pathlib import Path
 from typing import Optional
 
 from src.pipeline.paths import FULL_PREDICTIONS_PATH, VALIDATION_COHORT_PREDICTIONS_PATH
+from src.pipeline.prompt_run_paths import (
+    get_versioned_predictions_path,
+    is_versioned_validation_run,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -50,6 +54,8 @@ def resolve_predictions_path(
         return Path(predictions_path)
     src = source if source is not None else get_predictions_source()
     if src == PREDICTIONS_SOURCE_VALIDATION_COHORT:
+        if is_versioned_validation_run():
+            return get_versioned_predictions_path()
         return VALIDATION_COHORT_PREDICTIONS_PATH
     return FULL_PREDICTIONS_PATH
 

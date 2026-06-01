@@ -19,6 +19,10 @@ from src.pipeline.paths import (
     MANUAL_VALIDATION_DIR,
     VALIDATION_COHORT_PREDICTIONS_PATH,
 )
+from src.pipeline.prompt_run_paths import (
+    get_versioned_final_eval_alignment_path,
+    resolve_validation_predictions_path,
+)
 from src.pipeline.validation_report_identity import VALIDATION_REPORT_ID_COL, _norm_id
 from src.preprocessing.berichte_filters import normalize_bertyp
 
@@ -313,13 +317,27 @@ def format_alignment_report(result: AlignmentCheckResult) -> str:
 
 def write_final_eval_alignment_check(
     cohort_path: Path = FROZEN_PATIENT_VALIDATION_COHORT_PATH,
-    predictions_path: Path = VALIDATION_COHORT_PREDICTIONS_PATH,
-    output_path: Path = FINAL_EVAL_ALIGNMENT_CHECK_PATH,
+    predictions_path: Path | None = None,
+    output_path: Path | None = None,
 ) -> AlignmentCheckResult:
-    result = run_final_eval_alignment_check(cohort_path, predictions_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(format_alignment_report(result), encoding="utf-8")
-    LOGGER.info("Wrote final eval alignment check: %s (verdict=%s)", output_path, result.verdict)
+    resolved_predictions = (
+        predictions_path
+        if predictions_path is not None
+        else resolve_validation_predictions_path()
+    )
+    resolved_output = (
+        output_path
+        if output_path is not None
+        else get_versioned_final_eval_alignment_path()
+    )
+    result = run_final_eval_alignment_check(cohort_path, resolved_predictions)
+    resolved_output.parent.mkdir(parents=True, exist_ok=True)
+    resolved_output.write_text(format_alignment_report(result), encoding="utf-8")
+    LOGGER.info(
+        "Wrote final eval alignment check: %s (verdict=%s)",
+        resolved_output,
+        result.verdict,
+    )
     return result
 
 

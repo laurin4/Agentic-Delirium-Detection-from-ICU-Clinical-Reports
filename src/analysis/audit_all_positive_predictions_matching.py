@@ -21,7 +21,10 @@ from src.pipeline.paths import (
     FROZEN_MANUAL_REPORT_LABELS_PATH,
     FROZEN_PATIENT_VALIDATION_COHORT_PATH,
     MANUAL_VALIDATION_DIR,
-    VALIDATION_COHORT_PREDICTIONS_PATH,
+)
+from src.pipeline.prompt_run_paths import (
+    get_versioned_positive_matching_audit_dir,
+    resolve_validation_predictions_path,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -40,12 +43,22 @@ def _is_positive_report(row: pd.Series) -> bool:
 def run_positive_prediction_matching_audit(
     cohort_path: Path = FROZEN_PATIENT_VALIDATION_COHORT_PATH,
     labels_path: Path = FROZEN_MANUAL_REPORT_LABELS_PATH,
-    predictions_path: Path = VALIDATION_COHORT_PREDICTIONS_PATH,
+    predictions_path: Path | None = None,
     berichte_path: Path = BERICHTE_INPUT_PATH,
-    output_dir: Path = MATCHING_AUDIT_POSITIVE_DIR,
+    output_dir: Path | None = None,
 ) -> tuple[pd.DataFrame, str]:
+    resolved_predictions = (
+        predictions_path
+        if predictions_path is not None
+        else resolve_validation_predictions_path()
+    )
+    resolved_output = (
+        output_dir
+        if output_dir is not None
+        else get_versioned_positive_matching_audit_dir()
+    )
     cohort, labels, preds, spine, raw_full = load_trace_inputs(
-        cohort_path, labels_path, predictions_path, berichte_path
+        cohort_path, labels_path, resolved_predictions, berichte_path
     )
 
     positive = cohort[cohort.apply(_is_positive_report, axis=1)].copy()
@@ -75,17 +88,19 @@ def run_positive_prediction_matching_audit(
     ]
     report = "\n".join(lines) + "\n"
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "positive_prediction_matching_report.txt").write_text(
+    resolved_output.mkdir(parents=True, exist_ok=True)
+    (resolved_output / "positive_prediction_matching_report.txt").write_text(
         report, encoding="utf-8"
     )
-    mismatches.to_csv(output_dir / "positive_prediction_mismatches.csv", index=False)
+    mismatches.to_csv(
+        resolved_output / "positive_prediction_mismatches.csv", index=False
+    )
 
     LOGGER.info(
         "Positive audit: %d positive, %d mismatches -> %s",
         len(positive),
         len(mismatches),
-        output_dir,
+        resolved_output,
     )
     return mismatches, report
 
@@ -93,7 +108,7 @@ def run_positive_prediction_matching_audit(
 def main() -> None:
     mismatches, report = run_positive_prediction_matching_audit()
     print(report)
-    print(f"Wrote outputs to {MATCHING_AUDIT_POSITIVE_DIR}")
+    print(f"Wrote outputs to {get_versioned_positive_matching_audit_dir()}")
     if not mismatches.empty:
         print(f"Mismatches: {len(mismatches)}")
 
