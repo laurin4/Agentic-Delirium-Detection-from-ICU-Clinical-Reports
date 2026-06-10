@@ -87,3 +87,64 @@ def test_evidence_snippets_json_roundtrip():
     data = json.loads(raw)
     assert isinstance(data, list)
     assert data[0]["section"] == "diag"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ohne Auftreten eines Delirs",
+        "ohne Auftreten fokal neurologischer Defizite oder eines Delirs",
+        "ohne Auftreten fokal-neurologischer Defizite oder eines Delirs",
+        "ohne fokal neurologische Defizite oder Delir",
+        "ohne fokal-neurologische Defizite oder Delir",
+        "keine fokal neurologischen Defizite oder Anzeichen eines Delirs",
+        "keine fokal-neurologischen Defizite oder Anzeichen eines Delirs",
+        "Delir ausgeschlossen",
+        "Kein Delir",
+        "OHNE AUFTRETEN EINES DELIRS.",
+    ],
+)
+def test_negated_ohne_delir_constructions(text):
+    ev = extract_delirium_evidence(text)
+    assert ev["has_negated_delir_evidence"] is True
+    assert ev["has_direct_delir_evidence"] is False
+    assert any(s["evidence_type"] == "negation" for s in ev["evidence_snippets"])
+    assert not any(s["evidence_type"] == "direct_delir" for s in ev["evidence_snippets"])
+
+
+def test_neurologisch_verlauf_ohne_fokal_delirs_is_negation():
+    text = (
+        "Neurologisch zeigte sich ein unauffälliger Verlauf ohne Auftreten "
+        "fokal-neurologischer Defizite oder eines Delirs."
+    )
+    ev = extract_delirium_evidence(text)
+    assert ev["has_negated_delir_evidence"] is True
+    assert ev["has_direct_delir_evidence"] is False
+    assert any(s["evidence_type"] == "negation" for s in ev["evidence_snippets"])
+    assert not any(s["evidence_type"] == "direct_delir" for s in ev["evidence_snippets"])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "hypoaktives Delir",
+        "hyperaktives Delir",
+        "Delirtherapie mit Haloperidol",
+        "Delir ED bei Aufnahme",
+    ],
+)
+def test_positive_delir_phrases_remain_direct(text):
+    ev = extract_delirium_evidence(text)
+    assert ev["has_direct_delir_evidence"] is True
+    assert ev["has_negated_delir_evidence"] is False
+    assert any(s["evidence_type"] == "direct_delir" for s in ev["evidence_snippets"])
+
+
+def test_mixed_negation_and_direct_delir_in_separate_sentences():
+    text = "Kein Delir heute. Gestern hyperaktives Delir."
+    ev = extract_delirium_evidence(text)
+    assert ev["has_negated_delir_evidence"] is True
+    assert ev["has_direct_delir_evidence"] is True
+    types = {s["evidence_type"] for s in ev["evidence_snippets"]}
+    assert "negation" in types
+    assert "direct_delir" in types

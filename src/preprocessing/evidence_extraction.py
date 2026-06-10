@@ -18,6 +18,8 @@ from typing import Any, Dict, List, Optional, Tuple
 DIRECT_DELIR: Tuple[str, ...] = (
     "hyperaktives delir",
     "hypoaktives delir",
+    "delirtherapie",
+    "delir ed",
     "delirium",
     "delirant",
     "delirös",
@@ -40,6 +42,7 @@ INDIRECT_SYMPTOM: Tuple[str, ...] = (
     "verwirrt",
 )
 
+# Fixed negation phrases (non-``ohne''/``keine'' window patterns handled by regex below).
 NEGATION: Tuple[str, ...] = (
     "keine delirante symptomatik",
     "kein hinweis auf delir",
@@ -49,6 +52,47 @@ NEGATION: Tuple[str, ...] = (
     "ohne hinweis auf delir",
     "kein delir",
 )
+
+# Sentence-local ``ohne … delir'' / ``keine … delir'' windows (longest first).
+NEGATION_REGEX_SPECS: Tuple[Tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"\bneurologisch\b.{0,250}?\bohne\b.{0,250}?\bdelir\b",
+            re.DOTALL,
+        ),
+        "neurologisch_ohne_delir",
+    ),
+    (
+        re.compile(
+            r"\bkeine\b.{0,250}?\banzeichen\b.{0,80}?\bdelir\b",
+            re.DOTALL,
+        ),
+        "keine_anzeichen_delir",
+    ),
+    (
+        re.compile(
+            r"\bohne\b.{0,250}?\banzeichen\b.{0,80}?\bdelir\b",
+            re.DOTALL,
+        ),
+        "ohne_anzeichen_delir",
+    ),
+    (
+        re.compile(
+            r"\bohne\b.{0,250}?\bdelir\b",
+            re.DOTALL,
+        ),
+        "ohne_delir",
+    ),
+    (
+        re.compile(
+            r"\bkeine\b.{0,250}?\bdelir\b",
+            re.DOTALL,
+        ),
+        "keine_delir",
+    ),
+)
+
+_BARE_DELIR_WORD_RE = re.compile(r"(?<!\w)delir(?!\w)")
 
 PROPHYLAXIS_OR_RISK: Tuple[str, ...] = (
     "delirprophylaxe",
@@ -200,19 +244,133 @@ def _max_llm_chars() -> int:
     return _int_env("EVIDENCE_MAX_LLM_CHARS", 8000, minimum=500)
 
 
+def _build_matching_view(text: str) -> Tuple[str, List[int]]:
+    """
+    Build a normalized view for keyword search: lowercase tokens, punctuation as
+    word breaks, collapsed whitespace, and genitive/plural ``delirs`` → ``delir``.
+
+    Each index in the returned string maps to a source character index in ``text``.
+    """
+    if not text:
+        return "", []
+
+    norm_chars: List[str] = []
+    norm_to_orig: List[int] = []
+    i = 0
+    n = len(text)
+    need_space = False
+
+    while i < n:
+        ch = text[i]
+        if ch.isalnum() or ch in "äöüßÄÖÜ":
+            if need_space and norm_chars and norm_chars[-1] != " ":
+                norm_chars.append(" ")
+                norm_to_orig.append(i)
+            word_start = i
+            letters: List[str] = []
+            while i < n and (text[i].isalnum() or text[i] in "äöüßÄÖÜ"):
+                letters.append(text[i].lower())
+                i += 1
+            word = "".join(letters)
+            if word == "delirs":
+                word = "delir"
+            for j, letter in enumerate(word):
+                norm_chars.append(letter)
+                norm_to_orig.append(word_start + min(j, len(letters) - 1))
+            need_space = False
+        else:
+            need_space = bool(norm_chars) and norm_chars[-1] != " "
+            i += 1
+
+    return "".join(norm_chars), norm_to_orig
+
+
+def _norm_match_to_original_span(
+    text: str,
+    norm_start: int,
+    norm_end: int,
+    norm_to_orig: List[int],
+) -> Tuple[int, int]:
+    """Map a normalized substring span back to inclusive original character bounds."""
+    if norm_start >= norm_end or not norm_to_orig:
+        return 0, 0
+
+    orig_start = norm_to_orig[norm_start]
+    orig_end = norm_to_orig[norm_end - 1] + 1
+
+    while orig_start > 0 and (text[orig_start - 1].isalnum() or text[orig_start - 1] in "äöüßÄÖÜ"):
+        orig_start -= 1
+    while orig_end < len(text) and (text[orig_end].isalnum() or text[orig_end] in "äöüßÄÖÜ"):
+        orig_end += 1
+
+    return orig_start, orig_end
+
+
+def _phrase_matching_form(phrase: str) -> str:
+    """Normalize a keyword phrase with the same rules as report text."""
+    view, _ = _build_matching_view(phrase)
+    return view
+
+
 def _flatten_keywords() -> List[Tuple[str, str]]:
-    """(lowercase phrase, evidence_type) sorted by phrase length descending."""
+    """(normalized phrase, evidence_type) sorted by phrase length descending."""
     out: List[Tuple[str, str]] = []
     for phrase in DIRECT_DELIR:
-        out.append((phrase.lower(), "direct_delir"))
+        out.append((_phrase_matching_form(phrase), "direct_delir"))
     for phrase in INDIRECT_SYMPTOM:
-        out.append((phrase.lower(), "indirect_symptom"))
+        out.append((_phrase_matching_form(phrase), "indirect_symptom"))
     for phrase in NEGATION:
-        out.append((phrase.lower(), "negation"))
+        out.append((_phrase_matching_form(phrase), "negation"))
     for phrase in PROPHYLAXIS_OR_RISK:
-        out.append((phrase.lower(), "prophylaxis_or_risk"))
+        out.append((_phrase_matching_form(phrase), "prophylaxis_or_risk"))
     out.sort(key=lambda x: len(x[0]), reverse=True)
     return out
+
+
+def _span_overlaps_used(used: List[Tuple[int, int]], start: int, end: int) -> bool:
+    for u, v in used:
+        if not (end <= u or start >= v):
+            return True
+    return False
+
+
+def _find_phrase_in_norm(norm_text: str, phrase: str, start: int) -> int:
+    """Return norm-text start index for ``phrase``, or -1. Bare ``delir`` uses word boundaries."""
+    if phrase == "delir":
+        match = _BARE_DELIR_WORD_RE.search(norm_text, start)
+        return match.start() if match else -1
+    return norm_text.find(phrase, start)
+
+
+def _apply_regex_negation_matches(
+    src: str,
+    raw_matches: List[Tuple[int, int, str, str]],
+    used: List[Tuple[int, int]],
+) -> None:
+    """
+    Detect negated ``ohne … delir'' / ``keine … delir'' constructions per sentence.
+
+    Runs before keyword matching so bare ``delir`` cannot fire inside these spans.
+    """
+    for sent_start, sent_end in _split_sentence_spans(src):
+        sent = src[sent_start:sent_end]
+        sent_norm, sent_norm_to_orig = _build_matching_view(sent)
+        if not sent_norm.strip():
+            continue
+
+        for pattern, label in NEGATION_REGEX_SPECS:
+            for match in pattern.finditer(sent_norm):
+                norm_start = match.start()
+                norm_end = match.end()
+                rel_start, rel_end = _norm_match_to_original_span(
+                    sent, norm_start, norm_end, sent_norm_to_orig
+                )
+                orig_start = sent_start + rel_start
+                orig_end = sent_start + rel_end
+                if _span_overlaps_used(used, orig_start, orig_end):
+                    continue
+                raw_matches.append((orig_start, orig_end, label, "negation"))
+                used.append((orig_start, orig_end))
 
 
 def _section_for_index(section_ranges: List[Tuple[int, int, str]], idx: int) -> str:
@@ -424,30 +582,27 @@ def extract_delirium_evidence(report_text: str) -> Dict[str, Any]:
             "has_prophylaxis_or_risk_only": False,
         }
 
-    low = src.lower()
+    norm_text, norm_to_orig = _build_matching_view(src)
     section_ranges = _build_section_ranges(src)
     keywords = _flatten_keywords()
 
     raw_matches: List[Tuple[int, int, str, str]] = []
     used: List[Tuple[int, int]] = []
 
-    def overlaps(a: int, b: int) -> bool:
-        for u, v in used:
-            if not (b <= u or a >= v):
-                return True
-        return False
+    _apply_regex_negation_matches(src, raw_matches, used)
 
     for phrase, etype in keywords:
         start = 0
         pl = len(phrase)
         while True:
-            i = low.find(phrase, start)
+            i = _find_phrase_in_norm(norm_text, phrase, start)
             if i < 0:
                 break
-            end = i + pl
-            if not overlaps(i, end):
-                raw_matches.append((i, end, phrase, etype))
-                used.append((i, end))
+            norm_end = i + pl
+            orig_start, orig_end = _norm_match_to_original_span(src, i, norm_end, norm_to_orig)
+            if not _span_overlaps_used(used, orig_start, orig_end):
+                raw_matches.append((orig_start, orig_end, phrase, etype))
+                used.append((orig_start, orig_end))
             start = i + max(1, pl)
 
     raw_matches.sort(key=lambda x: x[0])
