@@ -119,6 +119,75 @@ def test_kein_delir_klasse_0():
     assert g["decision_rule_applied"] == "negated_delir_not_positive"
 
 
+def _signals_with_delir_explizit(*phrases: str) -> dict:
+    return {
+        "delir_explizit": list(phrases),
+        "desorientierung": [],
+        "hyperaktivitaet_agitation": [],
+        "vigilanz": [],
+        "delir_therapie": [],
+        "delir_prophylaxe": [],
+    }
+
+
+@pytest.mark.parametrize(
+    "delir_explizit",
+    [
+        ["ohne Auftreten eines Delirs"],
+        ["Delir"],
+    ],
+)
+def test_agent1_delir_explizit_does_not_override_rule_negation(delir_explizit):
+    g = apply_clinical_decision_guardrails(
+        _interp("hoch"),
+        _signals_with_delir_explizit(*delir_explizit),
+        _ev(has_negated_delir_evidence=True),
+    )
+    assert g["klasse"] == 0
+    assert g["decision_rule_applied"] == "negated_delir_not_positive"
+    assert g["decision_rule_applied"] != "direct_delir_positive"
+
+
+def test_rule_direct_without_negation_is_direct_delir_positive():
+    g = apply_clinical_decision_guardrails(
+        _interp("niedrig"),
+        _signals_with_delir_explizit(),
+        _ev(has_direct_delir_evidence=True),
+    )
+    assert g["klasse"] == 1
+    assert g["decision_rule_applied"] == "direct_delir_positive"
+
+
+def test_agent1_explicit_without_negation_is_direct_delir_positive():
+    g = apply_clinical_decision_guardrails(
+        _interp("niedrig"),
+        _signals_with_delir_explizit("hypoaktives Delir"),
+        _ev(),
+    )
+    assert g["klasse"] == 1
+    assert g["decision_rule_applied"] == "direct_delir_positive"
+
+
+def test_mixed_rule_direct_and_negation_without_agent1_not_auto_direct():
+    g = apply_clinical_decision_guardrails(
+        _interp("niedrig"),
+        _signals_with_delir_explizit(),
+        _ev(has_direct_delir_evidence=True, has_negated_delir_evidence=True),
+    )
+    assert g["decision_rule_applied"] != "direct_delir_positive"
+    assert g["klasse"] == 0
+
+
+def test_mixed_rule_direct_and_negation_with_agent1_explicit_stays_direct():
+    g = apply_clinical_decision_guardrails(
+        _interp("hoch"),
+        _signals_with_delir_explizit("hyperaktives Delir"),
+        _ev(has_direct_delir_evidence=True, has_negated_delir_evidence=True),
+    )
+    assert g["klasse"] == 1
+    assert g["decision_rule_applied"] == "direct_delir_positive"
+
+
 def test_isolated_agitation_without_alternative_klasse_0_with_review():
     g = apply_clinical_decision_guardrails(
         _interp("mittel"),

@@ -46,6 +46,49 @@ def _has_explicit_delir_signals(signals: Dict[str, Any]) -> bool:
     return bool(_safe_list(signals, "delir_explizit"))
 
 
+def _resolve_direct_evidence_flags(
+    signals: Dict[str, Any],
+    evidence_metadata: Dict[str, Any],
+) -> Tuple[bool, bool, bool, bool]:
+    """
+    Split rule-layer vs Agent 1 direct evidence.
+
+    Returns:
+        has_rule_direct, has_agent1_explicit, has_agent1_explicit_allowed, has_direct
+
+    ``has_direct`` is conservative: rule-layer direct always counts; Agent 1
+    ``delir_explizit`` counts only when ``has_negated_delir_evidence`` is false.
+    """
+    has_rule_direct = _bool_meta(evidence_metadata, "has_direct_delir_evidence")
+    has_negated = _bool_meta(evidence_metadata, "has_negated_delir_evidence")
+    has_agent1_explicit = _has_explicit_delir_signals(signals)
+    has_agent1_explicit_allowed = has_agent1_explicit and not has_negated
+
+    if has_rule_direct:
+        has_direct = True
+    elif has_agent1_explicit_allowed:
+        has_direct = True
+    else:
+        has_direct = False
+
+    return has_rule_direct, has_agent1_explicit, has_agent1_explicit_allowed, has_direct
+
+
+def _qualifies_for_direct_delir_positive(
+    has_rule_direct: bool,
+    has_negated: bool,
+    has_agent1_explicit: bool,
+    has_agent1_explicit_allowed: bool,
+) -> bool:
+    """
+    Rule-layer direct is primary; under co-occurring negation it wins only with
+  corroborating Agent 1 explicit delir (separate positive statement).
+    """
+    if has_rule_direct:
+        return not has_negated or has_agent1_explicit
+    return has_agent1_explicit_allowed
+
+
 def _has_delir_therapy(signals: Dict[str, Any]) -> bool:
     return bool(_safe_list(signals, "delir_therapie"))
 
@@ -60,20 +103,30 @@ def _indirect_dimension_count(signals: Dict[str, Any]) -> int:
     return sum(1 for k in INDIRECT_DIMENSION_KEYS if _safe_list(signals, k))
 
 
-def _has_symptom_cluster(signals: Dict[str, Any], evidence_metadata: Dict[str, Any]) -> bool:
+def _has_symptom_cluster(
+    signals: Dict[str, Any],
+    evidence_metadata: Dict[str, Any],
+    *,
+    has_direct: bool = False,
+) -> bool:
     """Two+ indirect dimensions, or delir therapy with compatible symptoms."""
     if _has_delir_therapy(signals) and (
-        _has_indirect_signals(signals, evidence_metadata) or _has_explicit_delir_signals(signals)
+        has_direct or _has_indirect_signals(signals, evidence_metadata)
     ):
         return True
     return _indirect_dimension_count(signals) >= 2
 
 
-def _is_isolated_indirect_only(signals: Dict[str, Any], evidence_metadata: Dict[str, Any]) -> bool:
+def _is_isolated_indirect_only(
+    signals: Dict[str, Any],
+    evidence_metadata: Dict[str, Any],
+    *,
+    has_direct: bool = False,
+) -> bool:
     """Exactly one indirect symptom dimension and no direct delir evidence."""
     if not _has_indirect_signals(signals, evidence_metadata):
         return False
-    if _has_explicit_delir_signals(signals) or _bool_meta(evidence_metadata, "has_direct_delir_evidence"):
+    if has_direct:
         return False
     return _indirect_dimension_count(signals) == 1
 
@@ -118,13 +171,13 @@ def apply_clinical_decision_guardrails(
     """
     signals = {k: _safe_list(extraction_signals, k) for k in SIGNAL_KEYS}
 
-    has_direct = _bool_meta(evidence_metadata, "has_direct_delir_evidence") or _has_explicit_delir_signals(
-        signals
+    has_rule_direct, has_agent1_explicit, has_agent1_explicit_allowed, has_direct = (
+        _resolve_direct_evidence_flags(signals, evidence_metadata)
     )
-    has_indirect = _has_indirect_signals(signals, evidence_metadata)
-    has_cluster = _has_symptom_cluster(signals, evidence_metadata)
-    isolated_indirect = _is_isolated_indirect_only(signals, evidence_metadata)
     has_negated = _bool_meta(evidence_metadata, "has_negated_delir_evidence")
+    has_indirect = _has_indirect_signals(signals, evidence_metadata)
+    has_cluster = _has_symptom_cluster(signals, evidence_metadata, has_direct=has_direct)
+    isolated_indirect = _is_isolated_indirect_only(signals, evidence_metadata, has_direct=has_direct)
     prophy_only = _bool_meta(evidence_metadata, "has_prophylaxis_or_risk_only") and not has_direct and not has_indirect
 
     has_alt = _has_alternative_explanation(interpretation, evidence_metadata)
@@ -159,8 +212,8 @@ def apply_clinical_decision_guardrails(
             alt=has_alt,
         )
 
-    # --- Hard exclude: negation only (no separate explicit positive) ---
-    if has_negated and not has_direct and not _has_explicit_delir_signals(signals):
+    # --- Hard exclude: negation without corroborated direct evidence ---
+    if has_negated and not has_direct:
         return _finalize(
             signalstaerke="niedrig",
             klasse=0,
@@ -171,12 +224,15 @@ def apply_clinical_decision_guardrails(
             alt=has_alt,
         )
 
-    therapy_with_context = _has_delir_therapy(signals) and (
-        has_direct or has_indirect or _has_explicit_delir_signals(signals)
-    )
+    therapy_with_context = _has_delir_therapy(signals) and (has_direct or has_indirect)
 
-    # --- Strong positive: direct delir (kept unless clearly negated without explicit term) ---
-    if has_direct and not (has_negated and not _has_explicit_delir_signals(signals)):
+    # --- Strong positive: rule-layer direct (primary) or allowed Agent 1 explicit ---
+    if _qualifies_for_direct_delir_positive(
+        has_rule_direct,
+        has_negated,
+        has_agent1_explicit,
+        has_agent1_explicit_allowed,
+    ):
         new_signal = signal if signal in ("hoch", "mittel") else "hoch"
         return _finalize(
             signalstaerke=new_signal,

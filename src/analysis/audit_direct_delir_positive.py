@@ -17,6 +17,8 @@ import pandas as pd
 
 from src.agents.clinical_guardrails import (
     _has_explicit_delir_signals,
+    _qualifies_for_direct_delir_positive,
+    _resolve_direct_evidence_flags,
     apply_clinical_decision_guardrails,
 )
 from src.analysis.export_presentation_examples import parse_evidence_snippets
@@ -95,8 +97,22 @@ def _explain_direct_delir_positive(
     has_explicit: bool,
     llm_skipped: bool,
     llm_method: str,
+    agent1: Optional[Dict[str, List[str]]] = None,
 ) -> str:
-    has_direct_guard = has_direct_meta or has_explicit
+    signals = agent1 or {k: [] for k in SIGNAL_KEYS}
+    ev = {
+        "has_direct_delir_evidence": has_direct_meta,
+        "has_negated_delir_evidence": has_negated_meta,
+    }
+    has_rule_direct, has_agent1_explicit, has_agent1_allowed, has_direct_guard = (
+        _resolve_direct_evidence_flags(signals, ev)
+    )
+    qualifies = _qualifies_for_direct_delir_positive(
+        has_rule_direct,
+        has_negated_meta,
+        has_agent1_explicit,
+        has_agent1_allowed,
+    )
 
     if llm_skipped or llm_method == "no_evidence_prefilter_skip":
         return (
@@ -104,43 +120,26 @@ def _explain_direct_delir_positive(
             f"(llm_skipped={llm_skipped}, method={llm_method}). Check stale CSV or rerun mismatch."
         )
 
-    if not has_direct_guard:
+    if not qualifies:
         return (
-            "UNEXPECTED: direct_delir_positive requires guardrail has_direct=True "
-            f"(has_direct_delir_evidence={has_direct_meta}, explicit={has_explicit})."
-        )
-
-    neg_block = has_negated_meta and not has_explicit
-    direct_condition = has_direct_guard and not neg_block
-
-    if has_direct_meta and not has_explicit and has_negated_meta:
-        return (
-            "UNEXPECTED: has_direct_delir_evidence=True AND has_negated=True WITHOUT "
-            "delir_explizit should block direct_delir_positive (falls through to later rules)."
+            "UNEXPECTED: _qualifies_for_direct_delir_positive=False "
+            f"(rule_direct={has_rule_direct}, negated={has_negated_meta}, "
+            f"agent1_explicit={has_agent1_explicit}, agent1_allowed={has_agent1_allowed})."
         )
 
     parts: List[str] = []
-    if has_direct_meta:
-        parts.append("has_direct_delir_evidence=True (rule-layer direct_delir snippet)")
-    if has_explicit:
-        parts.append(
-            "_has_explicit_delir_signals=True (Agent 1 delir_explizit non-empty; "
-            "promotes has_direct even when has_direct_delir_evidence=False)"
-        )
-    if has_negated_meta:
-        if has_explicit:
-            parts.append(
-                "negation guard blocked because has_direct=True via delir_explizit "
-                "(clinical_guardrails.py L163-172 skipped)"
-            )
-        else:
-            parts.append("has_negated=True but no delir_explizit (should not reach direct_delir_positive)")
+    if has_rule_direct:
+        parts.append("has_rule_direct=True (rule-layer direct_delir snippet)")
+    if has_agent1_allowed:
+        parts.append("has_agent1_explicit_allowed=True (delir_explizit without negation flag)")
+    elif has_agent1_explicit and has_negated_meta:
+        parts.append("Agent 1 delir_explizit ignored under has_negated_delir_evidence=True")
 
-    parts.append(
-        f"direct_delir_positive condition met: has_direct={has_direct_guard} "
-        f"AND NOT(has_negated AND NOT explicit) = {direct_condition}"
-    )
-    parts.append("Triggered at clinical_guardrails.py L178-188")
+    if has_rule_direct and has_negated_meta and has_agent1_explicit:
+        parts.append("mixed report: rule direct + negation corroborated by Agent 1 explicit")
+
+    parts.append(f"_qualifies_for_direct_delir_positive={qualifies}")
+    parts.append("Triggered at clinical_guardrails.py direct_delir_positive block")
     return " | ".join(parts)
 
 
@@ -196,6 +195,13 @@ def audit_direct_delir_positive_reports(
         agent1 = _load_agent1_from_debug(debug_dir, pid, report_name) or {k: [] for k in SIGNAL_KEYS}
         delir_explizit = [str(x) for x in agent1.get("delir_explizit", []) if str(x).strip()]
         has_explicit = _has_explicit_delir_signals(agent1)
+        _, _, has_agent1_allowed, has_direct_guard = _resolve_direct_evidence_flags(
+            agent1,
+            {
+                "has_direct_delir_evidence": has_direct_stored,
+                "has_negated_delir_evidence": has_neg_stored,
+            },
+        )
 
         ev_for_guard = {
             "has_direct_delir_evidence": has_direct_stored,
@@ -222,19 +228,20 @@ def audit_direct_delir_positive_reports(
             has_explicit=has_explicit,
             llm_skipped=llm_skipped,
             llm_method=llm_method,
+            agent1=agent1,
         )
 
         pathway = "unknown"
-        if has_direct_stored and not has_explicit:
-            pathway = "A_evidence_direct_snippet"
-        elif has_explicit and not has_direct_stored:
-            pathway = "B_agent1_delir_explizit_promotes_has_direct"
-        elif has_direct_stored and has_explicit:
-            pathway = "A+B_evidence_and_agent1"
-        elif has_explicit:
-            pathway = "B_agent1_only"
-        elif has_direct_stored:
-            pathway = "A_evidence_only"
+        if has_direct_stored and has_neg_stored and has_explicit:
+            pathway = "A+B_mixed_rule_direct_negation_corroborated_by_agent1"
+        elif has_direct_stored and not has_neg_stored:
+            pathway = "A_rule_direct_snippet"
+        elif has_direct_stored and has_neg_stored:
+            pathway = "unexpected_A_rule_direct_with_negation_without_agent1"
+        elif has_agent1_allowed and not has_direct_stored:
+            pathway = "B_agent1_explicit_allowed"
+        elif has_explicit and has_neg_stored:
+            pathway = "blocked_agent1_explicit_under_negation"
 
         audit_rows.append(
             {
@@ -256,7 +263,8 @@ def audit_direct_delir_positive_reports(
                 "agent1_delir_explizit": " | ".join(delir_explizit),
                 "agent1_delir_explizit_found_in_debug": bool(delir_explizit),
                 "_has_explicit_delir_signals": has_explicit,
-                "guardrail_has_direct": has_direct_stored or has_explicit,
+                "has_agent1_explicit_allowed": has_agent1_allowed,
+                "guardrail_has_direct": has_direct_guard,
                 "stored_direct_snippets": json.dumps(
                     [
                         {"keyword": s.get("keyword"), "text": s.get("text")}
