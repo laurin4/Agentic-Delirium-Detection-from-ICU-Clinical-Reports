@@ -69,19 +69,19 @@ def assign_confusion_group(model_pos: Any, derived: Any) -> str:
 
 
 def _patient_model_positive(grp: pd.DataFrame) -> Optional[int]:
+    """Patient positive = max report prediction (current merged klasse), not frozen cohort snapshot."""
+    if "model_report_prediction" in grp.columns:
+        pred = pd.to_numeric(grp["model_report_prediction"], errors="coerce")
+        valid = pred[pred.isin([0, 1])]
+        if not valid.empty:
+            return int(valid.max())
     if "model_patient_positive" in grp.columns:
         vals = pd.to_numeric(grp["model_patient_positive"], errors="coerce").dropna()
         if len(vals):
             v = int(vals.max())
             if v in (0, 1):
                 return v
-    if "model_report_prediction" not in grp.columns:
-        return None
-    pred = pd.to_numeric(grp["model_report_prediction"], errors="coerce")
-    valid = pred[pred.isin([0, 1])]
-    if valid.empty:
-        return None
-    return int(valid.max())
+    return None
 
 
 def build_manual_validation_progress(cohort: pd.DataFrame) -> pd.DataFrame:

@@ -70,6 +70,18 @@ def test_empty_manual_labels_not_treated_as_zero():
     assert pd.isna(row["derived_manual_patient_ground_truth"])
 
 
+def test_stale_frozen_model_patient_positive_does_not_override_report_predictions():
+    """Frozen cohort may carry old model_patient_positive; evaluation uses max(model_report_prediction)."""
+    df = pd.DataFrame(
+        [
+            _report_row("Patient_0019", "Patient_0019_Report_0001", 0, model_report=0, model_patient=1),
+            _report_row("Patient_0019", "Patient_0019_Report_0002", 0, model_report=0, model_patient=1),
+        ]
+    )
+    gt = build_patient_level_ground_truth(df)
+    assert int(gt.iloc[0]["model_patient_positive"]) == 0
+
+
 def test_derived_manual_patient_gt_rules():
     complete_neg = pd.DataFrame(
         [
@@ -222,7 +234,7 @@ def test_primary_metrics_ignore_incomplete_in_counts(tmp_path):
     df = pd.DataFrame(
         [
             _report_row("Patient_0001", "Patient_0001_Report_0001", ""),
-            _report_row("Patient_0002", "Patient_0002_Report_0001", 1, model_patient=1),
+            _report_row("Patient_0002", "Patient_0002_Report_0001", 1, model_report=1, model_patient=1),
         ]
     )
     _, metrics, _, _ = run_final_evaluation(df, output_dir=tmp_path / "out")
