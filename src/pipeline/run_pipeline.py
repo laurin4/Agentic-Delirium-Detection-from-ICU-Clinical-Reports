@@ -63,7 +63,26 @@ INPUT_MODE = "berichte"  # "berichte" (production) | "diagnosis" (legacy) | "txt
 
 LOGGER = logging.getLogger(__name__)
 
+RUN_PIPELINE_OUTPUT_PATH_ENV = "RUN_PIPELINE_OUTPUT_PATH"
+RUN_PIPELINE_MAX_REPORTS_OVERRIDE_ENV = "RUN_PIPELINE_MAX_REPORTS_OVERRIDE"
+RUN_PIPELINE_SKIP_MODEL_COPY_ENV = "RUN_PIPELINE_SKIP_MODEL_COPY"
+RUN_PIPELINE_PROGRESS_FLUSH_ENV = "RUN_PIPELINE_PROGRESS_FLUSH"
+
 DEBUG_VERBOSE = os.environ.get("DEBUG_LLM_OUTPUT", "").strip().lower() in ("1", "true", "yes")
+
+
+def _progress_flush_enabled() -> bool:
+    return os.environ.get(RUN_PIPELINE_PROGRESS_FLUSH_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _progress_print(*args, **kwargs) -> None:
+    if _progress_flush_enabled():
+        kwargs["flush"] = True
+    print(*args, **kwargs)
 
 NO_EVIDENCE_KONTEXT = "LLM übersprungen: keine regelbasierten Delir-Hinweise im Bericht gefunden."
 NO_EVIDENCE_BE = "Kein Delir-Hinweis in regelbasierter Volltextsuche."
@@ -313,18 +332,44 @@ def _get_report_records():
     if MAX_REPORTS is not None:
         if isinstance(MAX_REPORTS, int) and MAX_REPORTS > 0:
             report_records = report_records[:MAX_REPORTS]
-            print(
+            _progress_print(
                 f"Hinweis: MAX_REPORTS aktiv ({MAX_REPORTS}) - "
                 f"es werden nur die ersten Berichte verarbeitet."
             )
         else:
             raise ValueError("MAX_REPORTS muss None oder eine positive Ganzzahl sein.")
 
+    override_raw = os.environ.get(RUN_PIPELINE_MAX_REPORTS_OVERRIDE_ENV, "").strip()
+    if override_raw:
+        try:
+            override_n = int(override_raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"{RUN_PIPELINE_MAX_REPORTS_OVERRIDE_ENV} must be a positive integer"
+            ) from exc
+        if override_n <= 0:
+            raise ValueError(
+                f"{RUN_PIPELINE_MAX_REPORTS_OVERRIDE_ENV} must be a positive integer"
+            )
+        report_records = report_records[:override_n]
+        _progress_print(
+            f"Hinweis: {RUN_PIPELINE_MAX_REPORTS_OVERRIDE_ENV}={override_n} "
+            f"(processing first {len(report_records)} reports)."
+        )
+
     return [_normalize_report_record_bertyp(r) for r in report_records]
 
 
 def _get_output_path() -> Path:
     PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
+    if not validation_cohort_only_enabled():
+        override = os.environ.get(RUN_PIPELINE_OUTPUT_PATH_ENV, "").strip()
+        if override:
+            out = Path(override)
+            if not out.is_absolute():
+                out = PREDICTIONS_DIR / out
+            out.parent.mkdir(parents=True, exist_ok=True)
+            return out
     if validation_cohort_only_enabled():
         if is_versioned_validation_run():
             out = get_versioned_predictions_path()
@@ -427,7 +472,7 @@ def _run_single_report(report: dict, idx: int, total: int) -> Tuple[dict, bool, 
             msg = _compact_line(
                 idx, total, patient_id, ev, bertyp=bertyp, status="skipped", klasse=0, signal="niedrig"
             )
-            print(msg)
+            _progress_print(msg)
             LOGGER.info(msg)
             return row, True, False
 
@@ -515,7 +560,7 @@ def _run_single_report(report: dict, idx: int, total: int) -> Tuple[dict, bool, 
                 manual_review=bool(guard.get("manual_review_candidate")),
                 decision_rule=str(guard.get("decision_rule_applied", "")),
             )
-            print(msg)
+            _progress_print(msg)
             if final_klasse == 1:
                 _print_evidence_preview(ev)
             LOGGER.info(msg)
@@ -562,7 +607,7 @@ def _run_single_report(report: dict, idx: int, total: int) -> Tuple[dict, bool, 
         msg = _compact_line(
             idx, total, patient_id, ev, bertyp=bertyp, status="failed", klasse=0, signal="niedrig"
         )
-        print(msg)
+        _progress_print(msg)
         if DEBUG_VERBOSE:
             print(traceback.format_exc())
         LOGGER.error("%s | %s", msg, err)
@@ -640,8 +685,12 @@ def main():
     report_records = _get_report_records()
     total = len(report_records)
 
-    print(f"\n=== Agent 1 + Agent 2 + Agent 3: Delir-Pipeline ({INTERPRETATION_MODE}) ===")
-    print(f"Anzahl Berichte: {total}\n")
+    _progress_print(f"\n=== Agent 1 + Agent 2 + Agent 3: Delir-Pipeline ({INTERPRETATION_MODE}) ===")
+    _progress_print(f"Anzahl Berichte: {total}")
+    _progress_print(f"output_csv={output_csv.resolve()}")
+    if checkpoint_every:
+        _progress_print(f"checkpoint_every={checkpoint_every} checkpoint_path={checkpoint_path.resolve()}")
+    _progress_print("")
 
     rows: List[Dict[str, Any]] = []
     n_prefilter_skip = 0
@@ -654,6 +703,10 @@ def main():
     bertyp_stats: Dict[str, Dict[str, int]] = defaultdict(_new_bertyp_stats)
 
     for i, report in enumerate(report_records, start=1):
+        _progress_print(
+            f"REPORT_START {i}/{total} | PatientenID={report.get('PatientenID', '')} | "
+            f"bericht={report.get('bericht', '')} | bertyp={report.get('bertyp', '')}"
+        )
         row_dict, skipped, failed = _run_single_report(report, i, total)
         row_dict.update(_report_identity_fields(report))
         rows.append(row_dict)
@@ -684,7 +737,9 @@ def main():
 
         if checkpoint_every and i % checkpoint_every == 0:
             _write_prediction_csv(rows, checkpoint_path, fieldnames)
-            print(f"Checkpoint: {len(rows)} rows -> {checkpoint_path}")
+            _progress_print(
+                f"CHECKPOINT_WRITTEN rows={len(rows)} path={checkpoint_path.resolve()}"
+            )
 
     LOGGER.info(
         "Run summary: total=%d skipped=%d llm=%d failed=%d klasse0=%d klasse1=%d",
@@ -755,9 +810,17 @@ def main():
             f"({PREDICTIONS_DIR / f'agent1_agent2_agent3_results_{INTERPRETATION_MODE}.csv'} unchanged)."
         )
     else:
-        model_copy_path = _get_model_named_output_path()
-        shutil.copy2(output_csv, model_copy_path)
-        print(f"Ergebnisse (Modellkopie) gespeichert in: {model_copy_path}")
+        skip_model_copy = os.environ.get(RUN_PIPELINE_SKIP_MODEL_COPY_ENV, "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if skip_model_copy:
+            _progress_print("RUN_PIPELINE_SKIP_MODEL_COPY: model-named copy skipped.")
+        else:
+            model_copy_path = _get_model_named_output_path()
+            shutil.copy2(output_csv, model_copy_path)
+            _progress_print(f"Ergebnisse (Modellkopie) gespeichert in: {model_copy_path}")
 
 
 if __name__ == "__main__":
