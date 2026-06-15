@@ -569,8 +569,74 @@ def _run_single_report(report: dict, idx: int, total: int) -> Tuple[dict, bool, 
         return row, False, True
 
 
+def _prediction_csv_fieldnames() -> List[str]:
+    base_fieldnames = [
+        "PatientenID",
+        "bericht",
+        "bertyp",
+        "berdat",
+        SOURCE_REPORT_ROW_ID_COL,
+        "original_report_text_length",
+        "llm_report_text_length",
+        "llm_text_reduction_method",
+        "delir_keyword_hits_count",
+        "has_direct_delir_evidence",
+        "has_indirect_delir_evidence",
+        "has_negated_delir_evidence",
+        "has_prophylaxis_or_risk_only",
+        "has_alternative_explanation",
+        "manual_review_candidate",
+        "decision_rule_applied",
+        "status",
+        "llm_called",
+        "skipped_reason",
+        "llm_skipped_by_prefilter",
+        "anzahl_treffer",
+        "delir_signale",
+        "evidence_snippets",
+        "signalstaerke",
+        "delir_probability_estimate",
+        "kontext",
+        "alternative_erklaerung",
+        "alternative_erklaerung_keywords",
+        "begruendung",
+        "klasse",
+        "klassifikation",
+        "klassifikation_begruendung",
+    ]
+    if validation_cohort_only_enabled():
+        return [VALIDATION_PATIENT_ID_COL, VALIDATION_REPORT_ID_COL] + base_fieldnames
+    return base_fieldnames
+
+
+def _parse_checkpoint_every() -> int | None:
+    raw = os.environ.get("PIPELINE_CHECKPOINT_EVERY", "").strip()
+    if not raw:
+        return None
+    try:
+        n = int(raw)
+    except ValueError as exc:
+        raise ValueError("PIPELINE_CHECKPOINT_EVERY must be a positive integer") from exc
+    if n <= 0:
+        raise ValueError("PIPELINE_CHECKPOINT_EVERY must be a positive integer")
+    return n
+
+
+def _write_prediction_csv(
+    rows: List[Dict[str, Any]], output_csv: Path, fieldnames: List[str]
+) -> None:
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def main():
     output_csv = _get_output_path()
+    checkpoint_every = _parse_checkpoint_every()
+    checkpoint_path = output_csv.with_name(f"{output_csv.stem}.checkpoint.csv")
+    fieldnames = _prediction_csv_fieldnames()
     report_records = _get_report_records()
     total = len(report_records)
 
@@ -616,6 +682,10 @@ def main():
             if str(row_dict.get("llm_text_reduction_method") or "") == METHOD_SHORT_REPORT_FULLTEXT:
                 n_sent_short_no_evidence += 1
 
+        if checkpoint_every and i % checkpoint_every == 0:
+            _write_prediction_csv(rows, checkpoint_path, fieldnames)
+            print(f"Checkpoint: {len(rows)} rows -> {checkpoint_path}")
+
     LOGGER.info(
         "Run summary: total=%d skipped=%d llm=%d failed=%d klasse0=%d klasse1=%d",
         total,
@@ -644,47 +714,12 @@ def main():
 
     _assert_binary_klassen(rows)
 
-    base_fieldnames = [
-        "PatientenID",
-        "bericht",
-        "bertyp",
-        "berdat",
-        SOURCE_REPORT_ROW_ID_COL,
-        "original_report_text_length",
-        "llm_report_text_length",
-        "llm_text_reduction_method",
-        "delir_keyword_hits_count",
-        "has_direct_delir_evidence",
-        "has_indirect_delir_evidence",
-        "has_negated_delir_evidence",
-        "has_prophylaxis_or_risk_only",
-        "has_alternative_explanation",
-        "manual_review_candidate",
-        "decision_rule_applied",
-        "status",
-        "llm_called",
-        "skipped_reason",
-        "llm_skipped_by_prefilter",
-        "anzahl_treffer",
-        "delir_signale",
-        "evidence_snippets",
-        "signalstaerke",
-        "delir_probability_estimate",
-        "kontext",
-        "alternative_erklaerung",
-        "alternative_erklaerung_keywords",
-        "begruendung",
-        "klasse",
-        "klassifikation",
-        "klassifikation_begruendung",
-    ]
-    fieldnames = list(base_fieldnames)
-    if validation_cohort_only_enabled():
-        fieldnames = [VALIDATION_PATIENT_ID_COL, VALIDATION_REPORT_ID_COL] + fieldnames
-    with open(output_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
+    _write_prediction_csv(rows, output_csv, fieldnames)
+    if checkpoint_path.exists():
+        try:
+            checkpoint_path.unlink()
+        except OSError:
+            LOGGER.warning("Could not remove checkpoint file: %s", checkpoint_path)
 
     if validation_cohort_only_enabled():
         import pandas as pd
