@@ -6,7 +6,7 @@ import shutil
 import traceback
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 from src.agents.classification import classify_delirium
 from src.agents.clinical_guardrails import apply_clinical_decision_guardrails
@@ -67,6 +67,7 @@ RUN_PIPELINE_OUTPUT_PATH_ENV = "RUN_PIPELINE_OUTPUT_PATH"
 RUN_PIPELINE_MAX_REPORTS_OVERRIDE_ENV = "RUN_PIPELINE_MAX_REPORTS_OVERRIDE"
 RUN_PIPELINE_SKIP_MODEL_COPY_ENV = "RUN_PIPELINE_SKIP_MODEL_COPY"
 RUN_PIPELINE_PROGRESS_FLUSH_ENV = "RUN_PIPELINE_PROGRESS_FLUSH"
+RUN_PIPELINE_RESUME_CHECKPOINT_ENV = "RUN_PIPELINE_RESUME_CHECKPOINT"
 
 DEBUG_VERBOSE = os.environ.get("DEBUG_LLM_OUTPUT", "").strip().lower() in ("1", "true", "yes")
 
@@ -677,37 +678,157 @@ def _write_prediction_csv(
         writer.writerows(rows)
 
 
+def _resume_enabled() -> bool:
+    return os.environ.get(RUN_PIPELINE_RESUME_CHECKPOINT_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "auto",
+    )
+
+
+def _resume_key_from_mapping(mapping: Dict[str, Any]) -> tuple[str, ...]:
+    sid = str(mapping.get(SOURCE_REPORT_ROW_ID_COL, "") or "").strip()
+    if sid and sid.lower() not in ("nan", "none"):
+        return ("sid", sid)
+    pid = str(mapping.get("PatientenID", "") or "").strip()
+    bericht = str(mapping.get("bericht", "") or "").strip()
+    return ("fb", pid, bericht)
+
+
+def _load_checkpoint_rows(checkpoint_path: Path) -> List[Dict[str, Any]]:
+    if not checkpoint_path.exists():
+        return []
+    with open(checkpoint_path, newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def _resume_keys_from_rows(rows: Sequence[Dict[str, Any]]) -> set[tuple[str, ...]]:
+    return {_resume_key_from_mapping(row) for row in rows}
+
+
+def _filter_unprocessed_reports(
+    report_records: Sequence[dict], done_keys: set[tuple[str, ...]]
+) -> List[dict]:
+    return [
+        report
+        for report in report_records
+        if _resume_key_from_mapping(report) not in done_keys
+    ]
+
+
+def _seed_stats_from_rows(
+    rows: Sequence[Dict[str, Any]],
+) -> Tuple[
+    int,
+    int,
+    int,
+    int,
+    int,
+    int,
+    Dict[str, int],
+    int,
+    int,
+    Dict[str, Dict[str, int]],
+]:
+    n_prefilter_skip = n_sent_short_no_evidence = n_llm = n_failed = n_k0 = n_k1 = 0
+    sig_counts: Dict[str, int] = {}
+    sum_orig = sum_llm = 0
+    bertyp_stats: Dict[str, Dict[str, int]] = defaultdict(_new_bertyp_stats)
+
+    for row_dict in rows:
+        skipped = str(row_dict.get("status", "")).strip() == "skipped"
+        failed = str(row_dict.get("status", "")).strip() == "failed"
+        accumulate_bertyp_stat(
+            bertyp_stats,
+            str(row_dict.get("bertyp") or UNKNOWN_BERTYP),
+            skipped=skipped,
+            failed=failed,
+            klasse=int(row_dict.get("klasse") or 0),
+        )
+        sum_orig += int(row_dict.get("original_report_text_length") or 0)
+        sum_llm += int(row_dict.get("llm_report_text_length") or 0)
+        k = int(row_dict.get("klasse") or 0)
+        if k == 1:
+            n_k1 += 1
+        else:
+            n_k0 += 1
+        sig = str(row_dict.get("signalstaerke") or "")
+        sig_counts[sig] = sig_counts.get(sig, 0) + 1
+        if failed:
+            n_failed += 1
+        elif skipped:
+            n_prefilter_skip += 1
+        else:
+            n_llm += 1
+            if str(row_dict.get("llm_text_reduction_method") or "") == METHOD_SHORT_REPORT_FULLTEXT:
+                n_sent_short_no_evidence += 1
+
+    return (
+        n_prefilter_skip,
+        n_sent_short_no_evidence,
+        n_llm,
+        n_failed,
+        n_k0,
+        n_k1,
+        sig_counts,
+        sum_orig,
+        sum_llm,
+        bertyp_stats,
+    )
+
+
 def main():
     output_csv = _get_output_path()
     checkpoint_every = _parse_checkpoint_every()
     checkpoint_path = output_csv.with_name(f"{output_csv.stem}.checkpoint.csv")
     fieldnames = _prediction_csv_fieldnames()
-    report_records = _get_report_records()
-    total = len(report_records)
+    all_report_records = _get_report_records()
+    total_corpus = len(all_report_records)
+
+    rows: List[Dict[str, Any]] = []
+    resumed = 0
+    if _resume_enabled() and checkpoint_path.exists():
+        rows = _load_checkpoint_rows(checkpoint_path)
+        resumed = len(rows)
+        if resumed:
+            _progress_print(
+                f"RESUME loaded rows={resumed} from {checkpoint_path.resolve()}"
+            )
+        else:
+            _progress_print(f"RESUME requested but checkpoint empty: {checkpoint_path}")
+
+    done_keys = _resume_keys_from_rows(rows)
+    report_records = _filter_unprocessed_reports(all_report_records, done_keys)
+    remaining = len(report_records)
 
     _progress_print(f"\n=== Agent 1 + Agent 2 + Agent 3: Delir-Pipeline ({INTERPRETATION_MODE}) ===")
-    _progress_print(f"Anzahl Berichte: {total}")
+    _progress_print(f"corpus_total={total_corpus} resumed={resumed} remaining={remaining}")
     _progress_print(f"output_csv={output_csv.resolve()}")
     if checkpoint_every:
         _progress_print(f"checkpoint_every={checkpoint_every} checkpoint_path={checkpoint_path.resolve()}")
     _progress_print("")
 
-    rows: List[Dict[str, Any]] = []
-    n_prefilter_skip = 0
-    n_sent_short_no_evidence = 0
-    n_llm = 0
-    n_failed = 0
-    n_k0 = n_k1 = 0
-    sig_counts: Dict[str, int] = {}
-    sum_orig = sum_llm = 0
-    bertyp_stats: Dict[str, Dict[str, int]] = defaultdict(_new_bertyp_stats)
+    (
+        n_prefilter_skip,
+        n_sent_short_no_evidence,
+        n_llm,
+        n_failed,
+        n_k0,
+        n_k1,
+        sig_counts,
+        sum_orig,
+        sum_llm,
+        bertyp_stats,
+    ) = _seed_stats_from_rows(rows)
 
-    for i, report in enumerate(report_records, start=1):
+    for offset, report in enumerate(report_records, start=1):
+        i = resumed + offset
         _progress_print(
-            f"REPORT_START {i}/{total} | PatientenID={report.get('PatientenID', '')} | "
+            f"REPORT_START {i}/{total_corpus} | PatientenID={report.get('PatientenID', '')} | "
             f"bericht={report.get('bericht', '')} | bertyp={report.get('bertyp', '')}"
         )
-        row_dict, skipped, failed = _run_single_report(report, i, total)
+        row_dict, skipped, failed = _run_single_report(report, i, total_corpus)
         row_dict.update(_report_identity_fields(report))
         rows.append(row_dict)
         accumulate_bertyp_stat(
@@ -735,12 +856,13 @@ def main():
             if str(row_dict.get("llm_text_reduction_method") or "") == METHOD_SHORT_REPORT_FULLTEXT:
                 n_sent_short_no_evidence += 1
 
-        if checkpoint_every and i % checkpoint_every == 0:
+        if checkpoint_every and len(rows) % checkpoint_every == 0:
             _write_prediction_csv(rows, checkpoint_path, fieldnames)
             _progress_print(
                 f"CHECKPOINT_WRITTEN rows={len(rows)} path={checkpoint_path.resolve()}"
             )
 
+    total = len(rows)
     LOGGER.info(
         "Run summary: total=%d skipped=%d llm=%d failed=%d klasse0=%d klasse1=%d",
         total,
@@ -754,18 +876,18 @@ def main():
     avg_orig = sum_orig / total if total else 0.0
     avg_llm = sum_llm / total if total else 0.0
 
-    print("\n=== Run summary ===")
-    print(f"total_reports={total}")
-    print(f"sent_to_llm={n_llm}")
-    print(f"skipped_no_evidence={n_prefilter_skip}")
-    print(f"sent_short_no_evidence={n_sent_short_no_evidence}")
-    print(f"failed={n_failed}")
-    print(f"klasse: 0={n_k0}, 1={n_k1}")
-    print(f"signalstaerke: {sig_counts}")
-    print(f"avg_original_length={avg_orig:.1f}")
-    print(f"avg_llm_input_length={avg_llm:.1f}")
+    _progress_print("\n=== Run summary ===")
+    _progress_print(f"total_reports={total}")
+    _progress_print(f"sent_to_llm={n_llm}")
+    _progress_print(f"skipped_no_evidence={n_prefilter_skip}")
+    _progress_print(f"sent_short_no_evidence={n_sent_short_no_evidence}")
+    _progress_print(f"failed={n_failed}")
+    _progress_print(f"klasse: 0={n_k0}, 1={n_k1}")
+    _progress_print(f"signalstaerke: {sig_counts}")
+    _progress_print(f"avg_original_length={avg_orig:.1f}")
+    _progress_print(f"avg_llm_input_length={avg_llm:.1f}")
     for line in format_bertyp_summary_lines(dict(bertyp_stats)):
-        print(line)
+        _progress_print(line)
 
     _assert_binary_klassen(rows)
 

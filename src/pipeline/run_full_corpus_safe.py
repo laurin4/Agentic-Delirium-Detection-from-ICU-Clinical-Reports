@@ -23,6 +23,7 @@ from src.pipeline.run_pipeline import (
     RUN_PIPELINE_MAX_REPORTS_OVERRIDE_ENV,
     RUN_PIPELINE_OUTPUT_PATH_ENV,
     RUN_PIPELINE_PROGRESS_FLUSH_ENV,
+    RUN_PIPELINE_RESUME_CHECKPOINT_ENV,
     RUN_PIPELINE_SKIP_MODEL_COPY_ENV,
     main as run_pipeline_main,
 )
@@ -90,9 +91,11 @@ def _print_launch_plan(
     checkpoint_every: int,
     smoke: bool,
     backup_path: Optional[Path],
+    resume: bool,
 ) -> None:
     print("=== Full-corpus safe launcher ===")
     print(f"mode={'smoke' if smoke else 'full'}")
+    print(f"resume_from_checkpoint={resume}")
     print(f"berichte_path={BERICHTE_INPUT_PATH.resolve()}")
     print(f"expected_records={expected_records}")
     print(f"excluded_dokumentationsblatt={excluded_db}")
@@ -133,6 +136,7 @@ def _configure_pipeline_env(
     checkpoint_every: int,
     record_limit: Optional[int],
     smoke: bool,
+    resume: bool,
 ) -> dict[str, Optional[str]]:
     """Set launcher env overrides; returns previous values for restoration."""
     prev = {
@@ -142,6 +146,7 @@ def _configure_pipeline_env(
         RUN_PIPELINE_OUTPUT_PATH_ENV: os.environ.get(RUN_PIPELINE_OUTPUT_PATH_ENV),
         RUN_PIPELINE_MAX_REPORTS_OVERRIDE_ENV: os.environ.get(RUN_PIPELINE_MAX_REPORTS_OVERRIDE_ENV),
         RUN_PIPELINE_SKIP_MODEL_COPY_ENV: os.environ.get(RUN_PIPELINE_SKIP_MODEL_COPY_ENV),
+        RUN_PIPELINE_RESUME_CHECKPOINT_ENV: os.environ.get(RUN_PIPELINE_RESUME_CHECKPOINT_ENV),
     }
     os.environ[RUN_PIPELINE_PROGRESS_FLUSH_ENV] = "true"
     os.environ["PIPELINE_CHECKPOINT_EVERY"] = str(checkpoint_every)
@@ -156,6 +161,11 @@ def _configure_pipeline_env(
         os.environ[RUN_PIPELINE_SKIP_MODEL_COPY_ENV] = "true"
     else:
         os.environ.pop(RUN_PIPELINE_SKIP_MODEL_COPY_ENV, None)
+
+    if resume:
+        os.environ[RUN_PIPELINE_RESUME_CHECKPOINT_ENV] = "true"
+    else:
+        os.environ.pop(RUN_PIPELINE_RESUME_CHECKPOINT_ENV, None)
     return prev
 
 
@@ -174,6 +184,7 @@ def run_safe(
     checkpoint_every: int = DEFAULT_CHECKPOINT_EVERY,
     output_csv: Optional[Path] = None,
     record_limit: Optional[int] = None,
+    resume: bool = False,
 ) -> int:
     _validate_preflight(allow_max_reports=allow_max_reports, smoke=smoke)
 
@@ -189,7 +200,12 @@ def run_safe(
         expected_records = min(expected_records, record_limit)
 
     backup_path: Optional[Path] = None
-    if not smoke:
+    checkpoint_path = output_csv.with_name(f"{output_csv.stem}.checkpoint.csv")
+    if resume and not checkpoint_path.exists():
+        raise SystemExit(
+            f"Refusing --resume: checkpoint missing at {checkpoint_path.resolve()}"
+        )
+    if not smoke and not resume:
         backup_path = _backup_main_predictions(output_csv)
 
     running_marker = _marker_path(output_csv, MARKER_RUNNING_SUFFIX)
@@ -206,6 +222,7 @@ def run_safe(
         checkpoint_every=checkpoint_every,
         smoke=smoke,
         backup_path=backup_path,
+        resume=resume,
     )
 
     prev_env = _configure_pipeline_env(
@@ -213,6 +230,7 @@ def run_safe(
         checkpoint_every=checkpoint_every,
         record_limit=record_limit,
         smoke=smoke,
+        resume=resume,
     )
 
     _write_marker(
@@ -222,10 +240,10 @@ def run_safe(
             f"output_csv={output_csv.resolve()}",
             f"expected_records={expected_records}",
             f"smoke={smoke}",
+            f"resume={resume}",
+            f"checkpoint={checkpoint_path.resolve()}",
         ],
     )
-
-    checkpoint_path = output_csv.with_name(f"{output_csv.stem}.checkpoint.csv")
 
     try:
         print("PIPELINE_LAUNCH: calling src.pipeline.run_pipeline.main()", flush=True)
@@ -287,6 +305,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Allow MAX_REPORTS env cap (not recommended for thesis full run).",
     )
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue from *.checkpoint.csv; keeps prior rows and skips them.",
+    )
+    parser.add_argument(
         "--checkpoint-every",
         type=int,
         default=DEFAULT_CHECKPOINT_EVERY,
@@ -306,6 +329,9 @@ def main(argv: list[str] | None = None) -> int:
 
     smoke = bool(args.smoke or args.max_reports == SMOKE_N)
 
+    if args.resume and smoke:
+        parser.error("Use either --resume or --smoke, not both.")
+
     if args.checkpoint_every <= 0:
         parser.error("--checkpoint-every must be a positive integer.")
 
@@ -316,6 +342,7 @@ def main(argv: list[str] | None = None) -> int:
         smoke=smoke,
         allow_max_reports=args.allow_max_reports,
         checkpoint_every=args.checkpoint_every,
+        resume=args.resume,
     )
 
 

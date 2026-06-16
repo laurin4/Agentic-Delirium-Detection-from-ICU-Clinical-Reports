@@ -112,3 +112,17 @@ def test_failure_keeps_failed_marker(tmp_path, monkeypatch):
 
     assert smoke_out.with_name(smoke_out.name + ".failed").exists()
     assert not smoke_out.with_name(smoke_out.name + ".running").exists()
+
+
+def test_resume_requires_checkpoint(tmp_path, monkeypatch):
+    monkeypatch.delenv("VALIDATION_COHORT_ONLY", raising=False)
+    monkeypatch.delenv("MAX_REPORTS", raising=False)
+    monkeypatch.setattr(safe, "BERICHTE_INPUT_PATH", tmp_path / "Berichte.csv")
+    safe.BERICHTE_INPUT_PATH.write_text("x", encoding="utf-8")
+    main_csv = tmp_path / "predictions" / "agent1_agent2_agent3_results_prompt.csv"
+    monkeypatch.setattr(safe, "FULL_PREDICTIONS_PATH", main_csv)
+    monkeypatch.setattr(safe, "PREDICTIONS_DIR", tmp_path / "predictions")
+    monkeypatch.setattr(safe, "build_report_level_berichte_records", lambda: ([], 0))
+
+    with pytest.raises(SystemExit, match="checkpoint missing"):
+        safe.run_safe(resume=True)
