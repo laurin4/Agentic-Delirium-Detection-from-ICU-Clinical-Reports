@@ -225,6 +225,8 @@ def build_baseline_manual_comparison_summary(
         & comp_and.isin([0, 1])
         & v2.isin([0, 1])
     )
+    n_complete_manual = len(complete)
+    dropped = work.loc[~valid].copy()
     work = work.loc[valid].copy()
     manual = manual.loc[valid]
     icdsc = icdsc.loc[valid]
@@ -259,7 +261,10 @@ def build_baseline_manual_comparison_summary(
         "",
         f"Generated: {ts}",
         f"Prompt / model version: {prompt_version.upper()} (column: {cols.v2})",
-        f"Patients evaluated: {n_complete} (complete manual labels only)",
+        f"Complete manual patients (tier 2): {n_complete_manual}",
+        f"Patients in this comparison (tier 3): {n_complete}",
+        f"  (tier 3 = complete manual labels + valid model + baseline signals)",
+        f"Excluded from comparison (missing model/baseline): {n_complete_manual - n_complete}",
         f"Manual positive patients: {n_manual_pos}",
         f"Manual negative patients: {n_manual_neg}",
         "",
@@ -291,10 +296,35 @@ def build_baseline_manual_comparison_summary(
             "if both are positive. The V2 model aggregates report-level LLM predictions to",
             "patient level (positive if any report is positive).",
             "",
-            "Only patients with all reports manually labeled are included.",
+            "Only patients with complete manual labels AND valid model/baseline signals",
+            "are counted in the comparison sections below.",
             "",
         ]
     )
+    if not dropped.empty:
+        lines.append("Patients with complete manual labels but excluded from comparison")
+        lines.append("-" * 56)
+        for _, row in dropped.iterrows():
+            vpid = row.get(cols.patient_id, "")
+            hid = row.get(cols.hospital_id or cols.patient_id, "")
+            missing = []
+            for label, col in (
+                ("v2", cols.v2),
+                ("icdsc", cols.icdsc),
+                ("icd10", cols.icd10),
+                ("or", cols.composite_or),
+                ("and", cols.composite_and),
+            ):
+                val = pd.to_numeric(row.get(col), errors="coerce")
+                if pd.isna(val) or int(val) not in (0, 1):
+                    missing.append(label)
+            lines.append(
+                f"  - {vpid} (PatientenID: {hid}): missing {', '.join(missing) or 'signal'}"
+            )
+        lines.append(
+            "  Run: python -m src.analysis.audit_manual_validation_patient_counts"
+        )
+        lines.append("")
 
     lines.extend(
         _section(
