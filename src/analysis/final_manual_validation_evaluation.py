@@ -546,6 +546,17 @@ def run_final_evaluation(
     write_confusion_plots(complete, confusion, plots_dir)
     export_model_error_slices(complete, output_dir)
 
+    from src.analysis.export_baseline_manual_comparison_summary import (
+        export_baseline_manual_comparison_summary,
+    )
+
+    export_baseline_manual_comparison_summary(
+        patient_gt,
+        output_path=output_dir / "baseline_manual_comparison_summary.txt",
+        predictions_source=predictions_source,
+        baseline_source=baseline_source,
+    )
+
     report = format_final_report(
         patient_gt,
         complete,

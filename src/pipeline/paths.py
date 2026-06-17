@@ -211,6 +211,9 @@ MANUAL_VALIDATION_PROGRESS_REPORT_PATH = (
     MANUAL_VALIDATION_DIR / "manual_validation_progress_report.txt"
 )
 FINAL_MANUAL_VALIDATION_EVAL_DIR = MANUAL_VALIDATION_DIR / "final_evaluation"
+BASELINE_MANUAL_COMPARISON_SUMMARY_PATH = (
+    FINAL_MANUAL_VALIDATION_EVAL_DIR / "baseline_manual_comparison_summary.txt"
+)
 MATCHING_AUDIT_DIR = MANUAL_VALIDATION_DIR / "matching_audit"
 
 # Presentation slide examples (report flow: excerpt → keywords → evidence → LLM → prediction)
