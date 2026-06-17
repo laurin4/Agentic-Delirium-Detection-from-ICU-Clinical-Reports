@@ -34,6 +34,8 @@ def test_and_mode_composite(monkeypatch):
     out = add_binary_baselines(_sample_df())
     # rows: (0,0), (icd10 only), (icdsc>=4 only), (both)
     assert list(out["baseline_composite"]) == [0, 0, 0, 1]
+    assert list(out["baseline_composite_or"]) == [0, 1, 1, 1]
+    assert list(out["baseline_composite_and"]) == [0, 0, 0, 1]
 
 
 def test_switching_mode_changes_composite():
@@ -94,7 +96,8 @@ def test_evaluate_predictions_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(ev, "EVALUATION_SUMMARY_PATH", eval_dir / "evaluation_summary.csv")
 
     ev.main()
-    assert (plots / "confusion_matrix_baseline_composite.png").exists()
+    assert (plots / "confusion_matrix_baseline_composite_or.png").exists()
+    assert (plots / "confusion_matrix_baseline_composite_and.png").exists()
     assert "Delirkandidaten" in (eval_dir / "binary_baselines" / "report.txt").read_text(encoding="utf-8")
 
 

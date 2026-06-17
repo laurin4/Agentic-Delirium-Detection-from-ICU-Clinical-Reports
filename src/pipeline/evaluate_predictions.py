@@ -13,8 +13,8 @@ import numpy as np
 import pandas as pd
 
 from src.pipeline.baseline_composite import (
+    PRIMARY_EVALUATION_BASELINES,
     baseline_composite_fp_interpretation_note,
-    baseline_composite_short_label,
     format_baseline_composite_mode_banner,
 )
 from src.pipeline.paths import (
@@ -35,19 +35,15 @@ from src.pipeline.predictions_source import (
 from src.pipeline.prepare_structured_data import add_binary_baselines
 
 
-BASELINE_COLUMNS = [
-    "baseline_composite",
-    "baseline_icd10",
-    "baseline_icdsc_ge_4",
-    "baseline_icdsc_ge_1",
-    "baseline_icdsc_ge_2",
-    "baseline_icdsc_ge_3",
-    "baseline_icdsc_ge_4",
-    "baseline_icdsc_ge_5",
-    "baseline_icdsc_0",
-    "baseline_icdsc_1_to_3",
-    "baseline_icdsc_ge_4_grouped",
-]
+# Primary full-run evaluation baselines (ICDSC>=4, ICD10, OR, AND only).
+BASELINE_COLUMNS = list(PRIMARY_EVALUATION_BASELINES)
+
+_BASELINE_PLOT_LABELS = {
+    "baseline_icdsc_ge_4": "ICDSC >= 4",
+    "baseline_icd10": "ICD-10 delirium",
+    "baseline_composite_or": "ICDSC>=4 OR ICD10",
+    "baseline_composite_and": "ICDSC>=4 AND ICD10",
+}
 
 
 def safe_div(numerator: float, denominator: float) -> float:
@@ -96,9 +92,7 @@ def _plot_confusion_matrix_binary(counts: dict, baseline_name: str, out_path: Pa
     fig, ax = plt.subplots(figsize=(4.8, 4.0))
     im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
     ax.figure.colorbar(im, ax=ax)
-    title = f"Confusion: {baseline_name}"
-    if baseline_name == "baseline_composite":
-        title = f"Confusion: {baseline_composite_short_label()}"
+    title = f"Confusion: {_BASELINE_PLOT_LABELS.get(baseline_name, baseline_name)}"
     ax.set(
         xticks=np.arange(2),
         yticks=np.arange(2),
@@ -119,18 +113,15 @@ def _plot_confusion_matrix_binary(counts: dict, baseline_name: str, out_path: Pa
 
 
 def _plot_distribution_comparison(df: pd.DataFrame, out_path: Path) -> None:
-    labels = ["report_text_model"] + BASELINE_COLUMNS
+    labels = ["report_text_model"] + [_BASELINE_PLOT_LABELS.get(c, c) for c in BASELINE_COLUMNS]
     positive_counts = [int(df["prediction_binary"].sum())]
     for col in BASELINE_COLUMNS:
         positive_counts.append(int(pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int).sum()))
-    fig_w = max(14.0, 0.55 * len(labels))
+    fig_w = max(10.0, 0.9 * len(labels))
     fig, ax = plt.subplots(figsize=(fig_w, 4.8))
     ax.bar(labels, positive_counts, color="#3b82f6")
     ax.set_ylabel("Positive count (class=1)")
-    ax.set_title(
-        "Positive class distribution: report text model vs baselines\n"
-        f"({baseline_composite_short_label()} when applicable)"
-    )
+    ax.set_title("Positive class distribution: report text model vs primary baselines")
     ax.tick_params(axis="x", rotation=25)
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)
@@ -198,18 +189,6 @@ def main() -> None:
         out_path=EVALUATION_BINARY_BASELINES_PLOTS_DIR / "class_distribution_comparison.png",
     )
 
-    icd10_vs_icdsc_rows = []
-    y_icd10 = pd.to_numeric(df["baseline_icd10"], errors="coerce").fillna(0).astype(int)
-    for threshold in [1, 2, 3, 4, 5]:
-        base_name = f"baseline_icdsc_ge_{threshold}"
-        y_icdsc = pd.to_numeric(df[base_name], errors="coerce").fillna(0).astype(int)
-        counts = _binary_confusion(y_true=y_icdsc, y_pred=y_icd10)
-        icd10_vs_icdsc_rows.append({"baseline_name": f"icd10_vs_{base_name}", **_metrics_from_counts(counts)})
-    pd.DataFrame(icd10_vs_icdsc_rows).to_csv(
-        EVALUATION_BINARY_BASELINES_TABLES_DIR / "icd10_vs_icdsc_thresholds.csv",
-        index=False,
-    )
-
     best_row = summary_df.sort_values("f1", ascending=False).iloc[0]
     report_lines = [
         "Binary baseline evaluation",
@@ -220,6 +199,7 @@ def main() -> None:
         f"predictions_path: {pred_path}",
         f"comparison_input: {REPORT_VS_BASELINE_PATH}",
         "",
+        "primary_baselines: ICDSC>=4, ICD10, composite OR, composite AND",
         f"n_patients: {len(df)}",
         f"best_baseline_by_f1: {best_row['baseline_name']}",
         f"best_baseline_f1: {best_row['f1']}",

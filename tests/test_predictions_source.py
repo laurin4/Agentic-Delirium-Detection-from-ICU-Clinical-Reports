@@ -59,8 +59,9 @@ def test_compare_uses_validation_cohort_file(pred_dir, monkeypatch, tmp_path):
         "PatientenID,has_delir_icd10,max_icdsc,baseline_icd10,"
         "baseline_icdsc_ge_1,baseline_icdsc_ge_2,baseline_icdsc_ge_3,"
         "baseline_icdsc_ge_4,baseline_icdsc_ge_5,baseline_icdsc_0,"
-        "baseline_icdsc_1_to_3,baseline_icdsc_ge_4_grouped,baseline_composite\n"
-        "p1,0,2,0,1,1,0,0,0,0,1,0,0\n",
+        "baseline_icdsc_1_to_3,baseline_icdsc_ge_4_grouped,baseline_composite,"
+        "baseline_composite_or,baseline_composite_and\n"
+        "p1,0,2,0,1,1,0,0,0,0,1,0,0,0,0\n",
         encoding="utf-8",
     )
     out = tmp_path / "cmp.csv"

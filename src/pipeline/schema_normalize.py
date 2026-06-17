@@ -246,6 +246,8 @@ def structured_baseline_output_columns() -> tuple[str, ...]:
         "baseline_icdsc_0",
         "baseline_icdsc_1_to_3",
         "baseline_icdsc_ge_4_grouped",
+        "baseline_composite_or",
+        "baseline_composite_and",
         "baseline_composite",
     )
 

@@ -19,6 +19,8 @@ def _baseline_row(pid: str, **kwargs):
         "baseline_icdsc_1_to_3": 1,
         "baseline_icdsc_ge_4_grouped": 0,
         "baseline_composite": 0,
+        "baseline_composite_or": 0,
+        "baseline_composite_and": 0,
     }
     base.update(kwargs)
     return base

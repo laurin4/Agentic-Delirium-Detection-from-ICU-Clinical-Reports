@@ -17,6 +17,14 @@ from src.pipeline import paths as paths_module
 BaselineCompositeMode = Literal["OR", "AND"]
 VALID_BASELINE_COMPOSITE_MODES: tuple[str, ...] = ("OR", "AND")
 
+# Report-level full-corpus evaluation compares model vs these four baselines only.
+PRIMARY_EVALUATION_BASELINES: tuple[str, ...] = (
+    "baseline_icdsc_ge_4",
+    "baseline_icd10",
+    "baseline_composite_or",
+    "baseline_composite_and",
+)
+
 
 def resolve_baseline_composite_mode(mode: str | None = None) -> BaselineCompositeMode:
     """Return normalized mode from argument or ``paths.BASELINE_COMPOSITE_MODE`` config."""

@@ -27,6 +27,8 @@ REPORT_PREDICTIONS_PATH = FULL_PREDICTIONS_PATH
 # Missing values indicate no baseline row or incomplete baseline data for that PatientenID.
 REQUIRED_BASELINE_COLUMNS = [
     "baseline_composite",
+    "baseline_composite_or",
+    "baseline_composite_and",
     "has_delir_icd10",
     "max_icdsc",
     "baseline_icd10",
@@ -194,6 +196,14 @@ def run_compare(
         evaluable["agreement_report_vs_baseline_composite"] = (
             evaluable["prediction_binary"] == evaluable["baseline_composite"]
         )
+    for composite_col in ("baseline_composite_or", "baseline_composite_and"):
+        if composite_col in evaluable.columns:
+            evaluable[composite_col] = (
+                pd.to_numeric(evaluable[composite_col], errors="coerce").fillna(0).astype(int)
+            )
+            evaluable[f"agreement_report_vs_{composite_col}"] = (
+                evaluable["prediction_binary"] == evaluable[composite_col]
+            )
 
     # Legacy columns kept for backwards compatibility with older analyses.
     evaluable["agreement_report_vs_icdsc"] = evaluable["agreement_report_vs_baseline_icdsc_ge_4"]
