@@ -1,3 +1,14 @@
+"""
+Patient-level binary baseline evaluation (full corpus).
+
+Aggregated rule: model_patient_positive = max(report klasse) per PatientenID.
+Compares against ICDSC>=4, ICD10, composite OR, and composite AND baselines.
+
+Mirrors ``evaluate_predictions`` output layout under outputs/evaluation/patient_level/.
+"""
+
+from __future__ import annotations
+
 import os
 from pathlib import Path
 
@@ -13,19 +24,23 @@ import numpy as np
 import pandas as pd
 
 from src.pipeline.baseline_composite import (
-    PRIMARY_EVALUATION_BASELINES,
     baseline_composite_fp_interpretation_note,
     format_baseline_composite_mode_banner,
 )
+from src.pipeline.evaluate_predictions import (
+    BASELINE_COLUMNS,
+    _binary_confusion,
+    _metrics_from_counts,
+)
 from src.pipeline.paths import (
-    EVALUATION_BINARY_BASELINE_CONFUSION_COUNTS_PATH,
-    EVALUATION_BINARY_BASELINE_REPORT_PATH,
-    EVALUATION_BINARY_BASELINE_SUMMARY_PATH,
-    EVALUATION_BINARY_BASELINES_DIR,
-    EVALUATION_BINARY_BASELINES_PLOTS_DIR,
-    EVALUATION_BINARY_BASELINES_TABLES_DIR,
+    EVALUATION_PATIENT_LEVEL_CONFUSION_COUNTS_PATH,
+    EVALUATION_PATIENT_LEVEL_DIR,
+    EVALUATION_PATIENT_LEVEL_PLOTS_DIR,
+    EVALUATION_PATIENT_LEVEL_REPORT_PATH,
+    EVALUATION_PATIENT_LEVEL_SUMMARY_PATH,
+    EVALUATION_PATIENT_LEVEL_TABLES_DIR,
     EVALUATION_SUMMARY_PATH,
-    REPORT_VS_BASELINE_PATH,
+    PATIENT_VS_BASELINE_PATH,
 )
 from src.pipeline.predictions_source import (
     get_predictions_source,
@@ -33,10 +48,6 @@ from src.pipeline.predictions_source import (
     resolve_predictions_path,
 )
 from src.pipeline.prepare_structured_data import add_binary_baselines
-
-
-# Primary full-run evaluation baselines (ICDSC>=4, ICD10, OR, AND only).
-BASELINE_COLUMNS = list(PRIMARY_EVALUATION_BASELINES)
 
 _BASELINE_PLOT_LABELS = {
     "baseline_icdsc_ge_4": "ICDSC >= 4",
@@ -46,60 +57,19 @@ _BASELINE_PLOT_LABELS = {
 }
 
 
-def safe_div(numerator: float, denominator: float) -> float:
-    return numerator / denominator if denominator else 0.0
-
-
-def _binary_confusion(y_true: pd.Series, y_pred: pd.Series) -> dict:
-    tp = int(((y_pred == 1) & (y_true == 1)).sum())
-    tn = int(((y_pred == 0) & (y_true == 0)).sum())
-    fp = int(((y_pred == 1) & (y_true == 0)).sum())
-    fn = int(((y_pred == 0) & (y_true == 1)).sum())
-    return {"tp": tp, "tn": tn, "fp": fp, "fn": fn}
-
-
-def _metrics_from_counts(counts: dict) -> dict:
-    tp = counts["tp"]
-    tn = counts["tn"]
-    fp = counts["fp"]
-    fn = counts["fn"]
-    total = tp + tn + fp + fn
-    precision = safe_div(tp, tp + fp)
-    recall = safe_div(tp, tp + fn)
-    f1 = safe_div(2 * precision * recall, precision + recall)
-    accuracy = safe_div(tp + tn, total)
-    return {
-        "n_patients": int(total),
-        "accuracy": round(accuracy, 6),
-        "precision": round(precision, 6),
-        "recall": round(recall, 6),
-        "f1": round(f1, 6),
-        "true_positives": tp,
-        "true_negatives": tn,
-        "false_positives": fp,
-        "false_negatives": fn,
-        "confusion_tn": tn,
-        "confusion_fp": fp,
-        "confusion_fn": fn,
-        "confusion_tp": tp,
-        "prediction_positive_count": int(tp + fp),
-        "baseline_positive_count": int(tp + fn),
-    }
-
-
 def _plot_confusion_matrix_binary(counts: dict, baseline_name: str, out_path: Path) -> None:
     cm = np.array([[counts["tn"], counts["fp"]], [counts["fn"], counts["tp"]]])
     fig, ax = plt.subplots(figsize=(4.8, 4.0))
     im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
     ax.figure.colorbar(im, ax=ax)
-    title = f"Confusion: {_BASELINE_PLOT_LABELS.get(baseline_name, baseline_name)}"
+    title = f"Patient-level: {_BASELINE_PLOT_LABELS.get(baseline_name, baseline_name)}"
     ax.set(
         xticks=np.arange(2),
         yticks=np.arange(2),
         xticklabels=["pred_0", "pred_1"],
         yticklabels=["true_0", "true_1"],
         ylabel="Baseline",
-        xlabel="Report text model",
+        xlabel="Report text model (patient)",
         title=title,
     )
     threshold = cm.max() / 2.0 if cm.max() else 0
@@ -113,7 +83,9 @@ def _plot_confusion_matrix_binary(counts: dict, baseline_name: str, out_path: Pa
 
 
 def _plot_distribution_comparison(df: pd.DataFrame, out_path: Path) -> None:
-    labels = ["report_text_model"] + [_BASELINE_PLOT_LABELS.get(c, c) for c in BASELINE_COLUMNS]
+    labels = ["model_patient_positive"] + [
+        _BASELINE_PLOT_LABELS.get(c, c) for c in BASELINE_COLUMNS
+    ]
     positive_counts = [int(df["prediction_binary"].sum())]
     for col in BASELINE_COLUMNS:
         positive_counts.append(int(pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int).sum()))
@@ -121,7 +93,7 @@ def _plot_distribution_comparison(df: pd.DataFrame, out_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(fig_w, 4.8))
     ax.bar(labels, positive_counts, color="#3b82f6")
     ax.set_ylabel("Positive count (class=1)")
-    ax.set_title("Positive class distribution: report text model vs primary baselines")
+    ax.set_title("Patient-level positive distribution: model vs primary baselines")
     ax.tick_params(axis="x", rotation=25)
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)
@@ -132,16 +104,16 @@ def main() -> None:
     pred_path = resolve_predictions_path()
     log_predictions_source(pred_path)
     print(format_baseline_composite_mode_banner())
-    if not REPORT_VS_BASELINE_PATH.exists():
+    if not PATIENT_VS_BASELINE_PATH.exists():
         raise FileNotFoundError(
-            f"Comparison file not found: {REPORT_VS_BASELINE_PATH}. "
-            f"Run 'python -m src.pipeline.compare_reports_vs_baseline' first "
+            f"Patient comparison file not found: {PATIENT_VS_BASELINE_PATH}. "
+            f"Run 'python -m src.pipeline.compare_patients_vs_baseline' first "
             f"(with PREDICTIONS_SOURCE={get_predictions_source()} if using cohort predictions)."
         )
 
-    df = pd.read_csv(REPORT_VS_BASELINE_PATH)
-    if "klasse" not in df.columns:
-        raise ValueError("Spalte 'klasse' fehlt.")
+    df = pd.read_csv(PATIENT_VS_BASELINE_PATH)
+    if "model_patient_positive" not in df.columns:
+        raise ValueError("Spalte 'model_patient_positive' fehlt.")
     if "PatientenID" not in df.columns:
         raise ValueError("Spalte 'PatientenID' fehlt.")
 
@@ -149,18 +121,19 @@ def main() -> None:
     missing_baseline_columns = [col for col in BASELINE_COLUMNS if col not in df.columns]
     if missing_baseline_columns:
         raise ValueError(
-            "Missing required binary baseline columns for evaluation: "
+            "Missing required binary baseline columns for patient evaluation: "
             + ", ".join(missing_baseline_columns)
         )
-    df["klasse"] = pd.to_numeric(df["klasse"], errors="coerce")
-    df = df[df["klasse"].isin([0, 1])].copy()
-    if df.empty:
-        raise ValueError("Keine gueltigen binaeren Vorhersagen in 'klasse' gefunden (erwartet 0/1).")
-    df["prediction_binary"] = df["klasse"].astype(int)
 
-    EVALUATION_BINARY_BASELINES_DIR.mkdir(parents=True, exist_ok=True)
-    EVALUATION_BINARY_BASELINES_TABLES_DIR.mkdir(parents=True, exist_ok=True)
-    EVALUATION_BINARY_BASELINES_PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+    df["model_patient_positive"] = pd.to_numeric(df["model_patient_positive"], errors="coerce")
+    df = df[df["model_patient_positive"].isin([0, 1])].copy()
+    if df.empty:
+        raise ValueError("Keine gueltigen binaeren Patienten-Vorhersagen gefunden (erwartet 0/1).")
+    df["prediction_binary"] = df["model_patient_positive"].astype(int)
+
+    EVALUATION_PATIENT_LEVEL_DIR.mkdir(parents=True, exist_ok=True)
+    EVALUATION_PATIENT_LEVEL_TABLES_DIR.mkdir(parents=True, exist_ok=True)
+    EVALUATION_PATIENT_LEVEL_PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 
     summary_rows = []
     confusion_rows = []
@@ -177,55 +150,70 @@ def main() -> None:
         _plot_confusion_matrix_binary(
             counts=counts,
             baseline_name=baseline_name,
-            out_path=EVALUATION_BINARY_BASELINES_PLOTS_DIR / f"confusion_matrix_{baseline_name}.png",
+            out_path=EVALUATION_PATIENT_LEVEL_PLOTS_DIR / f"confusion_matrix_{baseline_name}.png",
         )
 
     summary_df = pd.DataFrame(summary_rows)
     confusion_df = pd.DataFrame(confusion_rows)
-    summary_df.to_csv(EVALUATION_BINARY_BASELINE_SUMMARY_PATH, index=False)
-    confusion_df.to_csv(EVALUATION_BINARY_BASELINE_CONFUSION_COUNTS_PATH, index=False)
+    summary_df.to_csv(EVALUATION_PATIENT_LEVEL_SUMMARY_PATH, index=False)
+    confusion_df.to_csv(EVALUATION_PATIENT_LEVEL_CONFUSION_COUNTS_PATH, index=False)
     _plot_distribution_comparison(
         df=df,
-        out_path=EVALUATION_BINARY_BASELINES_PLOTS_DIR / "class_distribution_comparison.png",
+        out_path=EVALUATION_PATIENT_LEVEL_PLOTS_DIR / "class_distribution_comparison.png",
     )
 
     best_row = summary_df.sort_values("f1", ascending=False).iloc[0]
     report_lines = [
-        "Binary baseline evaluation",
+        "Binary baseline evaluation (patient level)",
         "",
         format_baseline_composite_mode_banner(),
         "",
         f"PREDICTIONS_SOURCE: {get_predictions_source()}",
         f"predictions_path: {pred_path}",
-        f"comparison_input: {REPORT_VS_BASELINE_PATH}",
+        f"comparison_input: {PATIENT_VS_BASELINE_PATH}",
         "",
+        "aggregation_rule: model_patient_positive = max(report klasse) per PatientenID",
         "primary_baselines: ICDSC>=4, ICD10, composite OR, composite AND",
-        f"n_reports: {len(df)}",
+        f"n_patients: {len(df)}",
         f"best_baseline_by_f1: {best_row['baseline_name']}",
         f"best_baseline_f1: {best_row['f1']}",
         "",
+        "Note: Report-level evaluation lives under outputs/evaluation/binary_baselines/.",
+        "Patient-level metrics here use one row per PatientenID (no duplicate baseline rows).",
+        "",
         baseline_composite_fp_interpretation_note(),
         "",
-        f"summary_table: {EVALUATION_BINARY_BASELINE_SUMMARY_PATH}",
-        f"confusion_counts: {EVALUATION_BINARY_BASELINE_CONFUSION_COUNTS_PATH}",
-        f"plots_dir: {EVALUATION_BINARY_BASELINES_PLOTS_DIR}",
+        f"summary_table: {EVALUATION_PATIENT_LEVEL_SUMMARY_PATH}",
+        f"confusion_counts: {EVALUATION_PATIENT_LEVEL_CONFUSION_COUNTS_PATH}",
+        f"plots_dir: {EVALUATION_PATIENT_LEVEL_PLOTS_DIR}",
     ]
-    EVALUATION_BINARY_BASELINE_REPORT_PATH.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
+    EVALUATION_PATIENT_LEVEL_REPORT_PATH.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
 
     combined_rows = [
-        {"metric": "evaluation_mode", "value": "binary_baselines_report_level"},
-        {"metric": "n_reports", "value": str(len(df))},
+        {"metric": "evaluation_mode", "value": "binary_baselines_patient_level"},
+        {"metric": "n_patients", "value": str(len(df))},
         {"metric": "best_baseline_by_f1", "value": str(best_row["baseline_name"])},
         {"metric": "best_baseline_f1", "value": str(best_row["f1"])},
-        {"metric": "binary_baseline_summary_csv", "value": str(EVALUATION_BINARY_BASELINE_SUMMARY_PATH)},
-        {"metric": "binary_baseline_confusion_csv", "value": str(EVALUATION_BINARY_BASELINE_CONFUSION_COUNTS_PATH)},
+        {
+            "metric": "patient_level_summary_csv",
+            "value": str(EVALUATION_PATIENT_LEVEL_SUMMARY_PATH),
+        },
+        {
+            "metric": "patient_level_confusion_csv",
+            "value": str(EVALUATION_PATIENT_LEVEL_CONFUSION_COUNTS_PATH),
+        },
     ]
-    pd.DataFrame(combined_rows).to_csv(EVALUATION_SUMMARY_PATH, index=False)
+    if EVALUATION_SUMMARY_PATH.exists():
+        existing = pd.read_csv(EVALUATION_SUMMARY_PATH)
+        combined = pd.concat([existing, pd.DataFrame(combined_rows)], ignore_index=True)
+    else:
+        combined = pd.DataFrame(combined_rows)
+    combined.to_csv(EVALUATION_SUMMARY_PATH, index=False)
 
-    print(f"Gespeichert: {EVALUATION_BINARY_BASELINE_SUMMARY_PATH}")
-    print(f"Gespeichert: {EVALUATION_BINARY_BASELINE_CONFUSION_COUNTS_PATH}")
-    print(f"Plots: {EVALUATION_BINARY_BASELINES_PLOTS_DIR}")
-    print(f"Report: {EVALUATION_BINARY_BASELINE_REPORT_PATH}")
+    print(f"Gespeichert: {EVALUATION_PATIENT_LEVEL_SUMMARY_PATH}")
+    print(f"Gespeichert: {EVALUATION_PATIENT_LEVEL_CONFUSION_COUNTS_PATH}")
+    print(f"Plots: {EVALUATION_PATIENT_LEVEL_PLOTS_DIR}")
+    print(f"Report: {EVALUATION_PATIENT_LEVEL_REPORT_PATH}")
 
 
 if __name__ == "__main__":

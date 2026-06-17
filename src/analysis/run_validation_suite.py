@@ -41,6 +41,8 @@ def main() -> None:
     )
     _run_module("src.pipeline.compare_reports_vs_baseline")
     _run_module("src.pipeline.evaluate_predictions")
+    _run_module("src.pipeline.compare_patients_vs_baseline")
+    _run_module("src.pipeline.evaluate_predictions_patient_level")
     _run_module("src.analysis.create_patient_reporttype_matrix")
     _run_module("src.analysis.plot_patient_reporttype_matrix")
     _run_module("src.analysis.export_patient_validation_cohort")
