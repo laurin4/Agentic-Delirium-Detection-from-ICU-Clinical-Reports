@@ -26,9 +26,11 @@ def interpret_signals_llm(
     signals: Dict[str, Any],
     patient_id: str = "",
     report_name: str = "",
+    *,
+    prompt_version: str | None = None,
 ) -> Dict[str, Any]:
 
-    system_prompt = load_prompt()
+    system_prompt = load_interpretation_prompt(prompt_version)
 
     signals_json = json.dumps(signals, ensure_ascii=False, indent=2)
 
