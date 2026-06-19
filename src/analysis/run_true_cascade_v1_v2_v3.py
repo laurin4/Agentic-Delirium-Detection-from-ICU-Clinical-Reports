@@ -1,12 +1,12 @@
 """
-Experimental V1→V2→V3 cascade pipeline for the frozen manual validation cohort.
+Experimental V1→stage2→V3 cascade pipeline for the frozen manual validation cohort.
 
 Report flow:
   all reports → V1 (full inference)
   V1 negative → final negative
-  V1 positive → V2 (full inference on original text)
-  V2 positive → final positive
-  V2 negative → V3 adjudicator → final positive/negative
+  V1 positive → stage2 (V2 classifier or cascade reviewer on original text)
+  stage2 positive → final positive
+  stage2 negative → V3 adjudicator → final positive/negative
 
 Patient aggregation: max(report_predictions) on complete manual patients.
 """
@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -30,9 +31,16 @@ from src.analysis.final_manual_validation_evaluation import (
     primary_evaluation_cohort,
 )
 from src.analysis.manual_report_labels import merge_manual_report_labels
-from src.pipeline.cascade_report_inference import infer_report_with_prompt_version
+from src.pipeline.cascade_report_inference import (
+    STAGE2_MODE_CASCADE_REVIEWER,
+    STAGE2_MODE_V2,
+    infer_report_stage2,
+    infer_report_with_prompt_version,
+    normalize_stage2_mode,
+)
 from src.pipeline.frozen_cohort_inference import build_pipeline_records_from_frozen_cohort
 from src.pipeline.paths import (
+    CASCADE_REVIEWER_RUN_01_DIR,
     CASCADE_V1_V2_V3_RUN_01_DIR,
     FROZEN_MANUAL_REPORT_LABELS_PATH,
     FROZEN_PATIENT_VALIDATION_COHORT_PATH,
@@ -48,15 +56,16 @@ LOGGER = logging.getLogger(__name__)
 
 V1_CHECKPOINT = "checkpoints/v1_inference.jsonl"
 V2_CHECKPOINT = "checkpoints/v2_inference.jsonl"
+CASCADE_REVIEWER_CHECKPOINT = "checkpoints/cascade_reviewer_inference.jsonl"
 V3_OUTPUTS = "v3_outputs.jsonl"
 
-CASCADE_ERROR_COLUMNS: tuple[str, ...] = (
+STAGE_ERROR_COLUMNS: tuple[str, ...] = (
     "validation_patient_id",
     "PatientenID",
     MANUAL_GT_COL,
     "cascade_patient_positive",
     "v1_patient_positive",
-    "v2_patient_positive",
+    "stage2_patient_positive",
     "baseline_icdsc_ge_4",
     "baseline_icd10",
     "baseline_composite_or",
@@ -68,12 +77,26 @@ CASCADE_ERROR_COLUMNS: tuple[str, ...] = (
 COMPARISON_METHODS: tuple[tuple[str, str], ...] = (
     ("cascade_patient_positive", "cascade"),
     ("v1_patient_positive", "v1"),
+    ("stage2_patient_positive", "stage2"),
     ("v2_patient_positive", "v2"),
     ("baseline_icdsc_ge_4", "icdsc"),
     ("baseline_icd10", "icd10"),
     ("baseline_composite_or", "composite_or"),
     ("baseline_composite_and", "composite_and"),
 )
+
+
+def stage2_checkpoint_name(stage2_mode: str) -> str:
+    mode = normalize_stage2_mode(stage2_mode)
+    if mode == STAGE2_MODE_V2:
+        return V2_CHECKPOINT
+    return CASCADE_REVIEWER_CHECKPOINT
+
+
+def default_output_dir_for_stage2_mode(stage2_mode: str) -> Path:
+    if normalize_stage2_mode(stage2_mode) == STAGE2_MODE_CASCADE_REVIEWER:
+        return CASCADE_REVIEWER_RUN_01_DIR
+    return CASCADE_V1_V2_V3_RUN_01_DIR
 
 
 def _norm_id(value: object) -> str:
@@ -105,6 +128,32 @@ def append_jsonl(path: Path, row: Dict[str, Any]) -> None:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def seed_v1_checkpoint_if_needed(
+    output_dir: Path,
+    *,
+    resume: bool,
+    v1_seed_dir: Optional[Path] = None,
+) -> bool:
+    """
+    Copy V1 checkpoint from a prior run when resuming a new output folder.
+
+    Returns True if a seed copy was performed.
+    """
+    if not resume:
+        return False
+    dest = output_dir / V1_CHECKPOINT
+    if dest.exists():
+        return False
+    seed_dir = v1_seed_dir or CASCADE_V1_V2_V3_RUN_01_DIR
+    src = seed_dir / V1_CHECKPOINT
+    if not src.exists() or src.resolve() == dest.resolve():
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+    LOGGER.info("Seeded V1 checkpoint from %s -> %s", src, dest)
+    return True
+
+
 def _binary_klasse(row: Dict[str, Any]) -> int:
     return int(row.get("klasse") or 0)
 
@@ -132,32 +181,42 @@ def run_cascade_inference(
     *,
     dry_run: bool = False,
     resume: bool = False,
+    stage2_mode: str = STAGE2_MODE_V2,
+    max_stage2: Optional[int] = None,
     max_v3: Optional[int] = None,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, int]]:
+    v1_seed_dir: Optional[Path] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, int]]:
     """
-    Execute cascade stages. Returns report rows, v3 queue metadata, and stage counts.
+    Execute cascade stages. Returns report rows, stage2 queue, v3 queue metadata, and stage counts.
     """
+    mode = normalize_stage2_mode(stage2_mode)
+    seed_v1_checkpoint_if_needed(output_dir, resume=resume, v1_seed_dir=v1_seed_dir)
+
     v1_path = output_dir / V1_CHECKPOINT
-    v2_path = output_dir / V2_CHECKPOINT
+    stage2_path = output_dir / stage2_checkpoint_name(mode)
     v3_path = output_dir / V3_OUTPUTS
 
     v1_done = load_jsonl_index(v1_path) if resume else {}
-    v2_done = load_jsonl_index(v2_path) if resume else {}
+    stage2_done = load_jsonl_index(stage2_path) if resume else {}
     v3_done = load_jsonl_index(v3_path) if resume else {}
 
     report_rows: List[Dict[str, Any]] = []
+    stage2_queue_rows: List[Dict[str, Any]] = []
     v3_queue_rows: List[Dict[str, Any]] = []
     counts = {
         "n_reports": len(records),
         "v1_negative_final": 0,
-        "v2_confirmed_final": 0,
+        "v1_positive_to_stage2": 0,
+        "stage2_confirmed_final": 0,
         "v3_adjudicated_final": 0,
-        "v1_positive_to_v2": 0,
         "v3_queue": 0,
         "v3_calls_planned": 0,
         "v3_calls_made": 0,
+        "stage2_calls_made": 0,
     }
+    stage2_calls_made = 0
     v3_calls_made = 0
+    stage2_stage_label = mode
 
     for record in records:
         report_id = _norm_id(record.get(VALIDATION_REPORT_ID_COL))
@@ -176,72 +235,88 @@ def run_cascade_inference(
         v1_klasse = _binary_klasse(v1_row)
         cascade_stage = "v1_negative"
         cascade_klasse = 0
-        v2_row: Optional[Dict[str, Any]] = None
+        stage2_row: Optional[Dict[str, Any]] = None
         v3_row: Optional[Dict[str, Any]] = None
 
         if v1_klasse == 1:
-            counts["v1_positive_to_v2"] += 1
-            if report_id in v2_done:
-                v2_row = v2_done[report_id].get("full_row") or v2_done[report_id]
+            counts["v1_positive_to_stage2"] += 1
+            queue_meta = {
+                VALIDATION_REPORT_ID_COL: report_id,
+                VALIDATION_PATIENT_ID_COL: _norm_id(record.get(VALIDATION_PATIENT_ID_COL)),
+                "PatientenID": _norm_id(record.get("PatientenID")),
+                "bericht": _norm_id(record.get("bericht")),
+                "v1_klasse": v1_klasse,
+                "stage2_mode": mode,
+            }
+            stage2_queue_rows.append(queue_meta)
+
+            if report_id in stage2_done:
+                stage2_row = stage2_done[report_id].get("full_row") or stage2_done[report_id]
             elif dry_run:
-                v2_row = {"klasse": 0, "status": "dry_run"}
+                stage2_row = {"klasse": 0, "status": "dry_run", "prompt_version": mode}
+            elif max_stage2 is not None and stage2_calls_made >= max_stage2:
+                cascade_stage = "stage2_pending"
+                cascade_klasse = pd.NA  # type: ignore[assignment]
             else:
-                v2_row = infer_report_with_prompt_version(record, "v2")
-                append_jsonl(v2_path, _stage_row("v2", report_id, v2_row))
-                v2_done[report_id] = _stage_row("v2", report_id, v2_row)
+                stage2_row = infer_report_stage2(record, mode)
+                append_jsonl(stage2_path, _stage_row(stage2_stage_label, report_id, stage2_row))
+                stage2_done[report_id] = _stage_row(stage2_stage_label, report_id, stage2_row)
+                stage2_calls_made += 1
+                counts["stage2_calls_made"] += 1
 
-            v2_klasse = _binary_klasse(v2_row)
-            if v2_klasse == 1:
-                cascade_stage = "v2_confirmed"
-                cascade_klasse = 1
-                counts["v2_confirmed_final"] += 1
-            else:
-                counts["v3_queue"] += 1
-                queue_meta = {
-                    VALIDATION_REPORT_ID_COL: report_id,
-                    VALIDATION_PATIENT_ID_COL: _norm_id(record.get(VALIDATION_PATIENT_ID_COL)),
-                    "PatientenID": _norm_id(record.get("PatientenID")),
-                    "bericht": _norm_id(record.get("bericht")),
-                    "v1_klasse": v1_klasse,
-                    "v2_klasse": v2_klasse,
-                }
-                v3_queue_rows.append(queue_meta)
-
-                if report_id in v3_done:
-                    v3_row = v3_done[report_id]
-                    cascade_klasse = _binary_klasse(v3_row)
-                    cascade_stage = "v3_adjudicated"
-                    counts["v3_adjudicated_final"] += 1
-                elif dry_run:
-                    counts["v3_calls_planned"] += 1
-                    cascade_stage = "v3_pending"
-                    cascade_klasse = pd.NA  # type: ignore[assignment]
+            if stage2_row is not None:
+                stage2_klasse = _binary_klasse(stage2_row)
+                if stage2_klasse == 1:
+                    cascade_stage = "stage2_confirmed"
+                    cascade_klasse = 1
+                    counts["stage2_confirmed_final"] += 1
                 else:
-                    if max_v3 is not None and v3_calls_made >= max_v3:
-                        cascade_stage = "v3_pending"
-                        cascade_klasse = pd.NA  # type: ignore[assignment]
-                    else:
-                        counts["v3_calls_planned"] += 1
-                        v3_result = adjudicate_cascade_v3(
-                            str(record.get("report_text", "") or ""),
-                            v1_output=v1_row,
-                            v2_output=v2_row,
-                            patient_id=_norm_id(record.get("PatientenID")),
-                            report_name=_norm_id(record.get("bericht")),
-                        )
-                        v3_row = {
-                            VALIDATION_REPORT_ID_COL: report_id,
-                            **v3_result,
-                        }
-                        append_jsonl(v3_path, v3_row)
-                        v3_done[report_id] = v3_row
-                        v3_calls_made += 1
-                        counts["v3_calls_made"] += 1
+                    counts["v3_queue"] += 1
+                    v3_meta = {
+                        **queue_meta,
+                        "stage2_klasse": stage2_klasse,
+                    }
+                    v3_queue_rows.append(v3_meta)
+
+                    if report_id in v3_done:
+                        v3_row = v3_done[report_id]
                         cascade_klasse = _binary_klasse(v3_row)
                         cascade_stage = "v3_adjudicated"
                         counts["v3_adjudicated_final"] += 1
+                    elif dry_run:
+                        counts["v3_calls_planned"] += 1
+                        cascade_stage = "v3_pending"
+                        cascade_klasse = pd.NA  # type: ignore[assignment]
+                    else:
+                        if max_v3 is not None and v3_calls_made >= max_v3:
+                            cascade_stage = "v3_pending"
+                            cascade_klasse = pd.NA  # type: ignore[assignment]
+                        else:
+                            counts["v3_calls_planned"] += 1
+                            v3_result = adjudicate_cascade_v3(
+                                str(record.get("report_text", "") or ""),
+                                v1_output=v1_row,
+                                v2_output=stage2_row,
+                                patient_id=_norm_id(record.get("PatientenID")),
+                                report_name=_norm_id(record.get("bericht")),
+                            )
+                            v3_row = {
+                                VALIDATION_REPORT_ID_COL: report_id,
+                                **v3_result,
+                            }
+                            append_jsonl(v3_path, v3_row)
+                            v3_done[report_id] = v3_row
+                            v3_calls_made += 1
+                            counts["v3_calls_made"] += 1
+                            cascade_klasse = _binary_klasse(v3_row)
+                            cascade_stage = "v3_adjudicated"
+                            counts["v3_adjudicated_final"] += 1
         else:
             counts["v1_negative_final"] += 1
+
+        stage2_klasse_val: Any = pd.NA
+        if stage2_row is not None:
+            stage2_klasse_val = _binary_klasse(stage2_row)
 
         report_rows.append(
             {
@@ -250,20 +325,33 @@ def run_cascade_inference(
                 "PatientenID": _norm_id(record.get("PatientenID")),
                 "bericht": _norm_id(record.get("bericht")),
                 "bertyp": _norm_id(record.get("bertyp")),
+                "stage2_mode": mode,
                 "v1_klasse": v1_klasse,
-                "v2_klasse": _binary_klasse(v2_row) if v2_row is not None else pd.NA,
+                "stage2_klasse": stage2_klasse_val,
+                "v2_klasse": stage2_klasse_val if mode == STAGE2_MODE_V2 else pd.NA,
                 "v3_klasse": _binary_klasse(v3_row) if v3_row is not None else pd.NA,
                 "cascade_klasse": cascade_klasse,
                 "cascade_stage": cascade_stage,
                 "v1_signalstaerke": v1_row.get("signalstaerke", ""),
-                "v2_signalstaerke": v2_row.get("signalstaerke", "") if v2_row else "",
+                "stage2_signalstaerke": stage2_row.get("signalstaerke", "") if stage2_row else "",
+                "v2_signalstaerke": stage2_row.get("signalstaerke", "") if stage2_row and mode == STAGE2_MODE_V2 else "",
                 "v3_signalstaerke": v3_row.get("signalstaerke", "") if v3_row else "",
                 "v1_decision_rule": v1_row.get("decision_rule_applied", ""),
-                "v2_decision_rule": v2_row.get("decision_rule_applied", "") if v2_row else "",
+                "stage2_decision_rule": stage2_row.get("decision_rule_applied", "") if stage2_row else "",
+                "v2_decision_rule": stage2_row.get("decision_rule_applied", "") if stage2_row and mode == STAGE2_MODE_V2 else "",
             }
         )
 
-    return report_rows, v3_queue_rows, counts
+    return report_rows, stage2_queue_rows, v3_queue_rows, counts
+
+
+def effective_stage2_report_klasse(v1_klasse: int, stage2_klasse: Any) -> Any:
+    """Stage2 outcome at report level: V1-negative reports are not sent to stage2."""
+    if int(v1_klasse) == 0:
+        return 0
+    if stage2_klasse is None or (isinstance(stage2_klasse, float) and pd.isna(stage2_klasse)):
+        return pd.NA
+    return int(stage2_klasse)
 
 
 def aggregate_patient_predictions(
@@ -306,11 +394,18 @@ def build_patient_evaluation_table(
     merged = merge_manual_report_labels(cohort, labels, log_context="cascade evaluation")
     merged = attach_structured_baseline(merged, baseline_path)
 
-    cascade_cols = report_df[
+    report_work = report_df.copy()
+    report_work["effective_stage2_klasse"] = report_work.apply(
+        lambda r: effective_stage2_report_klasse(r["v1_klasse"], r.get("stage2_klasse")),
+        axis=1,
+    )
+
+    cascade_cols = report_work[
         [
             VALIDATION_REPORT_ID_COL,
             "cascade_klasse",
             "v1_klasse",
+            "effective_stage2_klasse",
         ]
     ].copy()
     merged = merged.merge(cascade_cols, on=VALIDATION_REPORT_ID_COL, how="left")
@@ -339,6 +434,7 @@ def build_patient_evaluation_table(
 
         cascade_pred = pd.to_numeric(grp["cascade_klasse"], errors="coerce")
         v1_pred = pd.to_numeric(grp["v1_klasse"], errors="coerce")
+        stage2_pred = pd.to_numeric(grp["effective_stage2_klasse"], errors="coerce")
         v2_pred = pd.to_numeric(grp["v2_standalone_klasse"], errors="coerce")
 
         def _patient_max(series: pd.Series) -> Any:
@@ -376,6 +472,7 @@ def build_patient_evaluation_table(
                 MANUAL_GT_COL: derived,
                 "cascade_patient_positive": _patient_max(cascade_pred),
                 "v1_patient_positive": _patient_max(v1_pred),
+                "stage2_patient_positive": _patient_max(stage2_pred),
                 "v2_patient_positive": _patient_max(v2_pred),
                 **baseline,
             }
@@ -403,20 +500,63 @@ def evaluate_cascade_methods(patient_gt: pd.DataFrame) -> Tuple[pd.DataFrame, pd
     return pd.DataFrame(metric_rows), pd.DataFrame(confusion_rows)
 
 
-def export_cascade_error_slices(complete: pd.DataFrame, output_dir: Path) -> None:
+def export_stage_evaluation(
+    patient_gt: pd.DataFrame,
+    pred_col: str,
+    prefix: str,
+    output_dir: Path,
+    *,
+    error_columns: Sequence[str] = STAGE_ERROR_COLUMNS,
+) -> None:
+    """Export per-stage patient metrics, confusion counts, and TP/FP/TN/FN slices."""
+    complete = primary_evaluation_cohort(patient_gt)
+    if pred_col not in complete.columns:
+        LOGGER.warning("Skipping stage export %s: column %s missing", prefix, pred_col)
+        return
+
+    manual = complete[MANUAL_GT_COL]
+    metrics = compute_method_metrics(manual, complete[pred_col], method_name=prefix)
+    pd.DataFrame([metrics]).to_csv(output_dir / f"{prefix}_patient_metrics.csv", index=False)
+    pd.DataFrame(
+        [{"method": prefix, "tp": metrics["tp"], "fp": metrics["fp"], "tn": metrics["tn"], "fn": metrics["fn"]}]
+    ).to_csv(output_dir / f"{prefix}_confusion_counts.csv", index=False)
+
     work = complete.copy()
-    work["cascade_confusion_group"] = work.apply(
-        lambda r: assign_confusion_group(
-            r.get("cascade_patient_positive"),
-            r.get(MANUAL_GT_COL),
-        ),
+    work[f"{prefix}_confusion_group"] = work.apply(
+        lambda r: assign_confusion_group(r.get(pred_col), r.get(MANUAL_GT_COL)),
         axis=1,
     )
     for label in ("TP", "FP", "TN", "FN"):
-        subset = work[work["cascade_confusion_group"] == label]
-        rows = [{col: subset.loc[idx].get(col, "") for col in CASCADE_ERROR_COLUMNS} for idx in subset.index]
-        out = pd.DataFrame(rows, columns=list(CASCADE_ERROR_COLUMNS))
-        out.to_csv(output_dir / f"cascade_{label}.csv", index=False)
+        subset = work[work[f"{prefix}_confusion_group"] == label]
+        rows = [{col: subset.loc[idx].get(col, "") for col in error_columns} for idx in subset.index]
+        out = pd.DataFrame(rows, columns=list(error_columns))
+        out.to_csv(output_dir / f"{prefix}_{label}.csv", index=False)
+
+
+def export_cascade_error_slices(complete: pd.DataFrame, output_dir: Path) -> None:
+    export_stage_evaluation(
+        complete,
+        "cascade_patient_positive",
+        "cascade",
+        output_dir,
+    )
+
+
+def format_routing_summary(counts: Dict[str, int], *, stage2_mode: str) -> str:
+    lines = [
+        "Cascade routing summary",
+        "=" * 40,
+        f"stage2_mode={stage2_mode}",
+        f"n_reports={counts.get('n_reports', 0)}",
+        f"v1_negative_final={counts.get('v1_negative_final', 0)}",
+        f"v1_positive_to_stage2={counts.get('v1_positive_to_stage2', 0)}",
+        f"stage2_confirmed_final={counts.get('stage2_confirmed_final', 0)}",
+        f"v3_queue={counts.get('v3_queue', 0)}",
+        f"v3_adjudicated_final={counts.get('v3_adjudicated_final', 0)}",
+        f"v3_calls_made={counts.get('v3_calls_made', 0)}",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def format_cascade_report(
@@ -425,25 +565,28 @@ def format_cascade_report(
     *,
     output_dir: Path,
     dry_run: bool,
+    stage2_mode: str,
     n_complete: int,
     n_total_patients: int,
 ) -> str:
     lines = [
-        "True cascade V1→V2→V3 manual validation evaluation",
+        "True cascade V1→stage2→V3 manual validation evaluation",
         "=" * 52,
         "",
         f"output_dir={output_dir}",
+        f"stage2_mode={stage2_mode}",
         f"dry_run={dry_run}",
         "",
         "Report-level cascade counts",
         "-" * 52,
         f"n_reports={counts.get('n_reports', 0)}",
         f"v1_negative_final={counts.get('v1_negative_final', 0)}",
-        f"v1_positive_to_v2={counts.get('v1_positive_to_v2', 0)}",
-        f"v2_confirmed_final={counts.get('v2_confirmed_final', 0)}",
+        f"v1_positive_to_stage2={counts.get('v1_positive_to_stage2', 0)}",
+        f"stage2_confirmed_final={counts.get('stage2_confirmed_final', 0)}",
         f"v3_queue={counts.get('v3_queue', 0)}",
         f"v3_adjudicated_final={counts.get('v3_adjudicated_final', 0)}",
         f"v3_calls_made={counts.get('v3_calls_made', 0)}",
+        f"stage2_calls_made={counts.get('stage2_calls_made', 0)}",
         "",
         "Patient-level evaluation (complete manual patients only)",
         "-" * 52,
@@ -466,13 +609,20 @@ def format_cascade_report(
 
 
 def run_true_cascade(
-    output_dir: Path = CASCADE_V1_V2_V3_RUN_01_DIR,
+    output_dir: Optional[Path] = None,
     *,
     dry_run: bool = False,
     resume: bool = False,
+    stage2_mode: str = STAGE2_MODE_V2,
+    max_stage2: Optional[int] = None,
     max_v3: Optional[int] = None,
     archived_v2_path: Optional[Path] = None,
+    v1_seed_dir: Optional[Path] = None,
 ) -> str:
+    mode = normalize_stage2_mode(stage2_mode)
+    if output_dir is None:
+        output_dir = default_output_dir_for_stage2_mode(mode)
+
     if not FROZEN_PATIENT_VALIDATION_COHORT_PATH.exists():
         raise FileNotFoundError(
             f"Frozen validation cohort missing: {FROZEN_PATIENT_VALIDATION_COHORT_PATH}. "
@@ -485,36 +635,39 @@ def run_true_cascade(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     records = build_pipeline_records_from_frozen_cohort()
-    report_rows, v3_queue_rows, counts = run_cascade_inference(
+    report_rows, stage2_queue_rows, v3_queue_rows, counts = run_cascade_inference(
         records,
         output_dir,
         dry_run=dry_run,
         resume=resume,
+        stage2_mode=mode,
+        max_stage2=max_stage2,
         max_v3=max_v3,
+        v1_seed_dir=v1_seed_dir,
     )
 
     report_df = pd.DataFrame(report_rows)
     report_df.to_csv(output_dir / "cascade_report_predictions.csv", index=False)
 
-    queue_df = pd.DataFrame(v3_queue_rows)
-    queue_df.to_csv(output_dir / "v3_queue.csv", index=False)
+    pd.DataFrame(stage2_queue_rows).to_csv(output_dir / "stage2_queue.csv", index=False)
+    pd.DataFrame(v3_queue_rows).to_csv(output_dir / "v3_queue.csv", index=False)
+    (output_dir / "routing_summary.txt").write_text(
+        format_routing_summary(counts, stage2_mode=mode),
+        encoding="utf-8",
+    )
 
     if dry_run or report_df["cascade_klasse"].isna().any():
         pending = int(report_df["cascade_klasse"].isna().sum())
-        v2_path = archived_v2_path or (
-            get_prompt_run_dir(version="v2", run_id="run_01")
-            / "predictions"
-            / "validation_cohort_predictions.csv"
-        )
         report_text = format_cascade_report(
             counts,
             pd.DataFrame(),
             output_dir=output_dir,
             dry_run=dry_run,
+            stage2_mode=mode,
             n_complete=0,
             n_total_patients=0,
         )
-        report_text += f"\nPending cascade_klasse on {pending} reports (V3 not run or dry-run).\n"
+        report_text += f"\nPending cascade_klasse on {pending} reports (stage2/V3 not run or dry-run).\n"
         (output_dir / "report.txt").write_text(report_text, encoding="utf-8")
         return report_text
 
@@ -530,13 +683,17 @@ def run_true_cascade(
     metrics, confusion = evaluate_cascade_methods(patient_gt)
     metrics.to_csv(output_dir / "final_metrics_summary.csv", index=False)
     confusion.to_csv(output_dir / "confusion_counts.csv", index=False)
-    export_cascade_error_slices(complete, output_dir)
+
+    export_stage_evaluation(patient_gt, "v1_patient_positive", "v1", output_dir)
+    export_stage_evaluation(patient_gt, "stage2_patient_positive", "stage2", output_dir)
+    export_cascade_error_slices(patient_gt, output_dir)
 
     report_text = format_cascade_report(
         counts,
         metrics,
         output_dir=output_dir,
         dry_run=dry_run,
+        stage2_mode=mode,
         n_complete=len(complete),
         n_total_patients=len(patient_gt),
     )
@@ -546,13 +703,13 @@ def run_true_cascade(
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run experimental V1→V2→V3 cascade on frozen validation cohort."
+        description="Run experimental V1→stage2→V3 cascade on frozen validation cohort."
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=CASCADE_V1_V2_V3_RUN_01_DIR,
-        help="Output directory (default: cascade_v1_v2_v3/run_01)",
+        default=None,
+        help="Output directory (default: run_01 or cascade_reviewer_run_01 by stage2-mode).",
     )
     parser.add_argument(
         "--dry-run",
@@ -562,7 +719,20 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Resume from checkpoints/v1_inference.jsonl, v2_inference.jsonl, v3_outputs.jsonl.",
+        help="Resume from checkpoints (V1 may be seeded from run_01 when missing).",
+    )
+    parser.add_argument(
+        "--stage2-mode",
+        choices=[STAGE2_MODE_V2, STAGE2_MODE_CASCADE_REVIEWER],
+        default=STAGE2_MODE_V2,
+        help="Second stage: standard V2 classifier (default) or cascade reviewer.",
+    )
+    parser.add_argument(
+        "--max-stage2",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Process at most N new stage2 inferences in this run.",
     )
     parser.add_argument(
         "--max-v3",
@@ -577,17 +747,30 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=None,
         help="Read-only V2 standalone predictions for comparison (default: prompt_runs/v2/run_01).",
     )
+    parser.add_argument(
+        "--v1-seed-dir",
+        type=Path,
+        default=None,
+        help="Source run folder for V1 checkpoint seeding (default: cascade run_01).",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
     args = parse_args(argv)
+    output_dir = args.output_dir
+    if output_dir is None:
+        output_dir = default_output_dir_for_stage2_mode(args.stage2_mode)
+
     report = run_true_cascade(
-        output_dir=args.output_dir,
+        output_dir=output_dir,
         dry_run=args.dry_run,
         resume=args.resume,
+        stage2_mode=args.stage2_mode,
+        max_stage2=args.max_stage2,
         max_v3=args.max_v3,
         archived_v2_path=args.archived_v2_path,
+        v1_seed_dir=args.v1_seed_dir,
     )
     print(report)
 

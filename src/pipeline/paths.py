@@ -236,6 +236,7 @@ MATCHING_AUDIT_DIR = MANUAL_VALIDATION_DIR / "matching_audit"
 # Experimental V1→V2→V3 cascade validation run
 CASCADE_V1_V2_V3_DIR = MANUAL_VALIDATION_DIR / "cascade_v1_v2_v3"
 CASCADE_V1_V2_V3_RUN_01_DIR = CASCADE_V1_V2_V3_DIR / "run_01"
+CASCADE_REVIEWER_RUN_01_DIR = CASCADE_V1_V2_V3_DIR / "cascade_reviewer_run_01"
 
 # Presentation slide examples (report flow: excerpt → keywords → evidence → LLM → prediction)
 PRESENTATION_EXAMPLES_DIR = ANALYSIS_DIR / "presentation_examples"
