@@ -390,6 +390,55 @@ def align_method_pair(
     return work
 
 
+def discordant_odds_ratio(b: int, c: int) -> float:
+    """
+    Odds ratio from McNemar discordant cells (b = A correct/B wrong, c = A wrong/B correct).
+
+    Uses Haldane-Anscombe +0.5 correction when any cell is zero.
+    """
+    return (b + 0.5) / (c + 0.5)
+
+
+def paired_comparison_effect_sizes(
+    *,
+    n_common: int,
+    a_correct_b_wrong: int,
+    a_wrong_b_correct: int,
+    both_correct: int,
+) -> Dict[str, float]:
+    """
+    Effect sizes for a paired method comparison vs the same manual ground truth.
+
+    accuracy_diff: paired risk difference in overall accuracy (method_a - method_b).
+    discordant_odds_ratio: how often A wins vs B among discordant patients only.
+    proportion_a_better_discordant: b / (b + c).
+    """
+    b = a_correct_b_wrong
+    c = a_wrong_b_correct
+    n = n_common
+    if n <= 0:
+        return {
+            "accuracy_a": float("nan"),
+            "accuracy_b": float("nan"),
+            "accuracy_diff": float("nan"),
+            "discordant_odds_ratio": float("nan"),
+            "proportion_a_better_discordant": float("nan"),
+        }
+
+    acc_a = (both_correct + b) / n
+    acc_b = (both_correct + c) / n
+    discordant = b + c
+    prop_a = (b / discordant) if discordant else float("nan")
+
+    return {
+        "accuracy_a": acc_a,
+        "accuracy_b": acc_b,
+        "accuracy_diff": acc_a - acc_b,
+        "discordant_odds_ratio": discordant_odds_ratio(b, c) if discordant else float("nan"),
+        "proportion_a_better_discordant": prop_a,
+    }
+
+
 def mcnemar_comparison_row(
     table_a: PatientMethodTable,
     table_b: PatientMethodTable,
@@ -410,6 +459,12 @@ def mcnemar_comparison_row(
     discordant_total = a_correct_b_wrong + a_wrong_b_correct
 
     test_type, statistic, p_value = mcnemar_test(a_correct_b_wrong, a_wrong_b_correct)
+    effects = paired_comparison_effect_sizes(
+        n_common=int(len(aligned)),
+        a_correct_b_wrong=a_correct_b_wrong,
+        a_wrong_b_correct=a_wrong_b_correct,
+        both_correct=both_correct,
+    )
 
     return {
         "method_a": table_a.method_name,
@@ -420,6 +475,11 @@ def mcnemar_comparison_row(
         "a_correct_b_wrong": a_correct_b_wrong,
         "a_wrong_b_correct": a_wrong_b_correct,
         "discordant_total": discordant_total,
+        "accuracy_a": effects["accuracy_a"],
+        "accuracy_b": effects["accuracy_b"],
+        "accuracy_diff": effects["accuracy_diff"],
+        "discordant_odds_ratio": effects["discordant_odds_ratio"],
+        "proportion_a_better_discordant": effects["proportion_a_better_discordant"],
         "test_type": test_type,
         "statistic": statistic,
         "p_value": p_value,
@@ -531,6 +591,14 @@ def format_biostatistics_report(
         "Exact binomial McNemar is used when discordant pairs <= 25; otherwise",
         "chi-square McNemar with continuity correction.",
         "",
+        "Effect sizes (McNemar comparisons)",
+        "-" * 68,
+        "accuracy_diff = paired accuracy(method_a) - accuracy(method_b) on n_common patients.",
+        "discordant_odds_ratio = (b+0.5)/(c+0.5) where b = A correct/B wrong, c = A wrong/B correct.",
+        "proportion_a_better_discordant = b/(b+c) among discordant patients only.",
+        "Point estimates for sensitivity/specificity in diagnostic_metrics_with_ci.csv are",
+        "already interpretable effect sizes vs manual ground truth (with Wilson CIs).",
+        "",
         "Exploratory note",
         "-" * 68,
         "These analyses are exploratory: the validation cohort is small (n≈100),",
@@ -565,10 +633,15 @@ def format_biostatistics_report(
         for _, row in mcnemar.iterrows():
             p = row["p_value"]
             p_str = f"{p:.4f}" if pd.notna(p) else "NA"
+            diff = row.get("accuracy_diff", float("nan"))
+            diff_str = f"{diff:.3f}" if pd.notna(diff) else "NA"
+            dor = row.get("discordant_odds_ratio", float("nan"))
+            dor_str = f"{dor:.2f}" if pd.notna(dor) else "NA"
             lines.append(
                 f"{row['method_a']} vs {row['method_b']}: "
                 f"n={int(row['n_common'])} discordant={int(row['discordant_total'])} "
                 f"({int(row['a_correct_b_wrong'])} vs {int(row['a_wrong_b_correct'])}) "
+                f"acc_diff={diff_str} discordant_OR={dor_str} "
                 f"test={row['test_type']} p={p_str}"
             )
         lines.append("")

@@ -14,9 +14,11 @@ from src.analysis.biostatistical_evaluation import (
     align_method_pair,
     confusion_counts,
     diagnostic_metrics_with_ci,
+    discordant_odds_ratio,
     load_all_method_tables,
     mcnemar_comparison_row,
     mcnemar_test,
+    paired_comparison_effect_sizes,
     run_biostatistical_evaluation,
     wilson_ci,
 )
@@ -126,6 +128,26 @@ def test_mcnemar_comparison_row_counts():
     assert row["a_correct_b_wrong"] == 0
     assert row["a_wrong_b_correct"] == 2
     assert row["discordant_total"] == 2
+    assert row["accuracy_diff"] == pytest.approx(-0.5)
+    assert row["discordant_odds_ratio"] == pytest.approx(0.5 / 2.5)
+
+
+def test_paired_comparison_effect_sizes():
+    effects = paired_comparison_effect_sizes(
+        n_common=100,
+        a_correct_b_wrong=20,
+        a_wrong_b_correct=5,
+        both_correct=70,
+    )
+    assert effects["accuracy_a"] == pytest.approx(0.90)
+    assert effects["accuracy_b"] == pytest.approx(0.75)
+    assert effects["accuracy_diff"] == pytest.approx(0.15)
+    assert effects["discordant_odds_ratio"] == pytest.approx(20.5 / 5.5)
+    assert effects["proportion_a_better_discordant"] == pytest.approx(20 / 25)
+
+
+def test_discordant_odds_ratio_zero_cell():
+    assert discordant_odds_ratio(1, 0) == pytest.approx(1.5 / 0.5)
 
 
 def _write_patient_file(path: Path, preds: dict[str, int]) -> None:
