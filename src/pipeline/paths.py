@@ -249,6 +249,12 @@ PRESENTATION_EXAMPLES_REPORT_PATH = (
     PRESENTATION_EXAMPLES_DIR / "presentation_examples_report.txt"
 )
 
+# Interactive presentation demo (frozen JSON snapshots + HTML export)
+DEMO_DIR = DATA_DIR / "demo"
+DEMO_POSITIVE_SNAPSHOT_PATH = DEMO_DIR / "positive_case.json"
+DEMO_NEGATIVE_SNAPSHOT_PATH = DEMO_DIR / "negative_case.json"
+DEMO_HTML_OUTPUT_DIR = OUTPUTS_DIR / "demo"
+
 # Keyword / term association with predictions and baselines
 KEYWORD_ANALYSIS_DIR = ANALYSIS_DIR / "keyword_analysis"
 KEYWORD_ANALYSIS_TABLES_DIR = KEYWORD_ANALYSIS_DIR / "tables"
