@@ -7,11 +7,12 @@ Mirrors the hemorrhage demo pattern: original report → evidence → LLM → de
 Usage:
     python -m src.analysis.demo_delirium_case                  # menu
     python -m src.analysis.demo_delirium_case --positive       # TP walkthrough
-    python -m src.analysis.demo_delirium_case --negative       # TN walkthrough
+    python -m src.analysis.demo_delirium_case --false-negative    # FN walkthrough
+    python -m src.analysis.demo_delirium_case --negative          # FN (legacy alias)
     python -m src.analysis.demo_delirium_case --both           # both cases
     python -m src.analysis.demo_delirium_case --txt           # hemorrhage-style walkthrough .txt
     python -m src.analysis.demo_delirium_case --snapshot-positive
-    python -m src.analysis.demo_delirium_case --snapshot-negative
+    python -m src.analysis.demo_delirium_case --snapshot-false-negative
 
 See docs/demo/DEMO_GUIDE.md.
 """
@@ -30,10 +31,17 @@ from src.analysis.demo_delirium_snapshot import (
     ensure_default_snapshots,
     generate_snapshot_from_validation,
     load_snapshot,
+    normalize_demo_polarity,
     presentation_case_subtitle,
     presentation_case_title,
+    presentation_polarity_banner,
     rank_validation_candidates,
     snippet_section_label,
+)
+from src.analysis.demo_delirium_trace import (
+    SYSTEM_PROMPT_EXCERPT_CHARS,
+    TEXT_BLOCK_CHARS,
+    trace_is_v2,
 )
 from src.analysis.demo_delirium_walkthrough import (
     render_combined_walkthrough_txt,
@@ -183,96 +191,185 @@ def _render_interpretation(interp: Dict[str, Any], *, llm_skipped: bool) -> None
                 print(f"      · {key}: {joined}")
 
 
-def present_snapshot(snapshot: Dict[str, Any], *, pause: bool = True) -> None:
-    """Render one case as a paced terminal walkthrough."""
-    case = snapshot.get("case") or {}
+def _excerpt(text: str, limit: Optional[int]) -> str:
+    s = str(text or "")
+    if limit and len(s) > limit:
+        return s[:limit] + f"\n… [truncated · full prompt has {len(s):,} chars]"
+    return s
+
+
+def _collapse_evidence(user_prompt: str, input_text: str) -> str:
+    if input_text and input_text in user_prompt:
+        return user_prompt.replace(input_text, "‹[evidence bundle — shown in STEP 2]›")
+    return user_prompt
+
+
+def _render_agent_parsed(stage: Dict[str, Any], *, label: str) -> None:
+    parsed = stage.get("parsed") or {}
+    print("\n  [PARSED & VALIDATED]")
+    if label == "Agent 1":
+        for key in (
+            "desorientierung",
+            "delir_explizit",
+            "hyperaktivitaet_agitation",
+            "vigilanz",
+            "delir_therapie",
+            "delir_prophylaxe",
+        ):
+            vals = parsed.get(key) or []
+            if vals:
+                print(f"    {key}: {', '.join(str(v) for v in vals)}")
+        if not any(parsed.get(k) for k in parsed):
+            print("    (no signals)")
+    else:
+        print(f"    signalstaerke:  {parsed.get('signalstaerke', '')}")
+        print(f"    kontext:        {parsed.get('kontext', '')}")
+        begr = parsed.get("begruendung") or []
+        if begr:
+            print(f"    begruendung:    {' | '.join(str(b) for b in begr)}")
+    note = stage.get("replay_note")
+    if note:
+        print(f"\n    Note: {note}")
+
+
+def present_snapshot(snapshot: Dict[str, Any], *, pause: bool = True, full: bool = False) -> None:
+    """Hemorrhage-style paced terminal walkthrough."""
+    if not trace_is_v2(snapshot):
+        print("[!] Snapshot format outdated — re-run --snapshot-positive / --snapshot-false-negative")
+        return
+
+    text_limit = None if full else TEXT_BLOCK_CHARS
+    sys_limit = None if full else SYSTEM_PROMPT_EXCERPT_CHARS
+
     extraction = snapshot.get("extraction") or {}
-    interp = snapshot.get("interpretation") or {}
     final = snapshot.get("final") or {}
+    guard = snapshot.get("guardrails") or {}
+    agent1 = snapshot.get("agent1") or {}
+    agent2 = snapshot.get("agent2") or {}
     report_text = str(snapshot.get("report_text") or "")
+    llm_input = str(snapshot.get("llm_input_text") or extraction.get("llm_report_text") or "")
     snippets: List[Dict[str, Any]] = list(extraction.get("evidence_snippets") or [])
     llm_skipped = bool(final.get("llm_skipped_by_prefilter"))
     klasse = int(final.get("klasse") or 0)
-    polarity = "POSITIVE · Delir" if klasse == 1 else "NEGATIVE · kein Delir"
-    title = presentation_case_title(snapshot)
-    subtitle = presentation_case_subtitle(snapshot)
+    polarity_banner = presentation_polarity_banner(snapshot)
+    mode = snapshot.get("mode", "")
 
     print(f"\n{SEP}")
-    print(f"  {title}")
-    if subtitle:
-        print(f"  {subtitle}")
-    print(f"  {polarity}")
+    print(f"  {presentation_case_title(snapshot)}")
+    sub = presentation_case_subtitle(snapshot)
+    if sub:
+        print(f"  {sub}")
+    print(f"  {polarity_banner}")
+    if mode:
+        print(f"  capture mode: {mode}")
     print(SEP)
 
-    _step(1, "Original clinical report")
-    _explain(
-        "Unstructured German ICU documentation — the full input to the pipeline."
-    )
+    _step(1, "Original clinical reports")
+    _explain("The pipeline receives completely unstructured German clinical documentation.")
     for heading, body in _split_report_sections(report_text):
         print(f"  [{heading}]  ({len(body):,} chars)")
-        _block(body, limit=900, indent="      ")
+        _block(body, limit=text_limit, indent="      ")
         print()
     _pause(pause)
 
     _step(2, "Rule-based evidence extraction")
     _explain(
-        "Deterministic keyword scan across all report sections.\n"
-        "Only clinically relevant snippets are kept — not the full report."
+        "Deterministic keyword scan — only clinically relevant snippets are forwarded.\n"
+        "(Delirium-specific layer; hemorrhage sends full report text instead.)"
     )
-    print("  Detected keywords:")
     _render_keywords(snippets)
     print(f"\n  Snippets extracted: {len(snippets)}")
     for i, snip in enumerate(snippets[:6], start=1):
         _render_snippet(snip, i)
-    if len(snippets) > 6:
-        print(f"\n    … and {len(snippets) - 6} more snippet(s)")
-    method = str(extraction.get("llm_text_reduction_method") or "")
     orig_len = extraction.get("original_report_text_length", len(report_text))
     llm_len = extraction.get("llm_report_text_length", 0)
-    print(f"\n  Reduction: {orig_len:,} chars → {llm_len:,} chars LLM bundle ({method})")
-    _pause(pause)
-
-    _step(3, "Evidence bundle sent to the LLM")
-    if llm_skipped:
-        _explain(
-            "No actionable evidence → the LLM is skipped entirely.\n"
-            "This is the efficiency layer: most reports never reach the model."
-        )
-        print("    (prefilter skip — nothing forwarded)")
-    else:
-        _explain("Structured snippet bundle + clinical instruction block.")
-        _block(extraction.get("llm_report_text") or "", limit=1400)
-    _pause(pause)
-
-    _step(4, "LLM interpretation (Agent 2)")
-    if llm_skipped:
-        _explain("Skipped — see Step 3.")
-    else:
-        _explain("The model assigns signal strength and clinical context — not klasse yet.")
-    _render_interpretation(interp, llm_skipped=llm_skipped)
-    _pause(pause)
-
-    _step(5, "Clinical guardrails → final decision")
-    _explain(
-        "Deterministic post-LLM rules: direct delir → positive;\n"
-        "prophylaxis-only / negation-only / no evidence → negative."
+    print(
+        f"\n  Reduction: {orig_len:,} chars → {llm_len:,} chars evidence bundle "
+        f"({extraction.get('llm_text_reduction_method', '')})"
     )
-    print(f"    decision_rule_applied:  {final.get('decision_rule_applied', '')}")
-    print(f"    manual_review_candidate: {final.get('manual_review_candidate', False)}")
+    if llm_input and not llm_skipped:
+        print("\n  [EVIDENCE BUNDLE — input to Agents 1 & 2]")
+        _block(llm_input, limit=text_limit)
+    _pause(pause)
+
+    if llm_skipped or not agent1.get("ran"):
+        print(f"\n{SEP}")
+        print("  LLM SKIPPED (prefilter)")
+        print(SEP)
+        _explain(
+            "No actionable evidence — Agents 1 and 2 are not called.\n"
+            "Same idea as hemorrhage skipping Stage 2 when no hemorrhage is found."
+        )
+        print(f"    reason: {agent1.get('skip_reason') or final.get('decision_rule_applied')}")
+        _pause(pause)
+    else:
+        _step(3, "Agent 1 prompt — structured signal extraction")
+        _explain("Engineered rules + schema: map evidence snippets to delirium signal categories.")
+        print("  [SYSTEM PROMPT — excerpt]")
+        _block(_excerpt(agent1.get("system_prompt", ""), sys_limit))
+        print("\n  [USER PROMPT]")
+        _block(_collapse_evidence(agent1.get("user_prompt", ""), llm_input), limit=text_limit)
+        _pause(pause)
+
+        _step(4, "Agent 1 — real LLM response  →  validated JSON")
+        print("  [RAW LLM RESPONSE]")
+        _block(agent1.get("raw_response", ""))
+        _render_agent_parsed(agent1, label="Agent 1")
+        _pause(pause)
+
+        _step(5, "Agent 2 prompt — interpretation / signal strength")
+        _explain("Agent 2 reads the evidence bundle plus Agent 1 JSON; outputs signalstaerke.")
+        print("  [SYSTEM PROMPT — excerpt]")
+        _block(_excerpt(agent2.get("system_prompt", ""), sys_limit))
+        print("\n  [USER PROMPT]")
+        _block(_collapse_evidence(agent2.get("user_prompt", ""), llm_input), limit=text_limit)
+        _pause(pause)
+
+        _step(6, "Agent 2 — real LLM response  →  validated JSON")
+        print("  [RAW LLM RESPONSE]")
+        _block(agent2.get("raw_response", ""))
+        _render_agent_parsed(agent2, label="Agent 2")
+        _pause(pause)
+
+    guard_step = 5 if llm_skipped else 7
+    _step(guard_step, "Clinical guardrails  →  final klasse")
+    _explain("Deterministic post-LLM rules enforce binary klasse and decision_rule_applied.")
+    print(f"    decision_rule_applied:   {guard.get('decision_rule_applied', final.get('decision_rule_applied'))}")
+    print(f"    manual_review_candidate: {guard.get('manual_review_candidate', final.get('manual_review_candidate'))}")
+    print(f"    signalstaerke:           {guard.get('signalstaerke', final.get('signalstaerke'))}")
     print(f"    klasse:                  {klasse}  ({'delir' if klasse == 1 else 'kein_delir'})")
     _pause(pause)
 
-    _step(6, "Validation label")
-    manual_gt = case.get("manual_report_ground_truth")
-    correct = (snapshot.get("verification") or {}).get("model_correct_vs_manual")
-    print(f"    manual_report_ground_truth: {manual_gt}")
-    if correct is True:
+    _step(guard_step + 1, "Validation label")
+    ver = snapshot.get("verification") or {}
+    print(f"    manual_report_ground_truth: {ver.get('manual_report_ground_truth')}")
+    if ver.get("model_correct_vs_manual") is True:
         print("    Model vs manual label:      CORRECT ✓")
-    elif correct is False:
+    elif ver.get("model_correct_vs_manual") is False:
         print("    Model vs manual label:      MISMATCH ✗")
+
     print(f"\n  {RULE}")
-    print(f"  Final: klasse = {klasse}  ·  {polarity}")
+    print("  Final Classification\n")
+    print(f"  Delirium detected:     {'YES' if klasse == 1 else 'NO'}")
+    print(f"  klasse:                {klasse}")
+    print(f"  signalstaerke:         {guard.get('signalstaerke', final.get('signalstaerke')) or '—'}")
+    print(f"  decision_rule:         {guard.get('decision_rule_applied', final.get('decision_rule_applied')) or '—'}")
     print(f"  {RULE}")
+
+    _explain("Pipeline summary:")
+    for i, stage in enumerate(
+        [
+            "Clinical reports (unstructured German free-text)",
+            "Rule-based evidence extraction (delirium-specific)",
+            "Agent 1 — structured signals (LLM)",
+            "Agent 2 — signal strength (LLM)",
+            "Clinical guardrails → klasse 0/1",
+            "Validation vs manual ground truth",
+        ]
+    ):
+        print(f"      {stage}")
+        if i < 5:
+            print("                       ↓")
     _pause(pause, last=True)
 
 
@@ -300,9 +397,38 @@ def _html_snippet_cards(snippets: List[Dict[str, Any]]) -> str:
 
 def render_demo_html(positive: Dict[str, Any], negative: Dict[str, Any]) -> str:
     """Self-contained HTML with both cases for presentation."""
+
+    def _agent_summary(snap: Dict[str, Any]) -> str:
+        if not trace_is_v2(snap):
+            return ""
+        agent1 = snap.get("agent1") or {}
+        agent2 = snap.get("agent2") or {}
+        if not agent1.get("ran"):
+            return '<p class="muted">Agents skipped (prefilter).</p>'
+        a1 = agent1.get("parsed") or {}
+        a2 = agent2.get("parsed") or {}
+        return (
+            f'<ul>'
+            f'<li><strong>Agent 1:</strong> {len([k for k, v in (a1 or {}).items() if v])} signal categories</li>'
+            f'<li><strong>Agent 2 signalstaerke:</strong> {_esc(a2.get("signalstaerke"))}</li>'
+            f'<li><strong>capture:</strong> {_esc(snap.get("mode", "replay"))}</li>'
+            f'</ul>'
+        )
+
     def case_block(snap: Dict[str, Any]) -> str:
         extraction = snap.get("extraction") or {}
+        guard = snap.get("guardrails") or {}
+        agent2 = snap.get("agent2") or {}
         interp = snap.get("interpretation") or {}
+        if trace_is_v2(snap):
+            parsed2 = agent2.get("parsed") or {}
+            signalstaerke = parsed2.get("signalstaerke") or guard.get("signalstaerke")
+            kontext = parsed2.get("kontext") or guard.get("kontext")
+            begruendung = parsed2.get("begruendung") or guard.get("begruendung")
+        else:
+            signalstaerke = interp.get("signalstaerke")
+            kontext = interp.get("kontext")
+            begruendung = interp.get("begruendung")
         final = snap.get("final") or {}
         snippets = list(extraction.get("evidence_snippets") or [])
         llm_skipped = bool(final.get("llm_skipped_by_prefilter"))
@@ -317,10 +443,11 @@ def render_demo_html(positive: Dict[str, Any], negative: Dict[str, Any]) -> str:
             if llm_skipped
             else (
                 f'<ul>'
-                f'<li><strong>signalstaerke:</strong> {_esc(interp.get("signalstaerke"))}</li>'
-                f'<li><strong>kontext:</strong> {_esc(interp.get("kontext"))}</li>'
-                f'<li><strong>begruendung:</strong> {_esc(interp.get("begruendung"))}</li>'
+                f'<li><strong>signalstaerke:</strong> {_esc(signalstaerke)}</li>'
+                f'<li><strong>kontext:</strong> {_esc(kontext)}</li>'
+                f'<li><strong>begruendung:</strong> {_esc(begruendung)}</li>'
                 f'</ul>'
+                f'{_agent_summary(snap)}'
             )
         )
         verdict = "Delir (klasse=1)" if klasse == 1 else "Kein Delir (klasse=0)"
@@ -577,7 +704,7 @@ def _interactive_menu() -> None:
     print("  Delirium Pipeline Demo")
     print(SEP)
     print("  1  Positive case (true positive)")
-    print("  2  Negative case (true negative)")
+    print("  2  False-negative case (FN)")
     print("  3  Both cases")
     print("  4  Export walkthrough .txt (for your own figures)")
     print("  5  Export HTML (browser preview)")
@@ -622,7 +749,8 @@ def run_demo(
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Delirium pipeline presentation demo.")
     parser.add_argument("--positive", action="store_true", help="Show positive (TP) case")
-    parser.add_argument("--negative", action="store_true", help="Show negative (TN) case")
+    parser.add_argument("--negative", action="store_true", help="Show false-negative (FN) case (legacy alias)")
+    parser.add_argument("--false-negative", action="store_true", help="Show false-negative (FN) case")
     parser.add_argument("--both", action="store_true", help="Show both cases")
     parser.add_argument("--no-pause", action="store_true", help="Do not wait for ENTER between steps")
     parser.add_argument(
@@ -637,14 +765,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="(Optional) Export PNG slides — prefer --txt for custom figures",
     )
     parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Call LLM when building snapshots (server only; captures real raw JSON)",
+    )
+    parser.add_argument(
         "--snapshot-positive",
         action="store_true",
         help="Regenerate positive_case.json from validation data (or curated fallback)",
     )
     parser.add_argument(
+        "--snapshot-false-negative",
+        action="store_true",
+        help="Regenerate FN case in negative_case.json (prefers Patient_0057 / Patient_0075)",
+    )
+    parser.add_argument(
         "--snapshot-negative",
         action="store_true",
-        help="Regenerate negative_case.json from validation data (or curated fallback)",
+        help="Alias for --snapshot-false-negative (legacy flag name)",
     )
     parser.add_argument("--validation-report-id", help="Force a specific validation_report_id")
     parser.add_argument(
@@ -657,7 +795,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--list-positive-candidates",
         action="store_true",
-        help="Print top auto-pick candidates for the positive case and exit",
+        help="Print top auto-pick candidates for the TP case and exit",
+    )
+    parser.add_argument(
+        "--list-false-negative-candidates",
+        action="store_true",
+        help="Print top auto-pick candidates for the FN case and exit",
     )
     parser.add_argument("--positive-snapshot", type=Path, default=DEMO_POSITIVE_SNAPSHOT_PATH)
     parser.add_argument("--negative-snapshot", type=Path, default=DEMO_NEGATIVE_SNAPSHOT_PATH)
@@ -685,23 +828,51 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
         return 0
 
-    if args.snapshot_positive or args.snapshot_negative:
+    if args.list_false_negative_candidates:
+        if not VALIDATION_COHORT_PREDICTIONS_PATH.exists():
+            print(f"Missing predictions: {VALIDATION_COHORT_PREDICTIONS_PATH}")
+            return 1
+        preds = pd.read_csv(VALIDATION_COHORT_PREDICTIONS_PATH)
+        labels = (
+            pd.read_csv(FROZEN_MANUAL_REPORT_LABELS_PATH)
+            if FROZEN_MANUAL_REPORT_LABELS_PATH.exists()
+            else None
+        )
+        print("Top false-negative candidates (higher score = clearer slide; prefers Patient_0057 / 0075):\n")
+        for r in rank_validation_candidates(
+            preds, labels, polarity="false_negative", exclude_ids=exclude_ids
+        ):
+            print(
+                f"  {r['score']:3d}  {r['validation_report_id']}  "
+                f"{r['bertyp']}  rule={r['decision_rule_applied']}  "
+                f"snippets={r['snippet_count']}  len={r['report_length']}"
+            )
+        return 0
+
+    snapshot_fn = args.snapshot_false_negative or args.snapshot_negative
+    if args.snapshot_positive or snapshot_fn:
         if args.snapshot_positive:
             snap = generate_snapshot_from_validation(
                 polarity="positive",
                 out_path=args.positive_snapshot,
                 validation_report_id=args.validation_report_id if args.snapshot_positive else None,
                 exclude_validation_report_ids=exclude_ids or None,
+                live=args.live,
             )
             print(f"Wrote positive snapshot → {args.positive_snapshot} ({presentation_case_title(snap)})")
-        if args.snapshot_negative:
+            if args.live:
+                print("  capture: live LLM ✓")
+        if snapshot_fn:
             snap = generate_snapshot_from_validation(
-                polarity="negative",
+                polarity="false_negative",
                 out_path=args.negative_snapshot,
-                validation_report_id=args.validation_report_id if args.snapshot_negative else None,
+                validation_report_id=args.validation_report_id if snapshot_fn and not args.snapshot_positive else None,
                 exclude_validation_report_ids=exclude_ids or None,
+                live=args.live,
             )
-            print(f"Wrote negative snapshot → {args.negative_snapshot} ({presentation_case_title(snap)})")
+            print(f"Wrote FN snapshot → {args.negative_snapshot} ({presentation_case_title(snap)})")
+            if args.live:
+                print("  capture: live LLM ✓")
         return 0
 
     if args.txt:
@@ -721,10 +892,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"Wrote {path}")
         return 0
 
-    if args.positive or args.negative or args.both:
+    if args.positive or args.negative or args.false_negative or args.both:
         run_demo(
-            positive=args.positive,
-            negative=args.negative,
+            positive=args.positive or args.both,
+            negative=args.negative or args.false_negative or args.both,
             both=args.both,
             pause=not args.no_pause,
             positive_path=args.positive_snapshot,

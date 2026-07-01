@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from src.analysis.demo_delirium_snapshot import presentation_case_subtitle, presentation_case_title
+from src.analysis.demo_delirium_snapshot import presentation_case_subtitle, presentation_case_title, presentation_polarity_banner
 
 SEP = "=" * 76
 THIN = "-" * 76
@@ -95,8 +95,158 @@ def _format_agent1_signals(interp: Dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _format_agent_stage_txt(stage: Dict[str, Any], *, label: str) -> str:
+    lines = [f"  [{label} — parsed]\n"]
+    parsed = stage.get("parsed") or {}
+    if label.startswith("Agent 1"):
+        signals = parsed if isinstance(parsed, dict) else {}
+        if any(signals.values()):
+            for key, vals in signals.items():
+                if vals:
+                    joined = ", ".join(str(v) for v in vals)
+                    lines.append(f"    · {key}: {joined}")
+        else:
+            lines.append("    (no structured signals)")
+    else:
+        lines.append(f"    signalstaerke:  {parsed.get('signalstaerke', '')}")
+        if parsed.get("kontext"):
+            lines.append(f"    kontext:\n{_indent_block(parsed.get('kontext'))}")
+        begr = parsed.get("begruendung") or []
+        if begr:
+            if isinstance(begr, list):
+                lines.append(f"    begruendung:    {' | '.join(str(b) for b in begr)}")
+            else:
+                lines.append(f"    begruendung:\n{_indent_block(begr)}")
+    note = stage.get("replay_note")
+    if note:
+        lines.append(f"\n    Note: {note}")
+    return "\n".join(lines) + "\n"
+
+
+def _render_walkthrough_v2(snapshot: Dict[str, Any]) -> str:
+    """Hemorrhage-parity walkthrough: prompts + raw JSON + guardrails."""
+    case = snapshot.get("case") or {}
+    extraction = snapshot.get("extraction") or {}
+    final = snapshot.get("final") or {}
+    guard = snapshot.get("guardrails") or {}
+    agent1 = snapshot.get("agent1") or {}
+    agent2 = snapshot.get("agent2") or {}
+    report_text = str(snapshot.get("report_text") or "")
+    llm_input = str(snapshot.get("llm_input_text") or extraction.get("llm_report_text") or "")
+    snippets: List[Dict[str, Any]] = list(extraction.get("evidence_snippets") or [])
+    llm_skipped = bool(final.get("llm_skipped_by_prefilter")) or not agent1.get("ran")
+    klasse = int(final.get("klasse") or guard.get("klasse") or 0)
+    polarity_banner = presentation_polarity_banner(snapshot)
+    mode = snapshot.get("mode", "")
+
+    parts: List[str] = [
+        SEP,
+        f"  {presentation_case_title(snapshot)}",
+        f"  {presentation_case_subtitle(snapshot)}",
+        f"  {polarity_banner}",
+        SEP,
+        "",
+        "Pipeline blueprint (hemorrhage-style capture):",
+        "  Report → rule extraction → Agent 1 → Agent 2 → guardrails → klasse",
+    ]
+    if mode:
+        parts.append(f"  capture mode: {mode}")
+    parts.append("")
+
+    parts.append(_step(1, "Original clinical reports"))
+    parts.append(_explain(
+        "The pipeline receives completely unstructured German clinical documentation."
+    ))
+    for heading, body in _split_report_sections(report_text):
+        parts.append(f"  [{heading}]  ({len(body):,} chars)\n")
+        parts.append(_indent_block(body, limit=3500))
+        parts.append("")
+
+    parts.append(_step(2, "Rule-based evidence extraction"))
+    parts.append(_explain(
+        "Deterministic keyword scan across all report sections.\n"
+        "Only clinically relevant snippets are kept — not the full report."
+    ))
+    parts.append(_format_keywords(snippets))
+    parts.append(_format_snippets(snippets))
+    orig_len = extraction.get("original_report_text_length", len(report_text))
+    llm_len = extraction.get("llm_report_text_length", 0)
+    method = extraction.get("llm_text_reduction_method", "")
+    parts.append(f"  Text reduction: {orig_len:,} chars → {llm_len:,} chars LLM bundle ({method})\n")
+
+    if llm_skipped:
+        parts.append(f"\n{SEP}\n  LLM SKIPPED (prefilter)\n{SEP}\n")
+        parts.append(_explain(
+            "No actionable evidence — Agents 1 and 2 are not called.\n"
+            "Same idea as hemorrhage skipping Stage 2 when no hemorrhage is found."
+        ))
+        reason = str(agent1.get("skip_reason") or final.get("decision_rule_applied") or "prefilter")
+        parts.append(f"    reason: {reason}\n")
+        guard_step = 3
+    else:
+        parts.append(_step(3, "Agent 1 prompt — structured signal extraction"))
+        parts.append(_explain("Engineered rules + schema: map evidence snippets to delirium signal categories."))
+        parts.append("  [SYSTEM PROMPT]\n")
+        parts.append(_indent_block(agent1.get("system_prompt"), limit=2500))
+        parts.append("\n  [USER PROMPT]\n")
+        parts.append(_indent_block(agent1.get("user_prompt"), limit=5000))
+
+        parts.append(_step(4, "Agent 1 — real LLM response  →  validated JSON"))
+        parts.append("  [RAW LLM RESPONSE]\n")
+        parts.append(_indent_block(agent1.get("raw_response"), limit=6000))
+        parts.append(_format_agent_stage_txt(agent1, label="Agent 1"))
+
+        parts.append(_step(5, "Agent 2 prompt — interpretation / signal strength"))
+        parts.append(_explain("Agent 2 reads the evidence bundle plus Agent 1 JSON; outputs signalstaerke."))
+        parts.append("  [SYSTEM PROMPT]\n")
+        parts.append(_indent_block(agent2.get("system_prompt"), limit=2500))
+        parts.append("\n  [USER PROMPT]\n")
+        parts.append(_indent_block(agent2.get("user_prompt"), limit=5000))
+
+        parts.append(_step(6, "Agent 2 — real LLM response  →  validated JSON"))
+        parts.append("  [RAW LLM RESPONSE]\n")
+        parts.append(_indent_block(agent2.get("raw_response"), limit=6000))
+        parts.append(_format_agent_stage_txt(agent2, label="Agent 2"))
+        guard_step = 7
+
+    parts.append(_step(guard_step, "Clinical guardrails  →  final klasse"))
+    parts.append(_explain(
+        "Deterministic post-LLM rules: direct delir → positive;\n"
+        "prophylaxis-only / negation-only / no evidence → negative."
+    ))
+    parts.append(f"    decision_rule_applied:   {guard.get('decision_rule_applied', final.get('decision_rule_applied'))}\n")
+    parts.append(f"    manual_review_candidate: {guard.get('manual_review_candidate', final.get('manual_review_candidate'))}\n")
+    parts.append(f"    signalstaerke:           {guard.get('signalstaerke', final.get('signalstaerke'))}\n")
+    parts.append(f"    klasse:                  {klasse}  ({'delir' if klasse == 1 else 'kein_delir'})\n")
+
+    val_step = guard_step + 1
+    parts.append(_step(val_step, "Validation label"))
+    parts.append(f"    manual_report_ground_truth: {case.get('manual_report_ground_truth')}\n")
+    correct = (snapshot.get("verification") or {}).get("model_correct_vs_manual")
+    if correct is True:
+        parts.append("    Model vs manual label:      CORRECT ✓\n")
+    elif correct is False:
+        parts.append("    Model vs manual label:      MISMATCH ✗\n")
+
+    parts.append(f"\n{SEP}\n  Final structured output\n{SEP}\n")
+    parts.append(f"  {RULE}\n")
+    parts.append("  Final Classification\n\n")
+    parts.append(f"  Delirium detected:     {'YES' if klasse == 1 else 'NO'}\n")
+    parts.append(f"  klasse:                {klasse}\n")
+    parts.append(f"  signalstaerke:         {guard.get('signalstaerke', final.get('signalstaerke')) or '—'}\n")
+    parts.append(f"  decision_rule:         {guard.get('decision_rule_applied', final.get('decision_rule_applied')) or '—'}\n")
+    parts.append(f"  {RULE}\n")
+
+    return "\n".join(parts)
+
+
 def render_walkthrough_txt(snapshot: Dict[str, Any]) -> str:
     """Render one anonymized case as a hemorrhage-style step-by-step .txt walkthrough."""
+    from src.analysis.demo_delirium_trace import trace_is_v2
+
+    if trace_is_v2(snapshot):
+        return _render_walkthrough_v2(snapshot)
+
     case = snapshot.get("case") or {}
     extraction = snapshot.get("extraction") or {}
     interp = snapshot.get("interpretation") or {}
@@ -105,13 +255,13 @@ def render_walkthrough_txt(snapshot: Dict[str, Any]) -> str:
     snippets: List[Dict[str, Any]] = list(extraction.get("evidence_snippets") or [])
     llm_skipped = bool(final.get("llm_skipped_by_prefilter"))
     klasse = int(final.get("klasse") or 0)
-    polarity = "POSITIVE · Delir" if klasse == 1 else "NEGATIVE · kein Delir"
+    polarity_banner = presentation_polarity_banner(snapshot)
 
     parts: List[str] = [
         SEP,
         f"  {presentation_case_title(snapshot)}",
         f"  {presentation_case_subtitle(snapshot)}",
-        f"  {polarity}",
+        f"  {polarity_banner}",
         SEP,
         "",
         "Pipeline blueprint (same stages as hemorrhage demo):",
@@ -230,6 +380,6 @@ def render_combined_walkthrough_txt(positive: Dict[str, Any], negative: Dict[str
         "CASE A — TRUE POSITIVE\n\n"
         f"{render_walkthrough_txt(positive)}\n\n\n"
         f"{SEP}\n"
-        "CASE B — TRUE NEGATIVE\n\n"
+        "CASE B — FALSE NEGATIVE\n\n"
         f"{render_walkthrough_txt(negative)}\n"
     )

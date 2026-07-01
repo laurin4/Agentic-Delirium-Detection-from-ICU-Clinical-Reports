@@ -28,6 +28,14 @@ def _validation_predictions() -> pd.DataFrame:
             "priority": 1,
         }
     ]
+    indirect_snippets = [
+        {
+            "section": "epikrise",
+            "keyword": "agitiert",
+            "evidence_type": "indirect_symptom",
+            "text": "Patient war agitiert bei Suizidalität.",
+        }
+    ]
     return pd.DataFrame(
         [
             {
@@ -50,6 +58,27 @@ def _validation_predictions() -> pd.DataFrame:
                 "evidence_snippets": json.dumps(direct_snippets, ensure_ascii=False),
                 "kontext": "Explizites Delir.",
                 "begruendung": "Delir dokumentiert.",
+            },
+            {
+                "validation_report_id": "Patient_0057_Report_0001",
+                "validation_patient_id": "Patient_0057",
+                "PatientenID": "p_fn",
+                "bertyp": "Verlaufseintrag",
+                "berdat": "2024-01-03",
+                "bericht": "verlauf_fn",
+                "klasse": 0,
+                "signalstaerke": "niedrig",
+                "delir_probability_estimate": 22,
+                "decision_rule_applied": "isolated_indirect_not_positive",
+                "has_direct_delir_evidence": False,
+                "has_indirect_delir_evidence": True,
+                "llm_called": True,
+                "llm_skipped_by_prefilter": False,
+                "manual_review_candidate": True,
+                "status": "success",
+                "evidence_snippets": json.dumps(indirect_snippets, ensure_ascii=False),
+                "kontext": "Schwache indirekte Hinweise.",
+                "begruendung": "Vigilanz und Desorientierung",
             },
             {
                 "validation_report_id": "Patient_0002_Report_0001",
@@ -76,28 +105,39 @@ def _validation_predictions() -> pd.DataFrame:
 def _validation_labels() -> pd.DataFrame:
     return pd.DataFrame(
         {
-            "validation_report_id": ["Patient_0001_Report_0001", "Patient_0002_Report_0001"],
-            "manual_report_ground_truth": [1, 0],
+            "validation_report_id": [
+                "Patient_0001_Report_0001",
+                "Patient_0057_Report_0001",
+                "Patient_0002_Report_0001",
+            ],
+            "manual_report_ground_truth": [1, 1, 0],
         }
     )
 
 
-def test_autopick_tp_and_tn():
+def test_autopick_tp_and_fn():
     preds = _validation_predictions()
     labels = _validation_labels()
     assert autopick_validation_report_id(preds, labels, polarity="positive") == "Patient_0001_Report_0001"
-    assert autopick_validation_report_id(preds, labels, polarity="negative") == "Patient_0002_Report_0001"
+    assert autopick_validation_report_id(preds, labels, polarity="false_negative") == "Patient_0057_Report_0001"
 
 
 def test_curated_snapshots_have_pipeline_fields():
     pos = build_curated_snapshot(polarity="positive")
-    neg = build_curated_snapshot(polarity="negative")
+    fn = build_curated_snapshot(polarity="false_negative")
+    assert pos["version"] >= 2
+    assert "agent1" in pos and "agent2" in pos
     assert pos["final"]["klasse"] == 1
-    assert neg["final"]["klasse"] == 0
+    assert pos["case"]["manual_report_ground_truth"] == 1
+    assert pos["verification"]["model_correct_vs_manual"] is True
+    assert fn["final"]["klasse"] == 0
+    assert fn["case"]["manual_report_ground_truth"] == 1
+    assert fn["verification"]["model_correct_vs_manual"] is False
     assert len(pos["extraction"]["evidence_snippets"]) >= 1
-    assert neg["final"]["llm_skipped_by_prefilter"] is True
+    assert fn["final"]["llm_skipped_by_prefilter"] is False
     assert "PatientenID" not in pos["case"]
-    assert pos["case"]["presentation_label"] == "Beispiel-Fall A (Delir positiv)"
+    assert pos["case"]["presentation_label"] == "Beispiel-Fall A (Delir positiv · TP)"
+    assert fn["case"]["presentation_label"] == "Beispiel-Fall B (Falsch negativ · FN)"
 
 
 def test_anonymize_scrubs_ids_from_text():
@@ -147,12 +187,12 @@ def test_generate_snapshot_fallback_curated(tmp_path):
 
 def test_html_export(tmp_path):
     pos = build_curated_snapshot(polarity="positive")
-    neg = build_curated_snapshot(polarity="negative")
+    fn = build_curated_snapshot(polarity="false_negative")
     pos_path = tmp_path / "pos.json"
     neg_path = tmp_path / "neg.json"
     save_snapshot(pos, pos_path)
-    save_snapshot(neg, neg_path)
-    html_out = render_demo_html(pos, neg)
+    save_snapshot(fn, neg_path)
+    html_out = render_demo_html(pos, fn)
     assert "Delirium Detection Pipeline" in html_out
     assert "direct_delir" in html_out
     assert "PatientenID" not in html_out
@@ -165,18 +205,19 @@ def test_walkthrough_txt_hemorrhage_structure():
     pos = build_curated_snapshot(polarity="positive")
     txt = render_walkthrough_txt(pos)
     assert "STEP 1" in txt and "STEP 2" in txt and "Final structured output" in txt
+    assert "STEP 3" in txt and "Agent 1" in txt
+    assert "STEP 6" in txt and "Agent 2" in txt
     assert "Beispiel-Fall A" in txt
     assert "PatientenID" not in txt
-    assert "Agent 2" in txt
 
 
 def test_export_demo_txt(tmp_path):
     pos = build_curated_snapshot(polarity="positive")
-    neg = build_curated_snapshot(polarity="negative")
+    fn = build_curated_snapshot(polarity="false_negative")
     pos_path = tmp_path / "pos.json"
     neg_path = tmp_path / "neg.json"
     save_snapshot(pos, pos_path)
-    save_snapshot(neg, neg_path)
+    save_snapshot(fn, neg_path)
     paths = export_demo_txt(pos_path, neg_path, output_dir=tmp_path)
     assert len(paths) == 3
     assert paths[0].read_text(encoding="utf-8").startswith("=" * 76)
@@ -218,4 +259,5 @@ def test_run_demo_no_pause(capsys, tmp_path):
     run_demo(positive=True, pause=False, positive_path=pos_path, negative_path=pos_path)
     captured = capsys.readouterr()
     assert "STEP 1" in captured.out
+    assert "Agent 1" in captured.out
     assert "hypoaktives Delir" in captured.out or "Delir" in captured.out

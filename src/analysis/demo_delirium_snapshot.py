@@ -31,29 +31,47 @@ from src.pipeline.paths import (
     FROZEN_MANUAL_REPORT_LABELS_PATH,
     VALIDATION_COHORT_PREDICTIONS_PATH,
 )
+from src.analysis.demo_delirium_trace import (
+    SYSTEM_PROMPT_EXCERPT_CHARS,
+    TEXT_BLOCK_CHARS,
+    TRACE_VERSION,
+    build_delirium_trace,
+    parse_delir_signale,
+    trace_is_v2,
+)
 from src.preprocessing.evidence_extraction import (
-    METHOD_NO_EVIDENCE,
     SECTION_DISPLAY,
     extract_delirium_evidence,
 )
 
 LOGGER = logging.getLogger(__name__)
 
-SNAPSHOT_VERSION = 1
+SNAPSHOT_VERSION = TRACE_VERSION
 
 # Public-facing labels only — no real hospital or validation identifiers.
 PRESENTATION_LABELS: Dict[str, Dict[str, str]] = {
     "positive": {
-        "presentation_label": "Beispiel-Fall A (Delir positiv)",
+        "presentation_label": "Beispiel-Fall A (Delir positiv · TP)",
         "presentation_report_label": "Beispiel-Bericht 1",
         "presentation_patient_label": "Beispiel-Fall A",
     },
+    "false_negative": {
+        "presentation_label": "Beispiel-Fall B (Falsch negativ · FN)",
+        "presentation_report_label": "Beispiel-Bericht 2",
+        "presentation_patient_label": "Beispiel-Fall B",
+    },
+    # Legacy alias — second demo case is FN.
     "negative": {
-        "presentation_label": "Beispiel-Fall B (Delir negativ)",
+        "presentation_label": "Beispiel-Fall B (Falsch negativ · FN)",
         "presentation_report_label": "Beispiel-Bericht 2",
         "presentation_patient_label": "Beispiel-Fall B",
     },
 }
+
+# Preferred FN patients for the thesis demo (validation cohort / error analysis).
+PREFERRED_FN_PATIENT_IDS: Tuple[str, ...] = ("Patient_0057", "Patient_0075")
+
+DEMO_POLARITIES: Tuple[str, ...] = ("positive", "false_negative")
 
 # Scrub long numeric tokens that may be hospital patient IDs in free text.
 _PATIENT_ID_IN_TEXT_RE = re.compile(r"\b\d{7,9}\b")
@@ -72,6 +90,39 @@ def _scrub_identifiers_from_text(text: str, extra_tokens: Sequence[str]) -> str:
     return out
 
 
+def normalize_demo_polarity(polarity: str) -> str:
+    """Map legacy aliases to false_negative (second demo case is FN)."""
+    p = str(polarity or "positive").strip().lower()
+    if p in ("negative", "false_positive"):
+        return "false_negative"
+    return p
+
+
+def is_preferred_fn_patient(row: pd.Series) -> bool:
+    for col in ("validation_patient_id", "validation_report_id"):
+        vid = str(row.get(col) or "")
+        for pref in PREFERRED_FN_PATIENT_IDS:
+            if pref in vid:
+                return True
+    return False
+
+
+def presentation_polarity_banner(snapshot: Dict[str, Any]) -> str:
+    """Short banner for terminal / walkthrough headers."""
+    pol = normalize_demo_polarity(str(snapshot.get("polarity") or ""))
+    klasse = int((snapshot.get("final") or {}).get("klasse") or 0)
+    gt = (snapshot.get("verification") or {}).get("manual_report_ground_truth")
+    if pol == "false_negative" or (klasse == 0 and gt == 1):
+        return "FALSE NEGATIVE · Modell kein Delir, manuell Delir"
+    if klasse == 1 and gt == 1:
+        return "TRUE POSITIVE · Delir"
+    if klasse == 0 and gt == 0:
+        return "TRUE NEGATIVE · kein Delir"
+    if klasse == 1 and gt == 0:
+        return "FALSE POSITIVE · Modell Delir, manuell kein Delir"
+    return "POSITIVE · Delir" if klasse == 1 else "NEGATIVE · kein Delir"
+
+
 def anonymize_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     """
     Return a presentation-safe copy: no PatientenID, no validation IDs, no report dates.
@@ -79,10 +130,13 @@ def anonymize_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     Intended for thesis talks and public demos. Original identifiers are discarded.
     """
     out = copy.deepcopy(snapshot)
-    polarity = str(out.get("polarity") or "positive")
+    polarity = normalize_demo_polarity(str(out.get("polarity") or "positive"))
     if polarity not in PRESENTATION_LABELS:
-        polarity = "positive" if int((out.get("final") or {}).get("klasse") or 0) == 1 else "negative"
+        gt = (out.get("verification") or {}).get("manual_report_ground_truth")
+        klasse = int((out.get("final") or {}).get("klasse") or 0)
+        polarity = "positive" if klasse == 1 and gt == 1 else "false_negative"
     labels = PRESENTATION_LABELS[polarity]
+    out["polarity"] = polarity
 
     case = dict(out.get("case") or {})
     scrub_tokens = [
@@ -152,18 +206,35 @@ Auf der Intensivstation dokumentiertes Delir mit Desorientierung zur Zeit. Delir
 Delirmedikation ausschleichen, CAM-ICU Screening.
 """
 
-CURATED_NEGATIVE_REPORT = """[Diagnosen]
-Community-acquired Pneumonie, respiratorische Insuffizienz.
+CURATED_FN_REPORT = """[Diagnosen]
+Sepsis, akutes Nierenversagen.
 
 [Jetziges Leiden]
-Zunehmende Dyspnoe bei bekannter COPD, ansonsten neurologisch ohne neu aufgetretene Auffälligkeiten.
+Seit Aufnahme zunehmende Verwirrtheit und Desorientierung zur Zeit, psychomotorische Verlangsamung.
 
 [Epikrise]
-Aufnahme auf IMC mit High-Flow-Sauerstoff und intravenöser Antibiotikatherapie. GCS stabil bei 15. Laborchemisch leichte Laktaterhöhung, kein septischer Schock.
+Vigilanz fluktuierend, GCS 13-14. Klinisch Verdacht auf ZNS-Beteiligung bei Sepsis. Neurologisch keine fokalen Ausfälle.
 
-[Prozedere]
-Weiterführende pulmonale Therapie, schrittweise Entwöhnung von High-Flow.
+[Verlauf]
+Desorientierung und Vigilanzschwankungen über mehrere Tage, auch nach Optimierung der Nierenfunktion.
 """
+
+CURATED_FN_INTERPRETATION: Dict[str, Any] = {
+    "delir_signale": {
+        "desorientierung": ["Desorientierung zur Zeit", "Verwirrtheit"],
+        "delir_explizit": [],
+        "hyperaktivitaet_agitation": [],
+        "vigilanz": ["Vigilanz fluktuierend", "GCS 13-14"],
+        "delir_therapie": [],
+        "delir_prophylaxe": [],
+    },
+    "signalstaerke": "niedrig",
+    "delir_probability_estimate": 28,
+    "kontext": "Indirekte Vigilanz- und Orientierungsstörung bei Sepsis — Delir möglich, aber nicht explizit dokumentiert.",
+    "begruendung": "Schwache indirekte Hinweise ohne explizite Delirdiagnose.",
+    "alternative_erklaerung": False,
+    "alternative_erklaerung_keywords": [],
+}
 
 CURATED_POSITIVE_INTERPRETATION: Dict[str, Any] = {
     "delir_signale": {
@@ -220,32 +291,7 @@ def _int_cell(value: object, default: int = 0) -> int:
 
 
 def _parse_delir_signale(raw: object) -> Dict[str, List[str]]:
-    empty = {
-        "desorientierung": [],
-        "delir_explizit": [],
-        "hyperaktivitaet_agitation": [],
-        "vigilanz": [],
-        "delir_therapie": [],
-        "delir_prophylaxe": [],
-    }
-    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
-        return empty
-    if isinstance(raw, dict):
-        out = dict(empty)
-        for key in empty:
-            val = raw.get(key, [])
-            out[key] = [str(v) for v in val] if isinstance(val, list) else []
-        return out
-    text = str(raw).strip()
-    if not text:
-        return empty
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, dict):
-            return _parse_delir_signale(parsed)
-    except json.JSONDecodeError:
-        pass
-    return empty
+    return parse_delir_signale(raw)
 
 
 def _extraction_payload(report_text: str) -> Dict[str, Any]:
@@ -334,53 +380,68 @@ def build_snapshot_from_row(
     }
 
 
+def _curated_replay_row(polarity: str) -> pd.Series:
+    pol = normalize_demo_polarity(polarity)
+    if pol == "positive":
+        interp = CURATED_POSITIVE_INTERPRETATION
+        return pd.Series(
+            {
+                "delir_signale": json.dumps(interp["delir_signale"], ensure_ascii=False),
+                "signalstaerke": interp["signalstaerke"],
+                "kontext": interp["kontext"],
+                "begruendung": interp["begruendung"],
+                "alternative_erklaerung": interp["alternative_erklaerung"],
+                "decision_rule_applied": "direct_delir_positive",
+                "klasse": 1,
+            }
+        )
+    if pol == "false_negative":
+        interp = CURATED_FN_INTERPRETATION
+        return pd.Series(
+            {
+                "delir_signale": json.dumps(interp["delir_signale"], ensure_ascii=False),
+                "signalstaerke": interp["signalstaerke"],
+                "kontext": interp["kontext"],
+                "begruendung": interp["begruendung"],
+                "alternative_erklaerung": interp["alternative_erklaerung"],
+                "decision_rule_applied": "isolated_indirect_not_positive",
+                "klasse": 0,
+            }
+        )
+    return pd.Series(
+        {
+            "delir_signale": "{}",
+            "signalstaerke": "niedrig",
+            "kontext": "",
+            "begruendung": "",
+            "decision_rule_applied": "no_evidence_prefilter_skip",
+            "klasse": 0,
+        }
+    )
+
+
 def build_curated_snapshot(*, polarity: str) -> Dict[str, Any]:
     """Anonymized fallback snapshot when validation CSVs are not available."""
-    if polarity == "positive":
+    pol = normalize_demo_polarity(polarity)
+    if pol == "positive":
         report_text = CURATED_POSITIVE_REPORT
-        case_meta = {
-            "bertyp": "Austrittsbericht",
-            "manual_report_ground_truth": 1,
-        }
-        interpretation = dict(CURATED_POSITIVE_INTERPRETATION)
-        final = {
-            "klasse": 1,
-            "decision_rule_applied": "direct_delir_positive",
-            "llm_called": True,
-            "llm_skipped_by_prefilter": False,
-            "manual_review_candidate": False,
-            "status": "success",
-        }
+        bertyp = "Austrittsbericht"
+        manual_gt = 1
     else:
-        report_text = CURATED_NEGATIVE_REPORT
-        case_meta = {
-            "bertyp": "Verlaufseintrag",
-            "manual_report_ground_truth": 0,
-        }
-        interpretation = dict(CURATED_NEGATIVE_INTERPRETATION)
-        final = {
-            "klasse": 0,
-            "decision_rule_applied": "no_evidence_prefilter_skip",
-            "llm_called": False,
-            "llm_skipped_by_prefilter": True,
-            "manual_review_candidate": False,
-            "status": "skipped",
-        }
-
-    extraction = _extraction_payload(report_text)
-    snap = {
-        "version": SNAPSHOT_VERSION,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "source": "curated_anonymized",
-        "polarity": polarity,
-        "case": case_meta,
-        "report_text": report_text,
-        "extraction": extraction,
-        "interpretation": interpretation,
-        "final": final,
-        "verification": {"model_correct_vs_manual": True},
-    }
-    return anonymize_snapshot(snap)
+        report_text = CURATED_FN_REPORT
+        bertyp = "Verlaufseintrag"
+        manual_gt = 1
+    trace = build_delirium_trace(
+        report_text=report_text,
+        bertyp=bertyp,
+        manual_gt=manual_gt,
+        live=False,
+        replay_row=_curated_replay_row(pol),
+        source="curated_anonymized",
+        polarity=pol,
+        case_meta={"bertyp": bertyp, "manual_report_ground_truth": manual_gt},
+    )
+    return anonymize_snapshot(trace)
 
 
 def to_json_safe(value: Any) -> Any:
@@ -510,6 +571,36 @@ def _score_positive_row(row: pd.Series) -> int:
     return score
 
 
+def _score_false_negative_row(row: pd.Series) -> int:
+    """Prefer verified FN cases; boost Patient_0057 / Patient_0075 when available."""
+    if _int_cell(row.get("manual_report_ground_truth"), -1) != 1:
+        return -1
+    if _int_cell(row.get("klasse")) != 0:
+        return -1
+    score = 0
+    if is_preferred_fn_patient(row):
+        score += 1000
+    if _bool_cell(row.get("llm_called")):
+        score += 35
+    if _bool_cell(row.get("llm_skipped_by_prefilter")):
+        score += 30
+    rule = str(row.get("decision_rule_applied") or "")
+    if rule in ("isolated_indirect_not_positive", "alternative_explanation_downgrade"):
+        score += 40
+    if "indirect" in rule or "niedrig" in rule:
+        score += 25
+    if _bool_cell(row.get("has_indirect_delir_evidence")):
+        score += 20
+    if str(row.get("signalstaerke") or "").lower() == "niedrig":
+        score += 15
+    if _bool_cell(row.get("manual_review_candidate")):
+        score += 10
+    snippet_count = len(parse_evidence_snippets(row.get("evidence_snippets")))
+    if 1 <= snippet_count <= 6:
+        score += 10
+    return score
+
+
 def _score_negative_row(row: pd.Series) -> int:
     if _int_cell(row.get("manual_report_ground_truth"), -1) != 0:
         return -1
@@ -540,10 +631,14 @@ def rank_validation_candidates(
     exclude_ids: Optional[Sequence[str]] = None,
     top_n: int = 15,
 ) -> List[Dict[str, Any]]:
-    """Return top scored TP/TN rows for manual inspection."""
+    """Return top scored TP/FN rows for manual inspection."""
     df = _merge_predictions_with_labels(predictions, labels)
     exclude = {str(x).strip() for x in (exclude_ids or []) if str(x).strip()}
-    scorer = _score_positive_row if polarity == "positive" else _score_negative_row
+    scorer = {
+        "positive": _score_positive_row,
+        "false_negative": _score_false_negative_row,
+        "negative": _score_false_negative_row,
+    }.get(normalize_demo_polarity(polarity), _score_positive_row)
     ranked: List[Dict[str, Any]] = []
     for _, row in df.iterrows():
         score = scorer(row)
@@ -574,7 +669,7 @@ def autopick_validation_report_id(
     polarity: str,
     exclude_ids: Optional[Sequence[str]] = None,
 ) -> Optional[str]:
-    """Pick the clearest verified TP or TN from merged validation predictions."""
+    """Pick the clearest verified TP or FN from merged validation predictions."""
     ranked = rank_validation_candidates(
         predictions, labels, polarity=polarity, exclude_ids=exclude_ids, top_n=1
     )
@@ -590,12 +685,14 @@ def generate_snapshot_from_validation(
     berichte_path: Path = BERICHTE_INPUT_PATH,
     validation_report_id: Optional[str] = None,
     exclude_validation_report_ids: Optional[Sequence[str]] = None,
+    live: bool = False,
 ) -> Dict[str, Any]:
     """
     Build a snapshot from frozen validation data.
 
     Falls back to curated anonymized demo cases when predictions are missing or stub-only.
     """
+    polarity = normalize_demo_polarity(polarity)
     if not predictions_path.exists() or predictions_path.stat().st_size < 200:
         LOGGER.warning("Predictions missing or stub-only; using curated %s case.", polarity)
         snap = build_curated_snapshot(polarity=polarity)
@@ -638,11 +735,23 @@ def generate_snapshot_from_validation(
         return load_snapshot(out_path)
 
     manual_gt = _int_cell(row.get("manual_report_ground_truth"), -1)
-    snap = build_snapshot_from_row(
-        row,
+    trace = build_delirium_trace(
         report_text=report_text,
+        bertyp=str(row.get("bertyp") or ""),
         manual_gt=manual_gt if manual_gt >= 0 else None,
+        live=live,
+        replay_row=row,
         source="validation_cohort",
+        polarity=polarity,
+        case_meta={
+            "validation_report_id": str(row.get("validation_report_id") or ""),
+            "validation_patient_id": str(row.get("validation_patient_id") or ""),
+            "PatientenID": str(row.get("PatientenID") or ""),
+            "bertyp": str(row.get("bertyp") or ""),
+            "berdat": str(row.get("berdat") or ""),
+            "bericht": str(row.get("bericht") or ""),
+            "manual_report_ground_truth": manual_gt if manual_gt >= 0 else None,
+        },
     )
     ranked = rank_validation_candidates(
         predictions,
@@ -652,24 +761,33 @@ def generate_snapshot_from_validation(
         top_n=20,
     )
     vid = str(row.get("validation_report_id") or "")
-    snap["selection"] = {
+    trace["selection"] = {
         "validation_report_id_picked": vid,
         "rank": next((i + 1 for i, r in enumerate(ranked) if r["validation_report_id"] == vid), None),
         "score": next((r["score"] for r in ranked if r["validation_report_id"] == vid), None),
         "top_candidates": ranked[:5],
+        "capture_mode": "live" if live else "replay_csv",
     }
-    save_snapshot(snap, out_path)
+    save_snapshot(trace, out_path)
     return load_snapshot(out_path)
 
 
 def ensure_default_snapshots() -> Tuple[Path, Path]:
-    """Create default demo snapshots under data/demo/ if missing."""
+    """Create default demo snapshots under data/demo/ if missing or outdated (v1)."""
     pos_path = DEMO_POSITIVE_SNAPSHOT_PATH
     neg_path = DEMO_NEGATIVE_SNAPSHOT_PATH
-    if not pos_path.exists():
-        generate_snapshot_from_validation(polarity="positive", out_path=pos_path)
-    if not neg_path.exists():
-        generate_snapshot_from_validation(polarity="negative", out_path=neg_path)
+    for path, polarity in ((pos_path, "positive"), (neg_path, "false_negative")):
+        needs_build = not path.exists()
+        if not needs_build:
+            try:
+                snap = load_snapshot(path)
+                needs_build = not trace_is_v2(snap)
+                if polarity == "false_negative" and normalize_demo_polarity(str(snap.get("polarity"))) != "false_negative":
+                    needs_build = True
+            except (json.JSONDecodeError, OSError):
+                needs_build = True
+        if needs_build:
+            generate_snapshot_from_validation(polarity=polarity, out_path=path)
     return pos_path, neg_path
 
 
