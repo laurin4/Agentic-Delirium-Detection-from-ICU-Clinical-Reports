@@ -22,13 +22,21 @@ try:
 except ImportError:  # pragma: no cover
     np = None  # type: ignore[assignment]
 
+from src.analysis.build_manual_validation_progress import (
+    _parse_report_gt,
+    _patient_model_positive,
+    assign_confusion_group,
+)
 from src.analysis.export_presentation_examples import parse_evidence_snippets
+from src.analysis.manual_report_labels import merge_manual_report_labels
 from src.pipeline.frozen_cohort_inference import build_stable_report_text_index
 from src.pipeline.paths import (
     BERICHTE_INPUT_PATH,
     DEMO_NEGATIVE_SNAPSHOT_PATH,
     DEMO_POSITIVE_SNAPSHOT_PATH,
+    FINAL_MANUAL_VALIDATION_EVAL_DIR,
     FROZEN_MANUAL_REPORT_LABELS_PATH,
+    FROZEN_PATIENT_VALIDATION_COHORT_PATH,
     VALIDATION_COHORT_PREDICTIONS_PATH,
 )
 from src.analysis.demo_delirium_trace import (
@@ -70,6 +78,7 @@ PRESENTATION_LABELS: Dict[str, Dict[str, str]] = {
 
 # Preferred FN patients for the thesis demo (validation cohort / error analysis).
 PREFERRED_FN_PATIENT_IDS: Tuple[str, ...] = ("Patient_0057", "Patient_0075")
+PREFERRED_FN_PATIENT_SUFFIXES: Tuple[str, ...] = ("0057", "0075")
 
 DEMO_POLARITIES: Tuple[str, ...] = ("positive", "false_negative")
 
@@ -98,13 +107,145 @@ def normalize_demo_polarity(polarity: str) -> str:
     return p
 
 
-def is_preferred_fn_patient(row: pd.Series) -> bool:
-    for col in ("validation_patient_id", "validation_report_id"):
-        vid = str(row.get(col) or "")
-        for pref in PREFERRED_FN_PATIENT_IDS:
-            if pref in vid:
+def patient_suffix_matches(row: pd.Series, suffix: str) -> bool:
+    """Match Patient_0057 / 57 / validation_report_id containing suffix."""
+    suf = str(suffix or "").strip()
+    if not suf:
+        return False
+    bare = suf.lstrip("0") or suf
+    padded = bare.zfill(4)
+    needles = {
+        suf,
+        bare,
+        padded,
+        f"Patient_{suf}",
+        f"Patient_{padded}",
+        f"Patient_{bare}",
+    }
+    for col in ("validation_patient_id", "validation_report_id", "PatientenID"):
+        val = str(row.get(col) or "")
+        if not val:
+            continue
+        for needle in needles:
+            if needle and needle in val:
                 return True
+        if re.search(rf"Patient_0*{re.escape(bare)}\b", val, flags=re.IGNORECASE):
+            return True
     return False
+
+
+def is_preferred_fn_patient(row: pd.Series) -> bool:
+    return any(patient_suffix_matches(row, suf) for suf in PREFERRED_FN_PATIENT_SUFFIXES)
+
+
+def _report_model_klasse(row: pd.Series) -> int:
+    """Report prediction — matches evaluation: model_report_prediction before klasse."""
+    for col in ("model_report_prediction", "klasse"):
+        val = _int_cell(row.get(col), -1)
+        if val in (0, 1):
+            return val
+    return -1
+
+
+def _manual_report_gt(row: pd.Series) -> int:
+    return _int_cell(row.get("manual_report_ground_truth"), -1)
+
+
+def _load_frozen_patient_manual_gt() -> Dict[str, int]:
+    """validation_patient_id → derived_manual_patient_ground_truth (0/1)."""
+    out: Dict[str, int] = {}
+    for path in (
+        FINAL_MANUAL_VALIDATION_EVAL_DIR / "patient_level_ground_truth.csv",
+        FROZEN_PATIENT_VALIDATION_COHORT_PATH,
+    ):
+        if not path.exists():
+            continue
+        df = pd.read_csv(path)
+        if "validation_patient_id" not in df.columns:
+            continue
+        col = "derived_manual_patient_ground_truth"
+        if col not in df.columns:
+            continue
+        for vpid, grp in df.groupby("validation_patient_id"):
+            vals = pd.to_numeric(grp[col], errors="coerce").dropna()
+            if len(vals):
+                out[str(vpid)] = int(vals.max())
+    return out
+
+
+def _computed_patient_model_positive(grp: pd.DataFrame) -> Optional[int]:
+    vals = [_report_model_klasse(row) for _, row in grp.iterrows()]
+    valid = [v for v in vals if v in (0, 1)]
+    if valid:
+        return max(valid)
+    return _patient_model_positive(grp)
+
+
+def _computed_derived_manual_gt(
+    grp: pd.DataFrame,
+    frozen_patient_gt: Optional[Dict[str, int]] = None,
+) -> Optional[int]:
+    gt_series = (
+        grp["manual_report_ground_truth"]
+        if "manual_report_ground_truth" in grp.columns
+        else pd.Series(index=grp.index, dtype=object)
+    )
+    parsed = _parse_report_gt(gt_series)
+    n_total = int(len(grp))
+    n_labeled = int(parsed.notna().sum())
+    vpid = (
+        str(grp["validation_patient_id"].iloc[0])
+        if "validation_patient_id" in grp.columns and len(grp)
+        else ""
+    )
+    frozen_val: Optional[int] = None
+    if frozen_patient_gt and vpid in frozen_patient_gt:
+        frozen_val = frozen_patient_gt[vpid]
+
+    if (parsed == "1").any():
+        return 1
+
+    label_derived: Optional[int] = None
+    if n_total > 0 and n_labeled == n_total:
+        label_derived = 0
+
+    if frozen_val is not None:
+        if label_derived is None:
+            return frozen_val
+        return max(label_derived, frozen_val)
+
+    return label_derived
+
+
+def _is_patient_level_fn(
+    grp: pd.DataFrame,
+    frozen_patient_gt: Optional[Dict[str, int]] = None,
+) -> bool:
+    model_pos = _computed_patient_model_positive(grp)
+    derived = _computed_derived_manual_gt(grp, frozen_patient_gt)
+    return model_pos == 0 and derived == 1
+
+
+def _patient_subset(merged: pd.DataFrame, suffix: str) -> pd.DataFrame:
+    return merged[merged.apply(lambda r: patient_suffix_matches(r, suffix), axis=1)]
+
+
+def resolve_fn_manual_gt(
+    merged: pd.DataFrame,
+    row: pd.Series,
+    *,
+    frozen_patient_gt: Optional[Dict[str, int]] = None,
+) -> Optional[int]:
+    """Manual GT for FN verification: report label, else patient-level derived GT."""
+    manual = _manual_report_gt(row)
+    if manual == 1:
+        return 1
+    vpid = str(row.get("validation_patient_id") or "").strip()
+    if vpid and "validation_patient_id" in merged.columns:
+        grp = merged[merged["validation_patient_id"].astype(str) == vpid]
+        if not grp.empty and _is_patient_level_fn(grp, frozen_patient_gt):
+            return 1
+    return manual if manual >= 0 else None
 
 
 def presentation_polarity_banner(snapshot: Dict[str, Any]) -> str:
@@ -326,7 +467,9 @@ def build_snapshot_from_row(
         extraction["llm_report_text"] = str(row.get("llm_report_text") or extraction["llm_report_text"])
     llm_called = _bool_cell(row.get("llm_called"))
     llm_skipped = _bool_cell(row.get("llm_skipped_by_prefilter"))
-    klasse = _int_cell(row.get("klasse"))
+    klasse = _report_model_klasse(row)
+    if klasse < 0:
+        klasse = 0
     polarity = "positive" if klasse == 1 else "negative"
     prob = _int_cell(row.get("delir_probability_estimate"), default=-1)
 
@@ -488,13 +631,29 @@ def _merge_predictions_with_labels(
     labels: Optional[pd.DataFrame],
 ) -> pd.DataFrame:
     pred = predictions.copy()
-    if labels is None or labels.empty:
-        return pred
-    label_cols = [c for c in ("validation_report_id", "manual_report_ground_truth", "manual_comment") if c in labels.columns]
-    if "validation_report_id" not in label_cols:
-        return pred
-    lab = labels[label_cols].drop_duplicates("validation_report_id")
-    return pred.merge(lab, on="validation_report_id", how="left", suffixes=("", "_label"))
+    if labels is not None and not labels.empty and "validation_report_id" in labels.columns:
+        try:
+            pred = merge_manual_report_labels(pred, labels, log_context="demo snapshot")
+        except (ValueError, KeyError):
+            label_cols = [
+                c
+                for c in ("validation_report_id", "manual_report_ground_truth", "manual_comment")
+                if c in labels.columns
+            ]
+            if "validation_report_id" in label_cols:
+                lab = labels[label_cols].drop_duplicates("validation_report_id")
+                pred = pred.merge(lab, on="validation_report_id", how="left", suffixes=("", "_label"))
+                if "manual_report_ground_truth_label" in pred.columns:
+                    base = pred.get("manual_report_ground_truth")
+                    if base is None:
+                        pred["manual_report_ground_truth"] = pred["manual_report_ground_truth_label"]
+                    else:
+                        pred["manual_report_ground_truth"] = pd.to_numeric(
+                            base, errors="coerce"
+                        ).combine_first(
+                            pd.to_numeric(pred["manual_report_ground_truth_label"], errors="coerce")
+                        )
+    return pred
 
 
 def _resolve_report_text(row: pd.Series, text_index: Dict[Tuple[str, str, str, str], str]) -> str:
@@ -514,9 +673,9 @@ def _resolve_report_text(row: pd.Series, text_index: Dict[Tuple[str, str, str, s
 
 def _score_positive_row(row: pd.Series) -> int:
     """Prefer concise, clear direct-delir cases suitable for a thesis slide."""
-    if _int_cell(row.get("manual_report_ground_truth"), -1) != 1:
+    if _manual_report_gt(row) != 1:
         return -1
-    if _int_cell(row.get("klasse")) != 1:
+    if _report_model_klasse(row) != 1:
         return -1
 
     snippets = parse_evidence_snippets(row.get("evidence_snippets"))
@@ -573,13 +732,26 @@ def _score_positive_row(row: pd.Series) -> int:
 
 def _score_false_negative_row(row: pd.Series) -> int:
     """Prefer verified FN cases; boost Patient_0057 / Patient_0075 when available."""
-    if _int_cell(row.get("manual_report_ground_truth"), -1) != 1:
+    if _manual_report_gt(row) != 1:
         return -1
-    if _int_cell(row.get("klasse")) != 0:
+    if _report_model_klasse(row) != 0:
         return -1
+    return _score_fn_illustration_row(row)
+
+
+def _score_patient_fn_representative_row(row: pd.Series) -> int:
+    """Best report to illustrate patient-level FN (model=0, patient manually delir+)."""
+    if _report_model_klasse(row) != 0:
+        return -1
+    return _score_fn_illustration_row(row)
+
+
+def _score_fn_illustration_row(row: pd.Series) -> int:
     score = 0
     if is_preferred_fn_patient(row):
         score += 1000
+    if _manual_report_gt(row) == 1:
+        score += 200
     if _bool_cell(row.get("llm_called")):
         score += 35
     if _bool_cell(row.get("llm_skipped_by_prefilter")):
@@ -602,9 +774,9 @@ def _score_false_negative_row(row: pd.Series) -> int:
 
 
 def _score_negative_row(row: pd.Series) -> int:
-    if _int_cell(row.get("manual_report_ground_truth"), -1) != 0:
+    if _manual_report_gt(row) != 0:
         return -1
-    if _int_cell(row.get("klasse")) != 0:
+    if _report_model_klasse(row) != 0:
         return -1
     score = 0
     rule = str(row.get("decision_rule_applied") or "")
@@ -634,19 +806,49 @@ def rank_validation_candidates(
     """Return top scored TP/FN rows for manual inspection."""
     df = _merge_predictions_with_labels(predictions, labels)
     exclude = {str(x).strip() for x in (exclude_ids or []) if str(x).strip()}
-    scorer = {
-        "positive": _score_positive_row,
-        "false_negative": _score_false_negative_row,
-        "negative": _score_false_negative_row,
-    }.get(normalize_demo_polarity(polarity), _score_positive_row)
+    pol = normalize_demo_polarity(polarity)
+    frozen_gt = _load_frozen_patient_manual_gt() if pol == "false_negative" else {}
+
+    if pol == "false_negative":
+        ranked = _rank_false_negative_candidates(df, exclude, frozen_gt)
+    else:
+        scorer = _score_positive_row
+        ranked = []
+        for _, row in df.iterrows():
+            score = scorer(row)
+            if score < 0:
+                continue
+            vid = str(row.get("validation_report_id") or "").strip()
+            if not vid or vid in exclude:
+                continue
+            ranked.append(
+                {
+                    "validation_report_id": vid,
+                    "score": score,
+                    "bertyp": str(row.get("bertyp") or ""),
+                    "decision_rule_applied": str(row.get("decision_rule_applied") or ""),
+                    "signalstaerke": str(row.get("signalstaerke") or ""),
+                    "snippet_count": len(parse_evidence_snippets(row.get("evidence_snippets"))),
+                    "report_length": _int_cell(row.get("original_report_text_length"), 0),
+                }
+            )
+
+    ranked.sort(key=lambda x: (-x["score"], x["validation_report_id"]))
+    return ranked[:top_n]
+
+
+def _rank_false_negative_candidates(
+    df: pd.DataFrame,
+    exclude: set[str],
+    frozen_gt: Dict[str, int],
+) -> List[Dict[str, Any]]:
     ranked: List[Dict[str, Any]] = []
-    for _, row in df.iterrows():
-        score = scorer(row)
-        if score < 0:
-            continue
+    patient_has_strict_fn: set[str] = set()
+
+    def _append_candidate(row: pd.Series, score: int, pick_mode: str) -> None:
         vid = str(row.get("validation_report_id") or "").strip()
         if not vid or vid in exclude:
-            continue
+            return
         ranked.append(
             {
                 "validation_report_id": vid,
@@ -656,10 +858,144 @@ def rank_validation_candidates(
                 "signalstaerke": str(row.get("signalstaerke") or ""),
                 "snippet_count": len(parse_evidence_snippets(row.get("evidence_snippets"))),
                 "report_length": _int_cell(row.get("original_report_text_length"), 0),
+                "pick_mode": pick_mode,
             }
         )
-    ranked.sort(key=lambda x: (-x["score"], x["validation_report_id"]))
-    return ranked[:top_n]
+
+    for _, row in df.iterrows():
+        score = _score_false_negative_row(row)
+        if score >= 0:
+            _append_candidate(row, score, "report_fn")
+            vpid = str(row.get("validation_patient_id") or "").strip()
+            if vpid:
+                patient_has_strict_fn.add(vpid)
+
+    if "validation_patient_id" not in df.columns:
+        return ranked
+
+    for vpid, grp in df.groupby("validation_patient_id"):
+        vpid_s = str(vpid).strip()
+        if not vpid_s or vpid_s in patient_has_strict_fn:
+            continue
+        if not _is_patient_level_fn(grp, frozen_gt):
+            continue
+        best_row: Optional[pd.Series] = None
+        best_score = -1
+        for _, row in grp.iterrows():
+            score = _score_patient_fn_representative_row(row)
+            if score > best_score:
+                best_score = score
+                best_row = row
+        if best_row is not None and best_score >= 0:
+            _append_candidate(best_row, best_score, "patient_fn")
+    return ranked
+
+
+def _pick_fn_report_for_patient_suffix(
+    merged: pd.DataFrame,
+    suffix: str,
+    exclude_ids: Optional[Sequence[str]] = None,
+    *,
+    frozen_gt: Optional[Dict[str, int]] = None,
+) -> Optional[str]:
+    """Best FN report for one patient: report-level FN first, else patient-level FN representative."""
+    frozen_gt = frozen_gt if frozen_gt is not None else _load_frozen_patient_manual_gt()
+    exclude = {str(x).strip() for x in (exclude_ids or []) if str(x).strip()}
+    subset = _patient_subset(merged, suffix)
+    if subset.empty:
+        return None
+
+    ranked: List[Tuple[int, str]] = []
+    for _, row in subset.iterrows():
+        vid = str(row.get("validation_report_id") or "").strip()
+        if not vid or vid in exclude:
+            continue
+        score = _score_false_negative_row(row)
+        if score >= 0:
+            ranked.append((score, vid))
+    if ranked:
+        ranked.sort(key=lambda x: (-x[0], x[1]))
+        return ranked[0][1]
+
+    if not _is_patient_level_fn(subset, frozen_gt):
+        return None
+
+    rep_ranked: List[Tuple[int, str]] = []
+    for _, row in subset.iterrows():
+        vid = str(row.get("validation_report_id") or "").strip()
+        if not vid or vid in exclude:
+            continue
+        score = _score_patient_fn_representative_row(row)
+        if score >= 0:
+            rep_ranked.append((score, vid))
+    if not rep_ranked:
+        return None
+    rep_ranked.sort(key=lambda x: (-x[0], x[1]))
+    LOGGER.info(
+        "Picked patient-level FN representative %s for suffix %s (no report-level FN on same row)",
+        rep_ranked[0][1],
+        suffix,
+    )
+    return rep_ranked[0][1]
+
+
+def diagnose_preferred_fn_patients(
+    predictions: pd.DataFrame,
+    labels: Optional[pd.DataFrame],
+) -> List[Dict[str, Any]]:
+    """
+    Explain Patient_0057 / Patient_0075 for FN demo selection.
+
+    Picks report-level FN (model=0, manual=1) when available; otherwise patient-level FN
+    (model_patient_positive=0, derived_manual_patient_ground_truth=1) with best model=0 report.
+    """
+    merged = _merge_predictions_with_labels(predictions, labels)
+    frozen_gt = _load_frozen_patient_manual_gt()
+    out: List[Dict[str, Any]] = []
+    for suffix in PREFERRED_FN_PATIENT_SUFFIXES:
+        rows = _patient_subset(merged, suffix)
+        model_pos = _computed_patient_model_positive(rows) if not rows.empty else None
+        derived = _computed_derived_manual_gt(rows, frozen_gt) if not rows.empty else None
+        patient_fn = _is_patient_level_fn(rows, frozen_gt) if not rows.empty else False
+        entry: Dict[str, Any] = {
+            "patient_suffix": suffix,
+            "reports_found": int(len(rows)),
+            "patient_level_fn": patient_fn,
+            "model_patient_positive": model_pos,
+            "derived_manual_patient_ground_truth": derived,
+            "patient_confusion_group": assign_confusion_group(model_pos, derived),
+            "report_level_fn_reports": [],
+            "all_reports": [],
+            "pickable_fn_report_id": _pick_fn_report_for_patient_suffix(
+                merged, suffix, frozen_gt=frozen_gt
+            ),
+        }
+        for _, row in rows.iterrows():
+            model_k = _report_model_klasse(row)
+            manual = _manual_report_gt(row)
+            vid = str(row.get("validation_report_id") or "")
+            if model_k == 0 and manual == 1:
+                group = "FN"
+            elif model_k == 1 and manual == 1:
+                group = "TP"
+            elif model_k == 1 and manual == 0:
+                group = "FP"
+            elif model_k == 0 and manual == 0:
+                group = "TN"
+            else:
+                group = "?"
+            rec = {
+                "validation_report_id": vid,
+                "model_report_prediction": model_k,
+                "manual_report_ground_truth": manual,
+                "confusion": group,
+                "decision_rule_applied": str(row.get("decision_rule_applied") or ""),
+            }
+            entry["all_reports"].append(rec)
+            if group == "FN":
+                entry["report_level_fn_reports"].append(vid)
+        out.append(entry)
+    return out
 
 
 def autopick_validation_report_id(
@@ -668,8 +1004,39 @@ def autopick_validation_report_id(
     *,
     polarity: str,
     exclude_ids: Optional[Sequence[str]] = None,
+    preferred_fn_patient_suffix: Optional[str] = None,
 ) -> Optional[str]:
     """Pick the clearest verified TP or FN from merged validation predictions."""
+    pol = normalize_demo_polarity(polarity)
+    merged = _merge_predictions_with_labels(predictions, labels)
+    frozen_gt = _load_frozen_patient_manual_gt() if pol == "false_negative" else {}
+
+    if pol == "false_negative":
+        suffixes: List[str] = []
+        if preferred_fn_patient_suffix:
+            suffixes.append(str(preferred_fn_patient_suffix).strip())
+        suffixes.extend([s for s in PREFERRED_FN_PATIENT_SUFFIXES if s not in suffixes])
+        for suffix in suffixes:
+            if not suffix:
+                continue
+            picked = _pick_fn_report_for_patient_suffix(
+                merged, suffix, exclude_ids, frozen_gt=frozen_gt
+            )
+            if picked:
+                LOGGER.info("Picked FN report %s for patient suffix %s", picked, suffix)
+                return picked
+            subset = _patient_subset(merged, suffix)
+            if not subset.empty:
+                LOGGER.warning(
+                    "Patient %s: %d report(s) in cohort but not pickable as FN "
+                    "(patient_level_fn=%s, model_pos=%s, derived_manual=%s).",
+                    suffix,
+                    len(subset),
+                    _is_patient_level_fn(subset, frozen_gt),
+                    _computed_patient_model_positive(subset),
+                    _computed_derived_manual_gt(subset, frozen_gt),
+                )
+
     ranked = rank_validation_candidates(
         predictions, labels, polarity=polarity, exclude_ids=exclude_ids, top_n=1
     )
@@ -685,6 +1052,7 @@ def generate_snapshot_from_validation(
     berichte_path: Path = BERICHTE_INPUT_PATH,
     validation_report_id: Optional[str] = None,
     exclude_validation_report_ids: Optional[Sequence[str]] = None,
+    preferred_fn_patient_suffix: Optional[str] = None,
     live: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -714,9 +1082,15 @@ def generate_snapshot_from_validation(
             labels,
             polarity=polarity,
             exclude_ids=exclude_validation_report_ids,
+            preferred_fn_patient_suffix=preferred_fn_patient_suffix,
         )
         if not picked_id:
             LOGGER.warning("No suitable %s case in validation data; using curated demo.", polarity)
+            if polarity == "false_negative":
+                LOGGER.warning(
+                    "Tip: run --diagnose-fn-patients to inspect Patient_0057/0075 "
+                    "(patient-level FN is accepted when report-level FN is missing)."
+                )
             snap = build_curated_snapshot(polarity=polarity)
             save_snapshot(snap, out_path)
             return snap
@@ -734,11 +1108,16 @@ def generate_snapshot_from_validation(
         save_snapshot(snap, out_path)
         return load_snapshot(out_path)
 
-    manual_gt = _int_cell(row.get("manual_report_ground_truth"), -1)
+    frozen_gt = _load_frozen_patient_manual_gt()
+    if polarity == "false_negative":
+        manual_gt = resolve_fn_manual_gt(merged, row, frozen_patient_gt=frozen_gt)
+    else:
+        manual_gt = _manual_report_gt(row)
+        manual_gt = manual_gt if manual_gt >= 0 else None
     trace = build_delirium_trace(
         report_text=report_text,
         bertyp=str(row.get("bertyp") or ""),
-        manual_gt=manual_gt if manual_gt >= 0 else None,
+        manual_gt=manual_gt,
         live=live,
         replay_row=row,
         source="validation_cohort",
@@ -750,7 +1129,7 @@ def generate_snapshot_from_validation(
             "bertyp": str(row.get("bertyp") or ""),
             "berdat": str(row.get("berdat") or ""),
             "bericht": str(row.get("bericht") or ""),
-            "manual_report_ground_truth": manual_gt if manual_gt >= 0 else None,
+            "manual_report_ground_truth": manual_gt,
         },
     )
     ranked = rank_validation_candidates(

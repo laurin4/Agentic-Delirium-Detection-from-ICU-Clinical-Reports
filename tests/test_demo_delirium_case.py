@@ -302,6 +302,113 @@ def test_export_demo_thesis(tmp_path):
     assert "Case A" in combined and "Case B" in combined
 
 
+def test_fn_pick_uses_model_report_prediction_over_stale_klasse():
+    preds = pd.DataFrame(
+        [
+            {
+                "validation_report_id": "Patient_0057_Report_0001",
+                "validation_patient_id": "Patient_0057",
+                "klasse": 1,
+                "model_report_prediction": 0,
+                "decision_rule_applied": "isolated_indirect_not_positive",
+                "has_indirect_delir_evidence": True,
+                "llm_called": True,
+                "evidence_snippets": "[]",
+            }
+        ]
+    )
+    labels = pd.DataFrame(
+        {
+            "validation_report_id": ["Patient_0057_Report_0001"],
+            "manual_report_ground_truth": [1],
+        }
+    )
+    assert (
+        autopick_validation_report_id(preds, labels, polarity="false_negative")
+        == "Patient_0057_Report_0001"
+    )
+
+
+def test_patient_level_fn_pick_without_report_level_manual_on_same_row(tmp_path, monkeypatch):
+    from src.analysis.demo_delirium_snapshot import _load_frozen_patient_manual_gt
+
+    preds = pd.DataFrame(
+        [
+            {
+                "validation_report_id": "Patient_0075_Report_0001",
+                "validation_patient_id": "Patient_0075",
+                "model_report_prediction": 0,
+                "decision_rule_applied": "isolated_indirect_not_positive",
+                "has_indirect_delir_evidence": True,
+                "llm_called": True,
+                "evidence_snippets": "[]",
+            },
+            {
+                "validation_report_id": "Patient_0075_Report_0002",
+                "validation_patient_id": "Patient_0075",
+                "model_report_prediction": 0,
+                "decision_rule_applied": "no_evidence_prefilter_skip",
+                "llm_skipped_by_prefilter": True,
+                "evidence_snippets": "[]",
+            },
+        ]
+    )
+    labels = pd.DataFrame(
+        {
+            "validation_report_id": [
+                "Patient_0075_Report_0001",
+                "Patient_0075_Report_0002",
+            ],
+            "manual_report_ground_truth": [0, 0],
+        }
+    )
+    monkeypatch.setattr(
+        "src.analysis.demo_delirium_snapshot._load_frozen_patient_manual_gt",
+        lambda: {"Patient_0075": 1},
+    )
+    picked = autopick_validation_report_id(
+        preds, labels, polarity="false_negative", preferred_fn_patient_suffix="0075"
+    )
+    assert picked == "Patient_0075_Report_0001"
+
+
+def test_patient_suffix_matches_and_fn_diagnose():
+    from src.analysis.demo_delirium_snapshot import (
+        diagnose_preferred_fn_patients,
+        patient_suffix_matches,
+    )
+
+    row_fp = pd.Series(
+        {
+            "validation_patient_id": "Patient_0057",
+            "validation_report_id": "Patient_0057_Report_0002",
+            "klasse": 1,
+            "manual_report_ground_truth": 0,
+        }
+    )
+    row_fn = pd.Series(
+        {
+            "validation_patient_id": "Patient_0057",
+            "validation_report_id": "Patient_0057_Report_0003",
+            "klasse": 0,
+            "manual_report_ground_truth": 1,
+        }
+    )
+    assert patient_suffix_matches(row_fp, "0057")
+    assert patient_suffix_matches(row_fp, "57")
+    preds = pd.DataFrame([row_fp.to_dict(), row_fn.to_dict()])
+    labels = pd.DataFrame(
+        {
+            "validation_report_id": ["Patient_0057_Report_0002", "Patient_0057_Report_0003"],
+            "manual_report_ground_truth": [0, 1],
+        }
+    )
+    diag = diagnose_preferred_fn_patients(preds, labels)
+    block = next(d for d in diag if d["patient_suffix"] == "0057")
+    assert block["pickable_fn_report_id"] == "Patient_0057_Report_0003"
+    assert block["report_level_fn_reports"] == ["Patient_0057_Report_0003"]
+
+
 def test_run_demo_no_pause(capsys, tmp_path):
     from src.analysis.demo_delirium_case import run_demo
 

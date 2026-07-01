@@ -23,6 +23,7 @@ import pandas as pd
 
 from src.analysis.demo_delirium_snapshot import (
     ensure_default_snapshots,
+    diagnose_preferred_fn_patients,
     generate_snapshot_from_validation,
     load_snapshot,
     normalize_demo_polarity,
@@ -835,6 +836,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Print top auto-pick candidates for the FN case and exit",
     )
+    parser.add_argument(
+        "--diagnose-fn-patients",
+        action="store_true",
+        help="Explain Patient_0057 / Patient_0075 vs report-level FN requirements",
+    )
+    parser.add_argument(
+        "--fn-patient",
+        metavar="SUFFIX",
+        help="When auto-picking FN, try this patient first (e.g. 0057 or 0075)",
+    )
     parser.add_argument("--positive-snapshot", type=Path, default=DEMO_POSITIVE_SNAPSHOT_PATH)
     parser.add_argument("--negative-snapshot", type=Path, default=DEMO_NEGATIVE_SNAPSHOT_PATH)
     args = parser.parse_args(argv)
@@ -882,6 +893,44 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
         return 0
 
+    if args.diagnose_fn_patients:
+        if not VALIDATION_COHORT_PREDICTIONS_PATH.exists():
+            print(f"Missing predictions: {VALIDATION_COHORT_PREDICTIONS_PATH}")
+            return 1
+        preds = pd.read_csv(VALIDATION_COHORT_PREDICTIONS_PATH)
+        labels = (
+            pd.read_csv(FROZEN_MANUAL_REPORT_LABELS_PATH)
+            if FROZEN_MANUAL_REPORT_LABELS_PATH.exists()
+            else None
+        )
+        print(
+            "FN demo selection: report-level FN (model=0, manual=1) preferred; "
+            "patient-level FN (model_patient_positive=0, derived_manual=1) also accepted.\n"
+        )
+        for block in diagnose_preferred_fn_patients(preds, labels):
+            print(f"Patient suffix {block['patient_suffix']}:")
+            print(f"  reports in cohort: {block['reports_found']}")
+            print(
+                f"  patient-level: FN={block['patient_level_fn']} "
+                f"model_pos={block['model_patient_positive']} "
+                f"derived_manual={block['derived_manual_patient_ground_truth']} "
+                f"→ {block['patient_confusion_group'] or '?'}"
+            )
+            if block["pickable_fn_report_id"]:
+                print(f"  → pickable FN report: {block['pickable_fn_report_id']}")
+            else:
+                print("  → not pickable as FN")
+            if not block["all_reports"]:
+                print("  (patient not found — check validation_report_id format)")
+            for rep in block["all_reports"]:
+                print(
+                    f"    {rep['validation_report_id']}: "
+                    f"model={rep['model_report_prediction']} manual_gt={rep['manual_report_ground_truth']} "
+                    f"→ {rep['confusion']}  rule={rep['decision_rule_applied']}"
+                )
+            print()
+        return 0
+
     snapshot_fn = args.snapshot_false_negative or args.snapshot_negative
     if args.snapshot_positive or snapshot_fn:
         if args.snapshot_positive:
@@ -901,9 +950,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                 out_path=args.negative_snapshot,
                 validation_report_id=args.validation_report_id if snapshot_fn and not args.snapshot_positive else None,
                 exclude_validation_report_ids=exclude_ids or None,
+                preferred_fn_patient_suffix=args.fn_patient,
                 live=args.live,
             )
             print(f"Wrote FN snapshot → {args.negative_snapshot} ({presentation_case_title(snap)})")
+            if snap.get("source") == "curated_anonymized":
+                print("  ⚠ curated fallback — NOT from validation cohort. Run --diagnose-fn-patients on server.")
+            elif snap.get("case", {}).get("validation_report_id"):
+                print(f"  validation_report_id: {snap['case'].get('validation_report_id')}")
             if args.live:
                 print("  capture: live LLM ✓")
         return 0

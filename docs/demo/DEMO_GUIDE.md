@@ -46,12 +46,24 @@ Each case contains five sections (~half a page):
 python -m src.analysis.demo_delirium_case --list-positive-candidates
 python -m src.analysis.demo_delirium_case --list-false-negative-candidates
 
-# Force FN from error-analysis patients:
+# Why didn't Patient_0057 / 0075 get picked?
+python -m src.analysis.demo_delirium_case --diagnose-fn-patients
+```
+
+**Important:** Case B needs a **report-level FN** (`klasse=0` and `manual_report_ground_truth=1` on the **same** report). Patient_0057 and Patient_0075 from your error analysis may be **FP** (`klasse=1`, `manual=0`) — then they cannot be Case B. The diagnose command shows each report’s confusion group.
+
+If a real FN report exists for 0057/0075:
+
+```bash
+python -m src.analysis.demo_delirium_case --snapshot-false-negative --fn-patient 0057
+# or force exact report:
 python -m src.analysis.demo_delirium_case --snapshot-false-negative \
-  --validation-report-id Patient_0057_Report_0001
+  --validation-report-id Patient_0057_Report_YYYY
 
 python -m src.analysis.demo_delirium_case --thesis
 ```
+
+If you see `curated fallback` after snapshot build, Case B is **not** from the validation cohort — run diagnose on the server.
 
 ---
 
