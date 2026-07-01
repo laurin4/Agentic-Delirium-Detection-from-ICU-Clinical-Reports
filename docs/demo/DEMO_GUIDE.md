@@ -15,10 +15,10 @@ cd delirium_project
 source Ba_venv/bin/activate
 
 # 1. Build snapshots from validation cohort (server; FN prefers PatientenID 308617 / 308954)
-python -m src.analysis.demo_delirium_case --snapshot-positive --snapshot-false-negative
+python3 -m src.analysis.demo_delirium_case --snapshot-positive --snapshot-false-negative
 
 # 2. Export thesis summaries
-python -m src.analysis.demo_delirium_case --thesis
+python3 -m src.analysis.demo_delirium_case --thesis
 ```
 
 **Outputs** (`outputs/demo/`):
@@ -43,11 +43,11 @@ Each case contains five sections (~half a page):
 ## Pick cases on the server
 
 ```bash
-python -m src.analysis.demo_delirium_case --list-positive-candidates
-python -m src.analysis.demo_delirium_case --list-false-negative-candidates
+python3 -m src.analysis.demo_delirium_case --list-positive-candidates
+python3 -m src.analysis.demo_delirium_case --list-false-negative-candidates
 
 # FN patients (hospital PatientenID)
-python -m src.analysis.demo_delirium_case --diagnose-fn-patients
+python3 -m src.analysis.demo_delirium_case --diagnose-fn-patients
 ```
 
 Case B accepts **report-level FN** (`model=0`, `manual=1`) or **patient-level FN** (`model_patient_positive=0`, `derived_manual=1`). The diagnose command shows both levels.
@@ -55,14 +55,14 @@ Case B accepts **report-level FN** (`model=0`, `manual=1`) or **patient-level FN
 Force a specific FN patient:
 
 ```bash
-python -m src.analysis.demo_delirium_case --snapshot-false-negative --fn-patient 308617
+python3 -m src.analysis.demo_delirium_case --snapshot-false-negative --fn-patient 308617
 # or second FN from error analysis:
-python -m src.analysis.demo_delirium_case --snapshot-false-negative --fn-patient 308954
+python3 -m src.analysis.demo_delirium_case --snapshot-false-negative --fn-patient 308954
 # or force exact report:
-python -m src.analysis.demo_delirium_case --snapshot-false-negative \
+python3 -m src.analysis.demo_delirium_case --snapshot-false-negative \
   --validation-report-id Patient_XXXX_Report_YYYY
 
-python -m src.analysis.demo_delirium_case --thesis
+python3 -m src.analysis.demo_delirium_case --thesis
 ```
 
 If you see `curated fallback` after snapshot build, Case B is **not** from the validation cohort — run diagnose on the server.
@@ -72,9 +72,9 @@ If you see `curated fallback` after snapshot build, Case B is **not** from the v
 ## Legacy / optional
 
 ```bash
-python -m src.analysis.demo_delirium_case --txt    # hemorrhage-style walkthrough logs
-python -m src.analysis.demo_delirium_case --both   # interactive terminal (not primary)
-python -m src.analysis.demo_delirium_case --html   # browser preview
+python3 -m src.analysis.demo_delirium_case --txt    # hemorrhage-style walkthrough logs
+python3 -m src.analysis.demo_delirium_case --both   # interactive terminal (not primary)
+python3 -m src.analysis.demo_delirium_case --html   # browser preview
 ```
 
 Legacy aliases: `--snapshot-negative`, `--negative` → FN case.

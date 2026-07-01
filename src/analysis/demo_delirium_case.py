@@ -4,9 +4,9 @@ Delirium pipeline demo — thesis-ready case summaries and optional walkthrough 
 Primary output: publication-quality TP + FN case summaries for thesis and presentation.
 
 Usage:
-    python -m src.analysis.demo_delirium_case --thesis
-    python -m src.analysis.demo_delirium_case --snapshot-positive --snapshot-false-negative
-    python -m src.analysis.demo_delirium_case --thesis
+    python3 -m src.analysis.demo_delirium_case --thesis
+    python3 -m src.analysis.demo_delirium_case --snapshot-positive --snapshot-false-negative
+    python3 -m src.analysis.demo_delirium_case --thesis
 
 See docs/demo/DEMO_GUIDE.md.
 """
