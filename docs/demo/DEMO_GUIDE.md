@@ -14,7 +14,7 @@ All exports are **anonymized** (`Beispiel-Fall A` / `B` — no patient IDs).
 cd delirium_project
 source Ba_venv/bin/activate
 
-# 1. Build snapshots from validation cohort (server; FN prefers Patient_0057 / Patient_0075)
+# 1. Build snapshots from validation cohort (server; FN prefers PatientenID 308617 / 308954)
 python -m src.analysis.demo_delirium_case --snapshot-positive --snapshot-false-negative
 
 # 2. Export thesis summaries
@@ -46,19 +46,21 @@ Each case contains five sections (~half a page):
 python -m src.analysis.demo_delirium_case --list-positive-candidates
 python -m src.analysis.demo_delirium_case --list-false-negative-candidates
 
-# Why didn't Patient_0057 / 0075 get picked?
+# FN patients (hospital PatientenID)
 python -m src.analysis.demo_delirium_case --diagnose-fn-patients
 ```
 
-**Important:** Case B needs a **report-level FN** (`klasse=0` and `manual_report_ground_truth=1` on the **same** report). Patient_0057 and Patient_0075 from your error analysis may be **FP** (`klasse=1`, `manual=0`) — then they cannot be Case B. The diagnose command shows each report’s confusion group.
+Case B accepts **report-level FN** (`model=0`, `manual=1`) or **patient-level FN** (`model_patient_positive=0`, `derived_manual=1`). The diagnose command shows both levels.
 
-If a real FN report exists for 0057/0075:
+Force a specific FN patient:
 
 ```bash
-python -m src.analysis.demo_delirium_case --snapshot-false-negative --fn-patient 0057
+python -m src.analysis.demo_delirium_case --snapshot-false-negative --fn-patient 308617
+# or second FN from error analysis:
+python -m src.analysis.demo_delirium_case --snapshot-false-negative --fn-patient 308954
 # or force exact report:
 python -m src.analysis.demo_delirium_case --snapshot-false-negative \
-  --validation-report-id Patient_0057_Report_YYYY
+  --validation-report-id Patient_XXXX_Report_YYYY
 
 python -m src.analysis.demo_delirium_case --thesis
 ```

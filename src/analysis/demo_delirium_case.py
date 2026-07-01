@@ -811,7 +811,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--snapshot-false-negative",
         action="store_true",
-        help="Regenerate FN case in negative_case.json (prefers Patient_0057 / Patient_0075)",
+        help="Regenerate FN case in negative_case.json (prefers PatientenID 308617 / 308954)",
     )
     parser.add_argument(
         "--snapshot-negative",
@@ -839,12 +839,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--diagnose-fn-patients",
         action="store_true",
-        help="Explain Patient_0057 / Patient_0075 vs report-level FN requirements",
+        help="Explain FN patients 308617 / 308954 vs report- and patient-level FN selection",
     )
     parser.add_argument(
         "--fn-patient",
         metavar="SUFFIX",
-        help="When auto-picking FN, try this patient first (e.g. 0057 or 0075)",
+        help="When auto-picking FN, try this patient first (e.g. 308617 or 308954)",
     )
     parser.add_argument("--positive-snapshot", type=Path, default=DEMO_POSITIVE_SNAPSHOT_PATH)
     parser.add_argument("--negative-snapshot", type=Path, default=DEMO_NEGATIVE_SNAPSHOT_PATH)
@@ -882,7 +882,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             if FROZEN_MANUAL_REPORT_LABELS_PATH.exists()
             else None
         )
-        print("Top false-negative candidates (higher score = clearer slide; prefers Patient_0057 / 0075):\n")
+        print("Top false-negative candidates (higher score = clearer slide; prefers 308617 / 308954):\n")
         for r in rank_validation_candidates(
             preds, labels, polarity="false_negative", exclude_ids=exclude_ids
         ):

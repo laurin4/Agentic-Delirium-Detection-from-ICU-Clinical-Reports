@@ -76,9 +76,10 @@ PRESENTATION_LABELS: Dict[str, Dict[str, str]] = {
     },
 }
 
-# Preferred FN patients for the thesis demo (validation cohort / error analysis).
-PREFERRED_FN_PATIENT_IDS: Tuple[str, ...] = ("Patient_0057", "Patient_0075")
-PREFERRED_FN_PATIENT_SUFFIXES: Tuple[str, ...] = ("0057", "0075")
+# Preferred FN patients for the thesis demo (hospital PatientenID from manual validation).
+PREFERRED_FN_PATIENTEN_IDS: Tuple[str, ...] = ("308617", "308954")
+# Legacy alias — same needles passed to patient_suffix_matches (PatientenID / validation IDs).
+PREFERRED_FN_PATIENT_SUFFIXES: Tuple[str, ...] = PREFERRED_FN_PATIENTEN_IDS
 
 DEMO_POLARITIES: Tuple[str, ...] = ("positive", "false_negative")
 
@@ -108,7 +109,7 @@ def normalize_demo_polarity(polarity: str) -> str:
 
 
 def patient_suffix_matches(row: pd.Series, suffix: str) -> bool:
-    """Match Patient_0057 / 57 / validation_report_id containing suffix."""
+    """Match hospital PatientenID (e.g. 308617) or validation_patient_id / report_id needles."""
     suf = str(suffix or "").strip()
     if not suf:
         return False
@@ -122,10 +123,12 @@ def patient_suffix_matches(row: pd.Series, suffix: str) -> bool:
         f"Patient_{padded}",
         f"Patient_{bare}",
     }
-    for col in ("validation_patient_id", "validation_report_id", "PatientenID"):
-        val = str(row.get(col) or "")
+    for col in ("PatientenID", "validation_patient_id", "validation_report_id"):
+        val = str(row.get(col) or "").strip()
         if not val:
             continue
+        if col == "PatientenID" and val == suf:
+            return True
         for needle in needles:
             if needle and needle in val:
                 return True
@@ -152,7 +155,7 @@ def _manual_report_gt(row: pd.Series) -> int:
 
 
 def _load_frozen_patient_manual_gt() -> Dict[str, int]:
-    """validation_patient_id → derived_manual_patient_ground_truth (0/1)."""
+    """validation_patient_id or PatientenID → derived_manual_patient_ground_truth (0/1)."""
     out: Dict[str, int] = {}
     for path in (
         FINAL_MANUAL_VALIDATION_EVAL_DIR / "patient_level_ground_truth.csv",
@@ -161,15 +164,16 @@ def _load_frozen_patient_manual_gt() -> Dict[str, int]:
         if not path.exists():
             continue
         df = pd.read_csv(path)
-        if "validation_patient_id" not in df.columns:
-            continue
         col = "derived_manual_patient_ground_truth"
         if col not in df.columns:
             continue
-        for vpid, grp in df.groupby("validation_patient_id"):
-            vals = pd.to_numeric(grp[col], errors="coerce").dropna()
-            if len(vals):
-                out[str(vpid)] = int(vals.max())
+        for key_col in ("validation_patient_id", "PatientenID"):
+            if key_col not in df.columns:
+                continue
+            for key, grp in df.groupby(key_col):
+                vals = pd.to_numeric(grp[col], errors="coerce").dropna()
+                if len(vals):
+                    out[str(key).strip()] = int(vals.max())
     return out
 
 
@@ -194,13 +198,21 @@ def _computed_derived_manual_gt(
     n_total = int(len(grp))
     n_labeled = int(parsed.notna().sum())
     vpid = (
-        str(grp["validation_patient_id"].iloc[0])
+        str(grp["validation_patient_id"].iloc[0]).strip()
         if "validation_patient_id" in grp.columns and len(grp)
         else ""
     )
+    patienten_id = (
+        str(grp["PatientenID"].iloc[0]).strip()
+        if "PatientenID" in grp.columns and len(grp)
+        else ""
+    )
     frozen_val: Optional[int] = None
-    if frozen_patient_gt and vpid in frozen_patient_gt:
-        frozen_val = frozen_patient_gt[vpid]
+    if frozen_patient_gt:
+        for key in (vpid, patienten_id):
+            if key and key in frozen_patient_gt:
+                frozen_val = frozen_patient_gt[key]
+                break
 
     if (parsed == "1").any():
         return 1
@@ -731,7 +743,7 @@ def _score_positive_row(row: pd.Series) -> int:
 
 
 def _score_false_negative_row(row: pd.Series) -> int:
-    """Prefer verified FN cases; boost Patient_0057 / Patient_0075 when available."""
+    """Prefer verified FN cases; boost configured FN patients (PatientenID 308617 / 308954)."""
     if _manual_report_gt(row) != 1:
         return -1
     if _report_model_klasse(row) != 0:
@@ -944,7 +956,7 @@ def diagnose_preferred_fn_patients(
     labels: Optional[pd.DataFrame],
 ) -> List[Dict[str, Any]]:
     """
-    Explain Patient_0057 / Patient_0075 for FN demo selection.
+    Explain preferred FN patients (PatientenID 308617 / 308954) for demo selection.
 
     Picks report-level FN (model=0, manual=1) when available; otherwise patient-level FN
     (model_patient_positive=0, derived_manual_patient_ground_truth=1) with best model=0 report.
@@ -1088,7 +1100,7 @@ def generate_snapshot_from_validation(
             LOGGER.warning("No suitable %s case in validation data; using curated demo.", polarity)
             if polarity == "false_negative":
                 LOGGER.warning(
-                    "Tip: run --diagnose-fn-patients to inspect Patient_0057/0075 "
+                    "Tip: run --diagnose-fn-patients to inspect FN patients 308617 / 308954 "
                     "(patient-level FN is accepted when report-level FN is missing)."
                 )
             snap = build_curated_snapshot(polarity=polarity)

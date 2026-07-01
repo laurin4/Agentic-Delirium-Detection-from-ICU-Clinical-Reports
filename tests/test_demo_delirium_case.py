@@ -60,9 +60,9 @@ def _validation_predictions() -> pd.DataFrame:
                 "begruendung": "Delir dokumentiert.",
             },
             {
-                "validation_report_id": "Patient_0057_Report_0001",
-                "validation_patient_id": "Patient_0057",
-                "PatientenID": "p_fn",
+                "validation_report_id": "Patient_0042_Report_0001",
+                "validation_patient_id": "Patient_0042",
+                "PatientenID": "308617",
                 "bertyp": "Verlaufseintrag",
                 "berdat": "2024-01-03",
                 "bericht": "verlauf_fn",
@@ -107,7 +107,7 @@ def _validation_labels() -> pd.DataFrame:
         {
             "validation_report_id": [
                 "Patient_0001_Report_0001",
-                "Patient_0057_Report_0001",
+                "Patient_0042_Report_0001",
                 "Patient_0002_Report_0001",
             ],
             "manual_report_ground_truth": [1, 1, 0],
@@ -119,7 +119,7 @@ def test_autopick_tp_and_fn():
     preds = _validation_predictions()
     labels = _validation_labels()
     assert autopick_validation_report_id(preds, labels, polarity="positive") == "Patient_0001_Report_0001"
-    assert autopick_validation_report_id(preds, labels, polarity="false_negative") == "Patient_0057_Report_0001"
+    assert autopick_validation_report_id(preds, labels, polarity="false_negative") == "Patient_0042_Report_0001"
 
 
 def test_curated_snapshots_have_pipeline_fields():
@@ -306,8 +306,9 @@ def test_fn_pick_uses_model_report_prediction_over_stale_klasse():
     preds = pd.DataFrame(
         [
             {
-                "validation_report_id": "Patient_0057_Report_0001",
-                "validation_patient_id": "Patient_0057",
+                "validation_report_id": "Patient_0099_Report_0001",
+                "validation_patient_id": "Patient_0099",
+                "PatientenID": "308617",
                 "klasse": 1,
                 "model_report_prediction": 0,
                 "decision_rule_applied": "isolated_indirect_not_positive",
@@ -319,13 +320,13 @@ def test_fn_pick_uses_model_report_prediction_over_stale_klasse():
     )
     labels = pd.DataFrame(
         {
-            "validation_report_id": ["Patient_0057_Report_0001"],
+            "validation_report_id": ["Patient_0099_Report_0001"],
             "manual_report_ground_truth": [1],
         }
     )
     assert (
         autopick_validation_report_id(preds, labels, polarity="false_negative")
-        == "Patient_0057_Report_0001"
+        == "Patient_0099_Report_0001"
     )
 
 
@@ -335,8 +336,9 @@ def test_patient_level_fn_pick_without_report_level_manual_on_same_row(tmp_path,
     preds = pd.DataFrame(
         [
             {
-                "validation_report_id": "Patient_0075_Report_0001",
-                "validation_patient_id": "Patient_0075",
+                "validation_report_id": "Patient_0088_Report_0001",
+                "validation_patient_id": "Patient_0088",
+                "PatientenID": "308954",
                 "model_report_prediction": 0,
                 "decision_rule_applied": "isolated_indirect_not_positive",
                 "has_indirect_delir_evidence": True,
@@ -344,8 +346,9 @@ def test_patient_level_fn_pick_without_report_level_manual_on_same_row(tmp_path,
                 "evidence_snippets": "[]",
             },
             {
-                "validation_report_id": "Patient_0075_Report_0002",
-                "validation_patient_id": "Patient_0075",
+                "validation_report_id": "Patient_0088_Report_0002",
+                "validation_patient_id": "Patient_0088",
+                "PatientenID": "308954",
                 "model_report_prediction": 0,
                 "decision_rule_applied": "no_evidence_prefilter_skip",
                 "llm_skipped_by_prefilter": True,
@@ -356,20 +359,20 @@ def test_patient_level_fn_pick_without_report_level_manual_on_same_row(tmp_path,
     labels = pd.DataFrame(
         {
             "validation_report_id": [
-                "Patient_0075_Report_0001",
-                "Patient_0075_Report_0002",
+                "Patient_0088_Report_0001",
+                "Patient_0088_Report_0002",
             ],
             "manual_report_ground_truth": [0, 0],
         }
     )
     monkeypatch.setattr(
         "src.analysis.demo_delirium_snapshot._load_frozen_patient_manual_gt",
-        lambda: {"Patient_0075": 1},
+        lambda: {"308954": 1},
     )
     picked = autopick_validation_report_id(
-        preds, labels, polarity="false_negative", preferred_fn_patient_suffix="0075"
+        preds, labels, polarity="false_negative", preferred_fn_patient_suffix="308954"
     )
-    assert picked == "Patient_0075_Report_0001"
+    assert picked == "Patient_0088_Report_0001"
 
 
 def test_patient_suffix_matches_and_fn_diagnose():
@@ -380,33 +383,35 @@ def test_patient_suffix_matches_and_fn_diagnose():
 
     row_fp = pd.Series(
         {
-            "validation_patient_id": "Patient_0057",
-            "validation_report_id": "Patient_0057_Report_0002",
+            "validation_patient_id": "Patient_0042",
+            "validation_report_id": "Patient_0042_Report_0002",
+            "PatientenID": "308617",
             "klasse": 1,
             "manual_report_ground_truth": 0,
         }
     )
     row_fn = pd.Series(
         {
-            "validation_patient_id": "Patient_0057",
-            "validation_report_id": "Patient_0057_Report_0003",
+            "validation_patient_id": "Patient_0042",
+            "validation_report_id": "Patient_0042_Report_0003",
+            "PatientenID": "308617",
             "klasse": 0,
             "manual_report_ground_truth": 1,
         }
     )
-    assert patient_suffix_matches(row_fp, "0057")
-    assert patient_suffix_matches(row_fp, "57")
+    assert patient_suffix_matches(row_fp, "308617")
+    assert patient_suffix_matches(row_fn, "308617")
     preds = pd.DataFrame([row_fp.to_dict(), row_fn.to_dict()])
     labels = pd.DataFrame(
         {
-            "validation_report_id": ["Patient_0057_Report_0002", "Patient_0057_Report_0003"],
+            "validation_report_id": ["Patient_0042_Report_0002", "Patient_0042_Report_0003"],
             "manual_report_ground_truth": [0, 1],
         }
     )
     diag = diagnose_preferred_fn_patients(preds, labels)
-    block = next(d for d in diag if d["patient_suffix"] == "0057")
-    assert block["pickable_fn_report_id"] == "Patient_0057_Report_0003"
-    assert block["report_level_fn_reports"] == ["Patient_0057_Report_0003"]
+    block = next(d for d in diag if d["patient_suffix"] == "308617")
+    assert block["pickable_fn_report_id"] == "Patient_0042_Report_0003"
+    assert block["report_level_fn_reports"] == ["Patient_0042_Report_0003"]
 
 
 def test_run_demo_no_pause(capsys, tmp_path):
