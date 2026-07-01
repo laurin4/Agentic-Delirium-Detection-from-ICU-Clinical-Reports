@@ -168,6 +168,25 @@ def test_png_export(tmp_path):
     assert path.stat().st_size > 1000
 
 
+def test_save_snapshot_serializes_numpy_int64(tmp_path):
+    import numpy as np
+
+    from src.analysis.demo_delirium_snapshot import save_snapshot, to_json_safe
+
+    snap = {
+        "polarity": "positive",
+        "case": {"manual_report_ground_truth": np.int64(1)},
+        "final": {"klasse": np.int64(1)},
+        "interpretation": {"delir_probability_estimate": np.int64(92)},
+        "anonymized_for_presentation": True,
+    }
+    assert to_json_safe(snap)["case"]["manual_report_ground_truth"] == 1
+    path = tmp_path / "snap.json"
+    save_snapshot(snap, path)
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    assert loaded["interpretation"]["delir_probability_estimate"] == 92
+
+
 def test_run_demo_no_pause(capsys, tmp_path):
     pos = build_curated_snapshot(polarity="positive")
     pos_path = tmp_path / "pos.json"

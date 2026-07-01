@@ -17,6 +17,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover
+    np = None  # type: ignore[assignment]
+
 from src.analysis.export_presentation_examples import parse_evidence_snippets
 from src.pipeline.frozen_cohort_inference import build_stable_report_text_index
 from src.pipeline.paths import (
@@ -246,12 +251,12 @@ def _extraction_payload(report_text: str) -> Dict[str, Any]:
     ev = extract_delirium_evidence(report_text)
     snippets = ev.get("evidence_snippets") or []
     return {
-        "original_report_text_length": ev.get("original_report_text_length", len(report_text)),
+        "original_report_text_length": int(ev.get("original_report_text_length", len(report_text))),
         "llm_report_text": ev.get("llm_report_text") or "",
-        "llm_report_text_length": ev.get("llm_report_text_length", 0),
+        "llm_report_text_length": int(ev.get("llm_report_text_length", 0)),
         "llm_text_reduction_method": ev.get("llm_text_reduction_method") or "",
         "evidence_snippets": snippets,
-        "delir_keyword_hits_count": ev.get("delir_keyword_hits_count", len(snippets)),
+        "delir_keyword_hits_count": int(ev.get("delir_keyword_hits_count", len(snippets))),
         "has_direct_delir_evidence": bool(ev.get("has_direct_delir_evidence")),
         "has_indirect_delir_evidence": bool(ev.get("has_indirect_delir_evidence")),
         "has_negated_delir_evidence": bool(ev.get("has_negated_delir_evidence")),
@@ -276,11 +281,12 @@ def build_snapshot_from_row(
     llm_skipped = _bool_cell(row.get("llm_skipped_by_prefilter"))
     klasse = _int_cell(row.get("klasse"))
     polarity = "positive" if klasse == 1 else "negative"
+    prob = _int_cell(row.get("delir_probability_estimate"), default=-1)
 
     interpretation: Dict[str, Any] = {
         "delir_signale": _parse_delir_signale(row.get("delir_signale")),
         "signalstaerke": str(row.get("signalstaerke") or ""),
-        "delir_probability_estimate": row.get("delir_probability_estimate", ""),
+        "delir_probability_estimate": prob if prob >= 0 else "",
         "kontext": str(row.get("kontext") or ""),
         "begruendung": str(row.get("begruendung") or ""),
         "alternative_erklaerung": _bool_cell(row.get("alternative_erklaerung")),
@@ -376,10 +382,38 @@ def build_curated_snapshot(*, polarity: str) -> Dict[str, Any]:
     return anonymize_snapshot(snap)
 
 
+def to_json_safe(value: Any) -> Any:
+    """Recursively convert numpy/pandas scalars to JSON-serializable Python types."""
+    if isinstance(value, dict):
+        return {k: to_json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [to_json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [to_json_safe(v) for v in value]
+    if np is not None:
+        if isinstance(value, np.integer):
+            return int(value)
+        if isinstance(value, np.floating):
+            return float(value)
+        if isinstance(value, np.bool_):
+            return bool(value)
+        if isinstance(value, np.ndarray):
+            return to_json_safe(value.tolist())
+    if isinstance(value, (pd.Timestamp, pd.Timedelta)):
+        return str(value)
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
+
+
 def save_snapshot(snapshot: Dict[str, Any], path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     safe = anonymize_snapshot(snapshot) if not snapshot.get("anonymized_for_presentation") else snapshot
-    path.write_text(json.dumps(safe, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload = to_json_safe(safe)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 
 
