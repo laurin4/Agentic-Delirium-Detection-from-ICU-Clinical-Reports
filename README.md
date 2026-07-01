@@ -191,8 +191,8 @@ python -m src.analysis.freeze_validation_cohort          # fixed cohort (after f
 # Annotate manual_report_labels.csv (or frozen copy), then:
 python -m src.analysis.evaluate_manual_validation        # uses frozen_validation_cohort/ when present
 python -m src.analysis.export_presentation_examples     # slide-ready pipeline walkthrough examples
-python -m src.analysis.demo_delirium_case --txt           # walkthrough .txt for your slides (recommended)
-python -m src.analysis.demo_delirium_case --html        # browser preview (see docs/demo/DEMO_GUIDE.md)
+python -m src.analysis.demo_delirium_case --thesis          # thesis case summaries (recommended)
+python -m src.analysis.demo_delirium_case --html              # browser preview (see docs/demo/DEMO_GUIDE.md)
 python -m src.analysis.run_field_delirium_analysis
 ```
 

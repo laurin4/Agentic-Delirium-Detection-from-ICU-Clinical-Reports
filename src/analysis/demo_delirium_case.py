@@ -1,18 +1,12 @@
 """
-Interactive delirium pipeline demo — presentation-ready walkthrough.
+Delirium pipeline demo — thesis-ready case summaries and optional walkthrough exports.
 
-Replays frozen JSON snapshots instantly (no LLM, no Berichte.csv required).
-Mirrors the hemorrhage demo pattern: original report → evidence → LLM → decision.
+Primary output: publication-quality TP + FN case summaries for thesis and presentation.
 
 Usage:
-    python -m src.analysis.demo_delirium_case                  # menu
-    python -m src.analysis.demo_delirium_case --positive       # TP walkthrough
-    python -m src.analysis.demo_delirium_case --false-negative    # FN walkthrough
-    python -m src.analysis.demo_delirium_case --negative          # FN (legacy alias)
-    python -m src.analysis.demo_delirium_case --both           # both cases
-    python -m src.analysis.demo_delirium_case --txt           # hemorrhage-style walkthrough .txt
-    python -m src.analysis.demo_delirium_case --snapshot-positive
-    python -m src.analysis.demo_delirium_case --snapshot-false-negative
+    python -m src.analysis.demo_delirium_case --thesis
+    python -m src.analysis.demo_delirium_case --snapshot-positive --snapshot-false-negative
+    python -m src.analysis.demo_delirium_case --thesis
 
 See docs/demo/DEMO_GUIDE.md.
 """
@@ -46,6 +40,12 @@ from src.analysis.demo_delirium_trace import (
 from src.analysis.demo_delirium_walkthrough import (
     render_combined_walkthrough_txt,
     render_walkthrough_txt,
+)
+from src.analysis.demo_delirium_thesis_summary import (
+    render_combined_thesis_summaries_markdown,
+    render_combined_thesis_summaries_plain,
+    render_thesis_case_summary_markdown,
+    render_thesis_case_summary_plain,
 )
 from src.pipeline.paths import (
     DEMO_HTML_OUTPUT_DIR,
@@ -674,6 +674,30 @@ def export_demo_png(
     return paths
 
 
+def export_demo_thesis(
+    positive_path: Path = DEMO_POSITIVE_SNAPSHOT_PATH,
+    negative_path: Path = DEMO_NEGATIVE_SNAPSHOT_PATH,
+    output_dir: Optional[Path] = None,
+) -> List[Path]:
+    """Export publication-quality thesis case summaries (Markdown + plain text)."""
+    ensure_default_snapshots()
+    out_dir = output_dir or DEMO_HTML_OUTPUT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pos = load_snapshot(positive_path)
+    fn = load_snapshot(negative_path)
+    paths = [
+        out_dir / "thesis_case_a_true_positive.md",
+        out_dir / "thesis_case_b_false_negative.md",
+        out_dir / "thesis_pipeline_case_summaries.md",
+        out_dir / "thesis_pipeline_case_summaries.txt",
+    ]
+    paths[0].write_text(render_thesis_case_summary_markdown(pos), encoding="utf-8")
+    paths[1].write_text(render_thesis_case_summary_markdown(fn), encoding="utf-8")
+    paths[2].write_text(render_combined_thesis_summaries_markdown(pos, fn), encoding="utf-8")
+    paths[3].write_text(render_combined_thesis_summaries_plain(pos, fn), encoding="utf-8")
+    return paths
+
+
 def export_demo_txt(
     positive_path: Path = DEMO_POSITIVE_SNAPSHOT_PATH,
     negative_path: Path = DEMO_NEGATIVE_SNAPSHOT_PATH,
@@ -703,23 +727,27 @@ def _interactive_menu() -> None:
     print(f"\n{SEP}")
     print("  Delirium Pipeline Demo")
     print(SEP)
-    print("  1  Positive case (true positive)")
-    print("  2  False-negative case (FN)")
-    print("  3  Both cases")
-    print("  4  Export walkthrough .txt (for your own figures)")
-    print("  5  Export HTML (browser preview)")
+    print("  1  Export thesis case summaries (recommended)")
+    print("  2  Positive case — terminal walkthrough")
+    print("  3  False-negative case — terminal walkthrough")
+    print("  4  Both cases — terminal walkthrough")
+    print("  5  Export walkthrough .txt (legacy)")
+    print("  6  Export HTML (browser preview)")
     print("  q  Quit")
     choice = input("\nChoice: ").strip().lower()
     if choice == "1":
-        run_demo(positive=True)
+        for path in export_demo_thesis():
+            print(f"Wrote {path}")
     elif choice == "2":
-        run_demo(negative=True)
+        run_demo(positive=True)
     elif choice == "3":
-        run_demo(both=True)
+        run_demo(negative=True)
     elif choice == "4":
+        run_demo(both=True)
+    elif choice == "5":
         for path in export_demo_txt():
             print(f"Wrote {path}")
-    elif choice == "5":
+    elif choice == "6":
         path = export_demo_html()
         print(f"Wrote {path}")
     else:
@@ -754,9 +782,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--both", action="store_true", help="Show both cases")
     parser.add_argument("--no-pause", action="store_true", help="Do not wait for ENTER between steps")
     parser.add_argument(
+        "--thesis",
+        action="store_true",
+        help="Export publication-quality thesis case summaries (primary output)",
+    )
+    parser.add_argument(
         "--txt",
         action="store_true",
-        help="Export hemorrhage-style walkthrough .txt files to outputs/demo/",
+        help="Export legacy hemorrhage-style walkthrough .txt files",
     )
     parser.add_argument("--html", action="store_true", help="Export HTML preview to outputs/demo/")
     parser.add_argument(
@@ -875,6 +908,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print("  capture: live LLM ✓")
         return 0
 
+    if args.thesis:
+        paths = export_demo_thesis(args.positive_snapshot, args.negative_snapshot)
+        for path in paths:
+            print(f"Wrote {path}")
+        return 0
+
     if args.txt:
         paths = export_demo_txt(args.positive_snapshot, args.negative_snapshot)
         for path in paths:
@@ -890,6 +929,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         paths = export_demo_png(args.positive_snapshot, args.negative_snapshot)
         for path in paths:
             print(f"Wrote {path}")
+        return 0
+
+    if not (args.positive or args.negative or args.false_negative or args.both or args.thesis
+            or args.txt or args.html or args.png or args.snapshot_positive or snapshot_fn
+            or args.list_positive_candidates or args.list_false_negative_candidates):
+        _interactive_menu()
         return 0
 
     if args.positive or args.negative or args.false_negative or args.both:

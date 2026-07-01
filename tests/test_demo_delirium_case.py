@@ -252,7 +252,59 @@ def test_save_snapshot_serializes_numpy_int64(tmp_path):
     assert loaded["interpretation"]["delir_probability_estimate"] == 92
 
 
+def test_thesis_summary_structure():
+    from src.analysis.demo_delirium_thesis_summary import (
+        CASE_A_HEADING,
+        CASE_B_HEADING,
+        clinical_report_excerpt,
+        final_decision_rows,
+        llm_interpretation_bullets,
+        render_thesis_case_summary_markdown,
+    )
+
+    pos = build_curated_snapshot(polarity="positive")
+    fn = build_curated_snapshot(polarity="false_negative")
+    pos_md = render_thesis_case_summary_markdown(pos)
+    fn_md = render_thesis_case_summary_markdown(fn)
+
+    assert CASE_A_HEADING in pos_md
+    assert CASE_B_HEADING in fn_md
+    assert "### 1. Klinischer Berichtsauszug" in pos_md
+    assert "### 5. Finale Entscheidung" in fn_md
+    assert "Korrekt" in pos_md
+    assert "Inkorrekt" in fn_md
+    assert "system_prompt" not in pos_md.lower()
+    assert "Instruction:" not in pos_md
+
+    excerpts = clinical_report_excerpt(pos)
+    assert 2 <= len(excerpts) <= 4
+    assert "Delir" in " ".join(excerpts)
+
+    assert len(llm_interpretation_bullets(pos)) <= 4
+    rows = dict(final_decision_rows(fn))
+    assert rows["Modellvorhersage"] == "Kein Delir"
+    assert rows["Manuelle Referenz"] == "Delir"
+    assert rows["Bewertung"] == "Inkorrekt"
+
+
+def test_export_demo_thesis(tmp_path):
+    from src.analysis.demo_delirium_case import export_demo_thesis
+
+    pos = build_curated_snapshot(polarity="positive")
+    fn = build_curated_snapshot(polarity="false_negative")
+    pos_path = tmp_path / "pos.json"
+    fn_path = tmp_path / "fn.json"
+    save_snapshot(pos, pos_path)
+    save_snapshot(fn, fn_path)
+    paths = export_demo_thesis(pos_path, fn_path, output_dir=tmp_path / "out")
+    assert len(paths) == 4
+    combined = paths[2].read_text(encoding="utf-8")
+    assert "Case A" in combined and "Case B" in combined
+
+
 def test_run_demo_no_pause(capsys, tmp_path):
+    from src.analysis.demo_delirium_case import run_demo
+
     pos = build_curated_snapshot(polarity="positive")
     pos_path = tmp_path / "pos.json"
     save_snapshot(pos, pos_path)

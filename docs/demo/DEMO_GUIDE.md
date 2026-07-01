@@ -1,91 +1,66 @@
-# Delirium Pipeline Demo — Guide
+# Delirium Pipeline Demo — Thesis Case Summaries
 
-Hemorrhage-style step-by-step walkthrough for your thesis slides.
+**Primary output:** publication-quality case summaries for the Results chapter and presentation.
 
 All exports are **anonymized** (`Beispiel-Fall A` / `B` — no patient IDs).
 
-**Default case pairing:** True Positive (TP) + False Negative (FN).
+**Case pairing:** True Positive (TP) + False Negative (FN).
 
 ---
 
-## Recommended: `.txt` for your own figures
+## Recommended workflow
 
 ```bash
 cd delirium_project
 source Ba_venv/bin/activate
 
-# 1. Regenerate snapshots (TP + FN; FN prefers Patient_0057 / Patient_0075)
+# 1. Build snapshots from validation cohort (server; FN prefers Patient_0057 / Patient_0075)
 python -m src.analysis.demo_delirium_case --snapshot-positive --snapshot-false-negative
 
-# 2. Export walkthrough text
-python -m src.analysis.demo_delirium_case --txt
+# 2. Export thesis summaries
+python -m src.analysis.demo_delirium_case --thesis
 ```
 
-**Outputs:**
+**Outputs** (`outputs/demo/`):
 
 | File | Content |
 |------|---------|
-| `outputs/demo/delirium_demo_fall_a_walkthrough.txt` | True positive (TP) |
-| `outputs/demo/delirium_demo_fall_b_walkthrough.txt` | False negative (FN) |
-| `outputs/demo/delirium_pipeline_demo_walkthrough.txt` | Both cases combined |
+| `thesis_case_a_true_positive.md` | Case A only (Markdown) |
+| `thesis_case_b_false_negative.md` | Case B only (Markdown) |
+| `thesis_pipeline_case_summaries.md` | Both cases — copy into thesis |
+| `thesis_pipeline_case_summaries.txt` | Plain text variant |
 
-Structure mirrors the hemorrhage demo (v2 trace with prompts + raw JSON):
+Each case contains five sections (~half a page):
 
-1. Original clinical reports  
-2. Rule-based evidence extraction  
-3. Agent 1 prompt  
-4. Agent 1 raw LLM response → parsed JSON  
-5. Agent 2 prompt  
-6. Agent 2 raw LLM response → parsed JSON  
-7. Clinical guardrails → klasse  
-8. Validation label + final classification box  
-
-On the **server**, capture real LLM responses once:
-
-```bash
-python -m src.analysis.demo_delirium_case --snapshot-positive --live
-python -m src.analysis.demo_delirium_case --snapshot-false-negative --live
-```
-
-Copy the resulting `data/demo/*.json` to your laptop for offline `--both` / `--txt` replay.
+1. **Klinischer Berichtsauszug** — 2–4 relevant sentences only  
+2. **Regelbasierte Evidenzextraktion** — bullet summary  
+3. **Evidenz-Bündel ans LLM** — condensed input, no prompts  
+4. **LLM-Interpretation** — max. 3–4 bullets (Begründung, Signalstärke)  
+5. **Finale Entscheidung** — Guardrail, Modellvorhersage, manuelle Referenz, Korrekt/Inkorrekt  
 
 ---
 
-## Pick demo cases
-
-List top candidates (on server with full validation data):
+## Pick cases on the server
 
 ```bash
 python -m src.analysis.demo_delirium_case --list-positive-candidates
 python -m src.analysis.demo_delirium_case --list-false-negative-candidates
-```
 
-Force a specific FN report (e.g. Patient 0057 or 0075 from your error analysis):
-
-```bash
+# Force FN from error-analysis patients:
 python -m src.analysis.demo_delirium_case --snapshot-false-negative \
   --validation-report-id Patient_0057_Report_0001
 
-# Or Patient 0075:
-python -m src.analysis.demo_delirium_case --snapshot-false-negative \
-  --validation-report-id Patient_0075_Report_0001
-
-python -m src.analysis.demo_delirium_case --txt
+python -m src.analysis.demo_delirium_case --thesis
 ```
-
-Positive auto-pick prefers: **short reports**, **`Delir` in Diagnosen**, **`direct_delir_positive`**, few snippets.
-
-FN auto-pick prefers: **Patient_0057** and **Patient_0075**, then other verified FN reports (`klasse=0`, manual GT=1).
 
 ---
 
-## Other commands
+## Legacy / optional
 
 ```bash
-python -m src.analysis.demo_delirium_case --both          # live terminal walkthrough (TP + FN)
-python -m src.analysis.demo_delirium_case --html          # browser preview only
+python -m src.analysis.demo_delirium_case --txt    # hemorrhage-style walkthrough logs
+python -m src.analysis.demo_delirium_case --both   # interactive terminal (not primary)
+python -m src.analysis.demo_delirium_case --html   # browser preview
 ```
 
-Legacy flag names still work: `--snapshot-negative`, `--negative` (both map to FN).
-
-PNG export (`--png`) remains optional; `.txt` is the intended path for custom slides.
+Legacy aliases: `--snapshot-negative`, `--negative` → FN case.
