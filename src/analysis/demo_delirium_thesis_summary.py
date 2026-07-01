@@ -323,8 +323,14 @@ def final_decision_rows(snapshot: Dict[str, Any]) -> List[Tuple[str, str]]:
     final = snapshot.get("final") or {}
     guard = snapshot.get("guardrails") or {}
     ver = snapshot.get("verification") or {}
-    klasse = int(final.get("klasse") or 0)
-    gt = ver.get("manual_report_ground_truth")
+    klasse = int(final.get("klasse") or ver.get("model_report_prediction") or 0)
+    eval_level = str(ver.get("evaluation_level") or "")
+    if eval_level == "patient":
+        gt = ver.get("derived_manual_patient_ground_truth", ver.get("manual_report_ground_truth"))
+        ref_label = "Manuelle Referenz (Patient)"
+    else:
+        gt = ver.get("manual_report_ground_truth")
+        ref_label = "Manuelle Referenz"
     correct = ver.get("model_correct_vs_manual")
 
     if correct is True:
@@ -335,12 +341,21 @@ def final_decision_rows(snapshot: Dict[str, Any]) -> List[Tuple[str, str]]:
         verdict = "—"
 
     rule = str(guard.get("decision_rule_applied") or final.get("decision_rule_applied") or "")
-    return [
+    rows = [
         ("Guardrail-Entscheid", _guardrail_label(rule)),
-        ("Modellvorhersage", _klasse_label(klasse)),
-        ("Manuelle Referenz", _klasse_label(int(gt)) if gt is not None else "—"),
+        ("Modellvorhersage (Bericht)", _klasse_label(klasse)),
+        (ref_label, _klasse_label(int(gt)) if gt is not None else "—"),
         ("Bewertung", verdict),
     ]
+    if eval_level == "patient" and ver.get("model_patient_positive") is not None:
+        rows.insert(
+            2,
+            (
+                "Modellaggregation (Patient)",
+                _klasse_label(int(ver.get("model_patient_positive") or 0)),
+            ),
+        )
+    return rows
 
 
 def _case_heading(snapshot: Dict[str, Any]) -> str:

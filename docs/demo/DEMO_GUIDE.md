@@ -45,27 +45,31 @@ Each case contains five sections (~half a page):
 ```bash
 python3 -m src.analysis.demo_delirium_case --list-positive-candidates
 python3 -m src.analysis.demo_delirium_case --list-false-negative-candidates
-
-# FN patients (hospital PatientenID)
 python3 -m src.analysis.demo_delirium_case --diagnose-fn-patients
 ```
 
-Case B accepts **report-level FN** (`model=0`, `manual=1`) or **patient-level FN** (`model_patient_positive=0`, `derived_manual=1`). The diagnose command shows both levels.
+### Case B (FN) — pinned from evaluation
 
-Force a specific FN patient:
+Case B is built from `outputs/analysis/manual_validation/final_evaluation/model_FN.csv`, **not** by guessing from report-level labels.
+
+1. Confirms PatientenID `308617` / `308954` is FN in your final evaluation  
+2. Picks one **model=0** report for that patient (real pipeline replay)  
+3. **Forces** patient-level manual reference = Delir in the snapshot  
+
+The thesis table shows **Modellvorhersage (Bericht)** vs **Manuelle Referenz (Patient)** — not 0/0 TN.
 
 ```bash
-python3 -m src.analysis.demo_delirium_case --snapshot-false-negative --fn-patient 308617
-# or second FN from error analysis:
-python3 -m src.analysis.demo_delirium_case --snapshot-false-negative --fn-patient 308954
-# or force exact report:
-python3 -m src.analysis.demo_delirium_case --snapshot-false-negative \
-  --validation-report-id Patient_XXXX_Report_YYYY
-
+python3 -m src.analysis.demo_delirium_case --snapshot-false-negative --patienten-id 308617
 python3 -m src.analysis.demo_delirium_case --thesis
 ```
 
-If you see `curated fallback` after snapshot build, Case B is **not** from the validation cohort — run diagnose on the server.
+If build fails, the command errors with the list of FN PatientenIDs in `model_FN.csv` (no silent wrong patient).
+
+Prerequisite on server:
+
+```bash
+python3 -m src.analysis.final_manual_validation_evaluation   # creates model_FN.csv
+```
 
 ---
 

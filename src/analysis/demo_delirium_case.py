@@ -843,8 +843,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument(
         "--fn-patient",
-        metavar="SUFFIX",
-        help="When auto-picking FN, try this patient first (e.g. 308617 or 308954)",
+        "--patienten-id",
+        dest="fn_patient",
+        metavar="ID",
+        help="FN PatientenID (e.g. 308617 or 308954); builds from model_FN.csv with forced patient-level labels",
     )
     parser.add_argument("--positive-snapshot", type=Path, default=DEMO_POSITIVE_SNAPSHOT_PATH)
     parser.add_argument("--negative-snapshot", type=Path, default=DEMO_NEGATIVE_SNAPSHOT_PATH)
@@ -945,19 +947,32 @@ def main(argv: Optional[List[str]] = None) -> int:
             if args.live:
                 print("  capture: live LLM ✓")
         if snapshot_fn:
-            snap = generate_snapshot_from_validation(
-                polarity="false_negative",
-                out_path=args.negative_snapshot,
-                validation_report_id=args.validation_report_id if snapshot_fn and not args.snapshot_positive else None,
-                exclude_validation_report_ids=exclude_ids or None,
-                preferred_fn_patient_suffix=args.fn_patient,
-                live=args.live,
-            )
+            try:
+                snap = generate_snapshot_from_validation(
+                    polarity="false_negative",
+                    out_path=args.negative_snapshot,
+                    validation_report_id=args.validation_report_id if snapshot_fn and not args.snapshot_positive else None,
+                    exclude_validation_report_ids=exclude_ids or None,
+                    preferred_fn_patient_suffix=args.fn_patient,
+                    live=args.live,
+                )
+            except ValueError as exc:
+                print(str(exc))
+                return 1
             print(f"Wrote FN snapshot → {args.negative_snapshot} ({presentation_case_title(snap)})")
+            ver = snap.get("verification") or {}
+            sel = snap.get("selection") or {}
+            print(f"  source: {snap.get('source')}")
+            if ver.get("evaluation_level") == "patient":
+                print(
+                    f"  patient-level FN: model_patient={ver.get('model_patient_positive')} "
+                    f"manual_patient={ver.get('derived_manual_patient_ground_truth')} "
+                    f"→ {ver.get('patient_confusion_group')}"
+                )
+            if sel.get("patienten_id"):
+                print(f"  PatientenID: {sel.get('patienten_id')}")
             if snap.get("source") == "curated_anonymized":
-                print("  ⚠ curated fallback — NOT from validation cohort. Run --diagnose-fn-patients on server.")
-            elif snap.get("case", {}).get("validation_report_id"):
-                print(f"  validation_report_id: {snap['case'].get('validation_report_id')}")
+                print("  ⚠ curated fallback — offline only; re-run on server with model_FN.csv.")
             if args.live:
                 print("  capture: live LLM ✓")
         return 0

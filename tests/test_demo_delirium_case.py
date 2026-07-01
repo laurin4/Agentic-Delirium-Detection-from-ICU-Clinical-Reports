@@ -10,6 +10,7 @@ from src.analysis.demo_delirium_case import export_demo_html, export_demo_txt, r
 from src.analysis.demo_delirium_walkthrough import render_walkthrough_txt
 from src.analysis.demo_delirium_snapshot import (
     anonymize_snapshot,
+    apply_patient_level_fn_verification,
     autopick_validation_report_id,
     build_curated_snapshot,
     build_snapshot_from_row,
@@ -124,7 +125,10 @@ def test_autopick_tp_and_fn():
 
 def test_curated_snapshots_have_pipeline_fields():
     pos = build_curated_snapshot(polarity="positive")
-    fn = build_curated_snapshot(polarity="false_negative")
+    fn = apply_patient_level_fn_verification(
+        build_curated_snapshot(polarity="false_negative"),
+        model_report_prediction=0,
+    )
     assert pos["version"] >= 2
     assert "agent1" in pos and "agent2" in pos
     assert pos["final"]["klasse"] == 1
@@ -187,7 +191,10 @@ def test_generate_snapshot_fallback_curated(tmp_path):
 
 def test_html_export(tmp_path):
     pos = build_curated_snapshot(polarity="positive")
-    fn = build_curated_snapshot(polarity="false_negative")
+    fn = apply_patient_level_fn_verification(
+        build_curated_snapshot(polarity="false_negative"),
+        model_report_prediction=0,
+    )
     pos_path = tmp_path / "pos.json"
     neg_path = tmp_path / "neg.json"
     save_snapshot(pos, pos_path)
@@ -213,7 +220,10 @@ def test_walkthrough_txt_hemorrhage_structure():
 
 def test_export_demo_txt(tmp_path):
     pos = build_curated_snapshot(polarity="positive")
-    fn = build_curated_snapshot(polarity="false_negative")
+    fn = apply_patient_level_fn_verification(
+        build_curated_snapshot(polarity="false_negative"),
+        model_report_prediction=0,
+    )
     pos_path = tmp_path / "pos.json"
     neg_path = tmp_path / "neg.json"
     save_snapshot(pos, pos_path)
@@ -263,7 +273,10 @@ def test_thesis_summary_structure():
     )
 
     pos = build_curated_snapshot(polarity="positive")
-    fn = build_curated_snapshot(polarity="false_negative")
+    fn = apply_patient_level_fn_verification(
+        build_curated_snapshot(polarity="false_negative"),
+        model_report_prediction=0,
+    )
     pos_md = render_thesis_case_summary_markdown(pos)
     fn_md = render_thesis_case_summary_markdown(fn)
 
@@ -281,9 +294,10 @@ def test_thesis_summary_structure():
     assert "Delir" in " ".join(excerpts)
 
     assert len(llm_interpretation_bullets(pos)) <= 4
-    rows = dict(final_decision_rows(fn))
-    assert rows["Modellvorhersage"] == "Kein Delir"
-    assert rows["Manuelle Referenz"] == "Delir"
+    fn_verified = apply_patient_level_fn_verification(fn, model_report_prediction=0)
+    rows = dict(final_decision_rows(fn_verified))
+    assert rows["Modellvorhersage (Bericht)"] == "Kein Delir"
+    assert rows["Manuelle Referenz (Patient)"] == "Delir"
     assert rows["Bewertung"] == "Inkorrekt"
 
 
@@ -291,7 +305,10 @@ def test_export_demo_thesis(tmp_path):
     from src.analysis.demo_delirium_case import export_demo_thesis
 
     pos = build_curated_snapshot(polarity="positive")
-    fn = build_curated_snapshot(polarity="false_negative")
+    fn = apply_patient_level_fn_verification(
+        build_curated_snapshot(polarity="false_negative"),
+        model_report_prediction=0,
+    )
     pos_path = tmp_path / "pos.json"
     fn_path = tmp_path / "fn.json"
     save_snapshot(pos, pos_path)

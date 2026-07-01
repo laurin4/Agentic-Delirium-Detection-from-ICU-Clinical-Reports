@@ -1055,6 +1055,265 @@ def autopick_validation_report_id(
     return ranked[0]["validation_report_id"] if ranked else None
 
 
+def _norm_id(value: object) -> str:
+    """Normalize PatientenID / validation IDs for matching (308617.0 → 308617)."""
+    s = str(value or "").strip()
+    if re.fullmatch(r"\d+\.0", s):
+        s = s[:-2]
+    return s
+
+
+def _load_model_fn_patients() -> pd.DataFrame:
+    """Patients classified FN in final manual validation evaluation."""
+    fn_path = FINAL_MANUAL_VALIDATION_EVAL_DIR / "model_FN.csv"
+    if fn_path.exists():
+        df = pd.read_csv(fn_path)
+        if not df.empty:
+            return df
+    gt_path = FINAL_MANUAL_VALIDATION_EVAL_DIR / "patient_level_ground_truth.csv"
+    if not gt_path.exists():
+        return pd.DataFrame()
+    gt = pd.read_csv(gt_path)
+    mp = pd.to_numeric(gt.get("model_patient_positive"), errors="coerce")
+    dm = pd.to_numeric(gt.get("derived_manual_patient_ground_truth"), errors="coerce")
+    return gt.loc[(mp == 0) & (dm == 1)].copy()
+
+
+def _match_row_by_patienten_id(df: pd.DataFrame, patienten_id: str) -> Optional[pd.Series]:
+    if df.empty or "PatientenID" not in df.columns:
+        return None
+    target = _norm_id(patienten_id)
+    for _, row in df.iterrows():
+        if _norm_id(row.get("PatientenID")) == target:
+            return row
+    return None
+
+
+def _reports_for_patienten_id(merged: pd.DataFrame, patienten_id: str) -> pd.DataFrame:
+    if merged.empty:
+        return merged
+    target = _norm_id(patienten_id)
+    if "PatientenID" in merged.columns:
+        hits = merged[merged["PatientenID"].map(_norm_id) == target]
+        if not hits.empty:
+            return hits
+    return pd.DataFrame()
+
+
+def apply_patient_level_fn_verification(
+    trace: Dict[str, Any],
+    *,
+    model_report_prediction: int,
+    derived_manual_patient_gt: int = 1,
+    model_patient_positive: int = 0,
+) -> Dict[str, Any]:
+    """
+    Force patient-level FN labels into the snapshot verification block.
+
+    Thesis Case B compares model report output vs patient-level manual reference (Delir).
+    """
+    klasse = int((trace.get("final") or {}).get("klasse") or model_report_prediction)
+    trace["polarity"] = "false_negative"
+    trace["verification"] = {
+        "evaluation_level": "patient",
+        "derived_manual_patient_ground_truth": int(derived_manual_patient_gt),
+        "manual_report_ground_truth": int(derived_manual_patient_gt),
+        "model_patient_positive": int(model_patient_positive),
+        "model_report_prediction": int(model_report_prediction),
+        "model_correct_vs_manual": False,
+        "patient_confusion_group": "FN",
+    }
+    case = dict(trace.get("case") or {})
+    case["manual_report_ground_truth"] = int(derived_manual_patient_gt)
+    trace["case"] = case
+    final = dict(trace.get("final") or {})
+    final["klasse"] = klasse
+    trace["final"] = final
+    guard = dict(trace.get("guardrails") or {})
+    guard["klasse"] = klasse
+    trace["guardrails"] = guard
+    return trace
+
+
+def _pick_fn_report_row(
+    merged: pd.DataFrame,
+    *,
+    patienten_id: str,
+    fn_eval_row: pd.Series,
+    validation_report_id: Optional[str] = None,
+) -> pd.Series:
+    if validation_report_id:
+        hits = merged[merged["validation_report_id"].astype(str) == validation_report_id]
+        if hits.empty:
+            raise ValueError(f"validation_report_id not found: {validation_report_id}")
+        return hits.iloc[0]
+
+    subset = _reports_for_patienten_id(merged, patienten_id)
+    if subset.empty and "validation_patient_id" in merged.columns:
+        vpid = str(fn_eval_row.get("validation_patient_id") or "").strip()
+        if vpid:
+            subset = merged[merged["validation_patient_id"].astype(str) == vpid]
+
+    if subset.empty:
+        raise ValueError(
+            f"No report rows in predictions for PatientenID {_norm_id(patienten_id)}. "
+            "Re-run validation cohort predictions export."
+        )
+
+    ranked: List[Tuple[int, pd.Series]] = []
+    for _, row in subset.iterrows():
+        score = _score_patient_fn_representative_row(row)
+        if score >= 0:
+            ranked.append((score, row))
+    if not ranked:
+        raise ValueError(
+            f"PatientenID {_norm_id(patienten_id)} has reports but none with model=0 for FN demo."
+        )
+    ranked.sort(key=lambda x: (-x[0], str(x[1].get("validation_report_id") or "")))
+    return ranked[0][1]
+
+
+def _fn_patienten_ids_to_try(requested: Optional[str]) -> List[str]:
+    ids: List[str] = []
+    if requested and str(requested).strip():
+        ids.append(_norm_id(requested))
+    for pid in PREFERRED_FN_PATIENTEN_IDS:
+        if pid not in ids:
+            ids.append(pid)
+    return ids
+
+
+def generate_fn_snapshot_from_eval(
+    *,
+    out_path: Path,
+    patienten_id: Optional[str] = None,
+    validation_report_id: Optional[str] = None,
+    predictions_path: Path = VALIDATION_COHORT_PREDICTIONS_PATH,
+    labels_path: Path = FROZEN_MANUAL_REPORT_LABELS_PATH,
+    berichte_path: Path = BERICHTE_INPUT_PATH,
+    live: bool = False,
+) -> Dict[str, Any]:
+    """
+    Build Case B from the final evaluation FN list — no heuristic autopick.
+
+    Uses model_FN.csv (or patient_level_ground_truth FN rows), picks one model=0 report
+    for the patient, and forces patient-level manual GT = Delir in verification.
+    """
+    if not predictions_path.exists() or predictions_path.stat().st_size < 200:
+        LOGGER.warning("Predictions missing; using curated FN case (offline only).")
+        snap = build_curated_snapshot(polarity="false_negative")
+        save_snapshot(snap, out_path)
+        return load_snapshot(out_path)
+
+    fn_patients = _load_model_fn_patients()
+    predictions = pd.read_csv(predictions_path)
+    labels = pd.read_csv(labels_path) if labels_path.exists() else None
+    merged = _merge_predictions_with_labels(predictions, labels)
+
+    last_error: Optional[str] = None
+    for pid in _fn_patienten_ids_to_try(patienten_id):
+        fn_row = _match_row_by_patienten_id(fn_patients, pid) if not fn_patients.empty else None
+        if fn_row is None:
+            subset = _reports_for_patienten_id(merged, pid)
+            if subset.empty:
+                last_error = f"PatientenID {pid} not in model_FN.csv and no prediction rows."
+                continue
+            if not _is_patient_level_fn(subset, _load_frozen_patient_manual_gt()):
+                last_error = (
+                    f"PatientenID {pid} in predictions but not patient-level FN "
+                    f"(model_pos={_computed_patient_model_positive(subset)}, "
+                    f"derived={_computed_derived_manual_gt(subset, _load_frozen_patient_manual_gt())})."
+                )
+                continue
+            derived = _computed_derived_manual_gt(subset, _load_frozen_patient_manual_gt()) or 1
+            model_pos = _computed_patient_model_positive(subset) or 0
+        else:
+            derived = int(pd.to_numeric(fn_row.get("derived_manual_patient_ground_truth"), errors="coerce") or 1)
+            model_pos = int(pd.to_numeric(fn_row.get("model_patient_positive"), errors="coerce") or 0)
+            if model_pos != 0 or derived != 1:
+                last_error = f"PatientenID {pid} in eval table but not FN (model={model_pos}, manual={derived})."
+                continue
+
+        try:
+            row = _pick_fn_report_row(
+                merged,
+                patienten_id=pid,
+                fn_eval_row=fn_row if fn_row is not None else subset.iloc[0],
+                validation_report_id=validation_report_id if patienten_id is None or _norm_id(patienten_id) == pid else None,
+            )
+        except ValueError as exc:
+            last_error = str(exc)
+            continue
+
+        text_index = build_stable_report_text_index(berichte_path)
+        report_text = _resolve_report_text(row, text_index)
+        if not report_text.strip():
+            snippets = parse_evidence_snippets(row.get("evidence_snippets"))
+            if snippets:
+                report_text = "\n\n".join(str(s.get("text") or "") for s in snippets)
+        if not report_text.strip() and fn_row is not None:
+            rep = str(fn_row.get("representative_evidence") or "").strip()
+            if rep:
+                report_text = rep
+        if not report_text.strip():
+            last_error = f"PatientenID {pid}: report text not found in Berichte.csv."
+            continue
+
+        model_report = _report_model_klasse(row)
+        if model_report not in (0, 1):
+            model_report = 0
+
+        trace = build_delirium_trace(
+            report_text=report_text,
+            bertyp=str(row.get("bertyp") or ""),
+            manual_gt=1,
+            live=live,
+            replay_row=row,
+            source="validation_cohort",
+            polarity="false_negative",
+            case_meta={
+                "validation_report_id": str(row.get("validation_report_id") or ""),
+                "validation_patient_id": str(row.get("validation_patient_id") or ""),
+                "PatientenID": str(row.get("PatientenID") or pid),
+                "bertyp": str(row.get("bertyp") or ""),
+                "berdat": str(row.get("berdat") or ""),
+                "bericht": str(row.get("bericht") or ""),
+                "manual_report_ground_truth": 1,
+            },
+        )
+        trace = apply_patient_level_fn_verification(
+            trace,
+            model_report_prediction=model_report,
+            derived_manual_patient_gt=derived,
+            model_patient_positive=model_pos,
+        )
+        vid = str(row.get("validation_report_id") or "")
+        trace["selection"] = {
+            "fn_build_mode": "pinned_from_eval",
+            "patienten_id": pid,
+            "validation_report_id_picked": vid,
+            "model_patient_positive": model_pos,
+            "derived_manual_patient_ground_truth": derived,
+            "model_report_prediction": model_report,
+            "capture_mode": "live" if live else "replay_csv",
+        }
+        save_snapshot(trace, out_path)
+        LOGGER.info("FN snapshot: PatientenID %s, report %s (patient-level FN, forced labels).", pid, vid)
+        return load_snapshot(out_path)
+
+    available = []
+    if not fn_patients.empty and "PatientenID" in fn_patients.columns:
+        available = sorted({_norm_id(x) for x in fn_patients["PatientenID"].dropna()})
+    msg = (
+        "Could not build FN snapshot from evaluation data.\n"
+        f"  Tried PatientenID: {', '.join(_fn_patienten_ids_to_try(patienten_id))}\n"
+        f"  Last error: {last_error or 'unknown'}\n"
+        f"  FN patients in model_FN.csv: {', '.join(available[:20]) or '(file missing — run final manual validation eval)'}\n"
+        "  Run: python3 -m src.analysis.demo_delirium_case --diagnose-fn-patients"
+    )
+    raise ValueError(msg)
+
+
 def generate_snapshot_from_validation(
     *,
     polarity: str,
@@ -1073,6 +1332,17 @@ def generate_snapshot_from_validation(
     Falls back to curated anonymized demo cases when predictions are missing or stub-only.
     """
     polarity = normalize_demo_polarity(polarity)
+    if polarity == "false_negative":
+        return generate_fn_snapshot_from_eval(
+            out_path=out_path,
+            patienten_id=preferred_fn_patient_suffix,
+            validation_report_id=validation_report_id,
+            predictions_path=predictions_path,
+            labels_path=labels_path,
+            berichte_path=berichte_path,
+            live=live,
+        )
+
     if not predictions_path.exists() or predictions_path.stat().st_size < 200:
         LOGGER.warning("Predictions missing or stub-only; using curated %s case.", polarity)
         snap = build_curated_snapshot(polarity=polarity)
