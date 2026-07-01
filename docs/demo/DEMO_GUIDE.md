@@ -1,75 +1,76 @@
 # Delirium Pipeline Demo — Guide
 
-Presentation walkthrough: **report → rule extraction → LLM → guardrails → klasse**.
+Hemorrhage-style step-by-step walkthrough for your thesis slides.
 
-All exported snapshots are **anonymized for public presentation**:
-- No `PatientenID`, no `validation_report_id`, no report dates
-- Display labels: **Beispiel-Fall A** (positiv) and **Beispiel-Fall B** (negativ)
+All exports are **anonymized** (`Beispiel-Fall A` / `B` — no patient IDs).
 
 ---
 
-## PowerPoint — what works best
-
-| Method | PowerPoint fit | Recommendation |
-|--------|----------------|----------------|
-| **`--png` export** | Excellent — native images | **Use this** |
-| HTML in browser | Poor — cannot embed live HTML | Preview only, then screenshot if needed |
-| Terminal demo | N/A — live backup | Good for Q&A, not slides |
-
-### Recommended workflow for your thesis talk
+## Recommended: `.txt` for your own figures
 
 ```bash
 cd delirium_project
-python -m src.analysis.demo_delirium_case --png
+source Ba_venv/bin/activate
+
+# 1. Regenerate snapshots (picks clearer positive case automatically)
+python -m src.analysis.demo_delirium_case --snapshot-positive --snapshot-negative
+
+# 2. Export walkthrough text
+python -m src.analysis.demo_delirium_case --txt
 ```
 
-Inserts into PowerPoint:
+**Outputs:**
 
-```
-outputs/demo/delirium_demo_fall_a.png   → slide “Beispiel-Fall A (Delir positiv)”
-outputs/demo/delirium_demo_fall_b.png   → slide “Beispiel-Fall B (Delir negativ)”
-```
+| File | Content |
+|------|---------|
+| `outputs/demo/delirium_demo_fall_a_walkthrough.txt` | True positive — STEP 1…7 |
+| `outputs/demo/delirium_demo_fall_b_walkthrough.txt` | True negative — STEP 1…7 |
+| `outputs/demo/delirium_pipeline_demo_walkthrough.txt` | Both cases combined |
 
-In PowerPoint: **Insert → Pictures → select PNG**. One case per slide works well.
+Structure mirrors the hemorrhage demo:
 
-Optional: open `outputs/demo/delirium_pipeline_demo.html` in a browser to check layout, then screenshot — but `--png` is simpler.
+1. Original clinical reports  
+2. Rule-based evidence extraction  
+3. Evidence bundle → LLM  
+4. Agent 1 signals *(if LLM ran)*  
+5. Agent 2 interpretation *(or LLM SKIPPED branch)*  
+6. Clinical guardrails → klasse  
+7. Validation label + final classification box  
+
+Copy sections into PowerPoint / Figma and style as you like.
 
 ---
 
-## Commands
+## Pick a different positive case
+
+List top candidates (on server with full validation data):
 
 ```bash
-# PNG slides for PowerPoint (recommended)
-python -m src.analysis.demo_delirium_case --png
-
-# HTML preview in browser
-python -m src.analysis.demo_delirium_case --html
-
-# Live terminal walkthrough
-python -m src.analysis.demo_delirium_case --both
+python -m src.analysis.demo_delirium_case --list-positive-candidates
 ```
 
----
-
-## Regenerate from real validation data (server)
-
-On the server (full frozen cohort). Identifiers are **stripped automatically** on export:
+Skip the case you did not like and pick the next one:
 
 ```bash
-python -m src.analysis.demo_delirium_case --snapshot-positive
-python -m src.analysis.demo_delirium_case --snapshot-negative
-python -m src.analysis.demo_delirium_case --png
+python -m src.analysis.demo_delirium_case --snapshot-positive \
+  --exclude-validation-report-id Patient_XXXX_Report_YYYY
+
+# Or force a specific report:
+python -m src.analysis.demo_delirium_case --snapshot-positive \
+  --validation-report-id Patient_AAAA_Report_BBBB
+
+python -m src.analysis.demo_delirium_case --txt
 ```
 
-Copy to your laptop:
-
-- `data/demo/positive_case.json`
-- `data/demo/negative_case.json`
-- `outputs/demo/delirium_demo_fall_*.png`
+Positive auto-pick now prefers: **short reports**, **`Delir` in Diagnosen**, **`direct_delir_positive`**, few snippets — not long hypoaktiv-heavy epikrisen.
 
 ---
 
-## Privacy note
+## Other commands
 
-Snapshots stored under `data/demo/` are safe to show in a public thesis defence:
-clinical text is anonymized synthetic or scrubbed; all hospital/validation IDs are removed before save.
+```bash
+python -m src.analysis.demo_delirium_case --both          # live terminal walkthrough
+python -m src.analysis.demo_delirium_case --html          # browser preview only
+```
+
+PNG export (`--png`) remains optional; `.txt` is the intended path for custom slides.

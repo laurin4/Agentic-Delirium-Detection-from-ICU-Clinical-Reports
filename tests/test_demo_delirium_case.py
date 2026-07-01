@@ -6,7 +6,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.analysis.demo_delirium_case import export_case_png, export_demo_html, export_demo_png, render_demo_html, run_demo
+from src.analysis.demo_delirium_case import export_demo_html, export_demo_txt, render_demo_html, run_demo
+from src.analysis.demo_delirium_walkthrough import render_walkthrough_txt
 from src.analysis.demo_delirium_snapshot import (
     anonymize_snapshot,
     autopick_validation_report_id,
@@ -21,7 +22,7 @@ def _validation_predictions() -> pd.DataFrame:
     direct_snippets = [
         {
             "section": "diag",
-            "keyword": "hypoaktives delir",
+            "keyword": "delir",
             "evidence_type": "direct_delir",
             "text": "[Diagnosen]\nPatient mit hypoaktives Delir.",
             "priority": 1,
@@ -160,8 +161,31 @@ def test_html_export(tmp_path):
     assert out.exists()
 
 
+def test_walkthrough_txt_hemorrhage_structure():
+    pos = build_curated_snapshot(polarity="positive")
+    txt = render_walkthrough_txt(pos)
+    assert "STEP 1" in txt and "STEP 2" in txt and "Final structured output" in txt
+    assert "Beispiel-Fall A" in txt
+    assert "PatientenID" not in txt
+    assert "Agent 2" in txt
+
+
+def test_export_demo_txt(tmp_path):
+    pos = build_curated_snapshot(polarity="positive")
+    neg = build_curated_snapshot(polarity="negative")
+    pos_path = tmp_path / "pos.json"
+    neg_path = tmp_path / "neg.json"
+    save_snapshot(pos, pos_path)
+    save_snapshot(neg, neg_path)
+    paths = export_demo_txt(pos_path, neg_path, output_dir=tmp_path)
+    assert len(paths) == 3
+    assert paths[0].read_text(encoding="utf-8").startswith("=" * 76)
+
+
 def test_png_export(tmp_path):
     pytest.importorskip("matplotlib")
+    from src.analysis.demo_delirium_case import export_case_png
+
     pos = build_curated_snapshot(polarity="positive")
     path = export_case_png(pos, tmp_path / "fall_a.png")
     assert path.exists()

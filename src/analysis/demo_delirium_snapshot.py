@@ -119,6 +119,7 @@ def anonymize_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     out["extraction"] = extraction
 
     out["anonymized_for_presentation"] = True
+    out.pop("selection", None)
     return out
 
 
@@ -142,13 +143,13 @@ def presentation_case_subtitle(snapshot: Dict[str, Any]) -> str:
 
 # Anonymized demonstration reports (used when validation data is unavailable).
 CURATED_POSITIVE_REPORT = """[Diagnosen]
-Akutes Nierenversagen, septischer Schock, therapiebedürftiges hypoaktives Delir.
+Septischer Schock, akutes Nierenversagen, Delir.
 
 [Epikrise]
-Auf der Intensivstation zeigte sich ein hypoaktives Delir mit ausgeprägter Desorientierung zur Zeit und Person. Reorientierungsmassnahmen und Delirtherapie mit niedrig dosiertem Haloperidol. Im weiteren Verlauf langsame Besserung der Vigilanz.
+Auf der Intensivstation dokumentiertes Delir mit Desorientierung zur Zeit. Delirtherapie mit Haloperidol, anschliessend Verbesserung der Vigilanz.
 
 [Prozedere]
-Delirmedikation schrittweise reduzieren, CAM-ICU Screening fortführen.
+Delirmedikation ausschleichen, CAM-ICU Screening.
 """
 
 CURATED_NEGATIVE_REPORT = """[Diagnosen]
@@ -166,17 +167,17 @@ Weiterführende pulmonale Therapie, schrittweise Entwöhnung von High-Flow.
 
 CURATED_POSITIVE_INTERPRETATION: Dict[str, Any] = {
     "delir_signale": {
-        "desorientierung": ["Desorientierung zur Zeit und Person"],
-        "delir_explizit": ["hypoaktives Delir", "Delirtherapie"],
+        "desorientierung": ["Desorientierung zur Zeit"],
+        "delir_explizit": ["Delir"],
         "hyperaktivitaet_agitation": [],
-        "vigilanz": ["Vigilanzminderung"],
+        "vigilanz": ["Vigilanz"],
         "delir_therapie": ["Haloperidol"],
         "delir_prophylaxe": [],
     },
     "signalstaerke": "hoch",
-    "delir_probability_estimate": 92,
-    "kontext": "Explizit dokumentiertes hypoaktives Delir mit Desorientierung und Delirtherapie auf der Intensivstation.",
-    "begruendung": "Direkte Delir-Nennung in Diagnose und Epikrise; Therapie und klinischer Verlauf stützen ein dokumentiertes Delir.",
+    "delir_probability_estimate": 88,
+    "kontext": "Explizite Delir-Diagnose mit Desorientierung und Delirtherapie auf der Intensivstation.",
+    "begruendung": "Delir in Diagnosen und Epikrise dokumentiert; Therapie und klinischer Verlauf stützen ein dokumentiertes Delir.",
     "alternative_erklaerung": False,
     "alternative_erklaerung_keywords": [],
 }
@@ -451,22 +452,60 @@ def _resolve_report_text(row: pd.Series, text_index: Dict[Tuple[str, str, str, s
 
 
 def _score_positive_row(row: pd.Series) -> int:
+    """Prefer concise, clear direct-delir cases suitable for a thesis slide."""
     if _int_cell(row.get("manual_report_ground_truth"), -1) != 1:
         return -1
     if _int_cell(row.get("klasse")) != 1:
         return -1
+
+    snippets = parse_evidence_snippets(row.get("evidence_snippets"))
+    direct = [s for s in snippets if str(s.get("evidence_type")) == "direct_delir"]
+    indirect = [s for s in snippets if str(s.get("evidence_type")) == "indirect_symptom"]
+
     score = 0
-    if _bool_cell(row.get("has_direct_delir_evidence")):
-        score += 50
+    if not direct:
+        return -1
     if str(row.get("decision_rule_applied") or "") == "direct_delir_positive":
-        score += 40
-    if str(row.get("signalstaerke") or "").lower() == "hoch":
+        score += 45
+    elif str(row.get("decision_rule_applied") or "") == "llm_classification":
         score += 20
+    else:
+        score += 10
+
+    if str(row.get("signalstaerke") or "").lower() == "hoch":
+        score += 25
     if _bool_cell(row.get("llm_called")):
         score += 10
-    snippets = parse_evidence_snippets(row.get("evidence_snippets"))
-    score += min(len(snippets), 5) * 3
-    if str(row.get("bertyp") or "") == "Austrittsbericht":
+    if _bool_cell(row.get("manual_review_candidate")):
+        score -= 50
+    if _bool_cell(row.get("has_alternative_explanation")):
+        score -= 35
+
+    for s in direct:
+        if str(s.get("section") or "") == "diag":
+            score += 35
+        kw = str(s.get("keyword") or "").lower()
+        if kw in ("delir", "delirium", "delirant", "delirös"):
+            score += 30
+        elif "hypoaktiv" in kw or "hyperaktiv" in kw:
+            score += 10
+
+    score -= len(indirect) * 6
+    score -= max(0, len(snippets) - 3) * 10
+
+    orig_len = _int_cell(row.get("original_report_text_length"), 0)
+    if 300 <= orig_len <= 1800:
+        score += 20
+    elif orig_len > 3500:
+        score -= 30
+
+    llm_len = _int_cell(row.get("llm_report_text_length"), 0)
+    if 0 < llm_len <= 1000:
+        score += 15
+    elif llm_len > 2000:
+        score -= 20
+
+    if str(row.get("bertyp") or "") in ("Austrittsbericht", "Verlaufseintrag"):
         score += 5
     return score
 
@@ -493,25 +532,53 @@ def _score_negative_row(row: pd.Series) -> int:
     return score
 
 
+def rank_validation_candidates(
+    predictions: pd.DataFrame,
+    labels: Optional[pd.DataFrame],
+    *,
+    polarity: str,
+    exclude_ids: Optional[Sequence[str]] = None,
+    top_n: int = 15,
+) -> List[Dict[str, Any]]:
+    """Return top scored TP/TN rows for manual inspection."""
+    df = _merge_predictions_with_labels(predictions, labels)
+    exclude = {str(x).strip() for x in (exclude_ids or []) if str(x).strip()}
+    scorer = _score_positive_row if polarity == "positive" else _score_negative_row
+    ranked: List[Dict[str, Any]] = []
+    for _, row in df.iterrows():
+        score = scorer(row)
+        if score < 0:
+            continue
+        vid = str(row.get("validation_report_id") or "").strip()
+        if not vid or vid in exclude:
+            continue
+        ranked.append(
+            {
+                "validation_report_id": vid,
+                "score": score,
+                "bertyp": str(row.get("bertyp") or ""),
+                "decision_rule_applied": str(row.get("decision_rule_applied") or ""),
+                "signalstaerke": str(row.get("signalstaerke") or ""),
+                "snippet_count": len(parse_evidence_snippets(row.get("evidence_snippets"))),
+                "report_length": _int_cell(row.get("original_report_text_length"), 0),
+            }
+        )
+    ranked.sort(key=lambda x: (-x["score"], x["validation_report_id"]))
+    return ranked[:top_n]
+
+
 def autopick_validation_report_id(
     predictions: pd.DataFrame,
     labels: Optional[pd.DataFrame],
     *,
     polarity: str,
+    exclude_ids: Optional[Sequence[str]] = None,
 ) -> Optional[str]:
     """Pick the clearest verified TP or TN from merged validation predictions."""
-    df = _merge_predictions_with_labels(predictions, labels)
-    if df.empty or "validation_report_id" not in df.columns:
-        return None
-    scorer = _score_positive_row if polarity == "positive" else _score_negative_row
-    best_id: Optional[str] = None
-    best_score = -1
-    for _, row in df.iterrows():
-        score = scorer(row)
-        if score > best_score:
-            best_score = score
-            best_id = str(row.get("validation_report_id") or "").strip() or None
-    return best_id
+    ranked = rank_validation_candidates(
+        predictions, labels, polarity=polarity, exclude_ids=exclude_ids, top_n=1
+    )
+    return ranked[0]["validation_report_id"] if ranked else None
 
 
 def generate_snapshot_from_validation(
@@ -522,6 +589,7 @@ def generate_snapshot_from_validation(
     labels_path: Path = FROZEN_MANUAL_REPORT_LABELS_PATH,
     berichte_path: Path = BERICHTE_INPUT_PATH,
     validation_report_id: Optional[str] = None,
+    exclude_validation_report_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """
     Build a snapshot from frozen validation data.
@@ -544,7 +612,12 @@ def generate_snapshot_from_validation(
             raise ValueError(f"validation_report_id not found: {validation_report_id}")
         row = hits.iloc[0]
     else:
-        picked_id = autopick_validation_report_id(predictions, labels, polarity=polarity)
+        picked_id = autopick_validation_report_id(
+            predictions,
+            labels,
+            polarity=polarity,
+            exclude_ids=exclude_validation_report_ids,
+        )
         if not picked_id:
             LOGGER.warning("No suitable %s case in validation data; using curated demo.", polarity)
             snap = build_curated_snapshot(polarity=polarity)
@@ -571,6 +644,20 @@ def generate_snapshot_from_validation(
         manual_gt=manual_gt if manual_gt >= 0 else None,
         source="validation_cohort",
     )
+    ranked = rank_validation_candidates(
+        predictions,
+        labels,
+        polarity=polarity,
+        exclude_ids=exclude_validation_report_ids,
+        top_n=20,
+    )
+    vid = str(row.get("validation_report_id") or "")
+    snap["selection"] = {
+        "validation_report_id_picked": vid,
+        "rank": next((i + 1 for i, r in enumerate(ranked) if r["validation_report_id"] == vid), None),
+        "score": next((r["score"] for r in ranked if r["validation_report_id"] == vid), None),
+        "top_candidates": ranked[:5],
+    }
     save_snapshot(snap, out_path)
     return load_snapshot(out_path)
 

@@ -9,7 +9,7 @@ Usage:
     python -m src.analysis.demo_delirium_case --positive       # TP walkthrough
     python -m src.analysis.demo_delirium_case --negative       # TN walkthrough
     python -m src.analysis.demo_delirium_case --both           # both cases
-    python -m src.analysis.demo_delirium_case --html           # export slide HTML
+    python -m src.analysis.demo_delirium_case --txt           # hemorrhage-style walkthrough .txt
     python -m src.analysis.demo_delirium_case --snapshot-positive
     python -m src.analysis.demo_delirium_case --snapshot-negative
 
@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import argparse
 import html
-import json
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import pandas as pd
 
 from src.analysis.demo_delirium_snapshot import (
     ensure_default_snapshots,
@@ -31,12 +32,19 @@ from src.analysis.demo_delirium_snapshot import (
     load_snapshot,
     presentation_case_subtitle,
     presentation_case_title,
+    rank_validation_candidates,
     snippet_section_label,
+)
+from src.analysis.demo_delirium_walkthrough import (
+    render_combined_walkthrough_txt,
+    render_walkthrough_txt,
 )
 from src.pipeline.paths import (
     DEMO_HTML_OUTPUT_DIR,
     DEMO_NEGATIVE_SNAPSHOT_PATH,
     DEMO_POSITIVE_SNAPSHOT_PATH,
+    FROZEN_MANUAL_REPORT_LABELS_PATH,
+    VALIDATION_COHORT_PREDICTIONS_PATH,
 )
 
 SEP = "=" * 72
@@ -539,6 +547,28 @@ def export_demo_png(
     return paths
 
 
+def export_demo_txt(
+    positive_path: Path = DEMO_POSITIVE_SNAPSHOT_PATH,
+    negative_path: Path = DEMO_NEGATIVE_SNAPSHOT_PATH,
+    output_dir: Optional[Path] = None,
+) -> List[Path]:
+    """Export hemorrhage-style walkthrough .txt files (one per case + combined)."""
+    ensure_default_snapshots()
+    out_dir = output_dir or DEMO_HTML_OUTPUT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pos = load_snapshot(positive_path)
+    neg = load_snapshot(negative_path)
+    paths = [
+        out_dir / "delirium_demo_fall_a_walkthrough.txt",
+        out_dir / "delirium_demo_fall_b_walkthrough.txt",
+        out_dir / "delirium_pipeline_demo_walkthrough.txt",
+    ]
+    paths[0].write_text(render_walkthrough_txt(pos), encoding="utf-8")
+    paths[1].write_text(render_walkthrough_txt(neg), encoding="utf-8")
+    paths[2].write_text(render_combined_walkthrough_txt(pos, neg), encoding="utf-8")
+    return paths
+
+
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
@@ -549,8 +579,8 @@ def _interactive_menu() -> None:
     print("  1  Positive case (true positive)")
     print("  2  Negative case (true negative)")
     print("  3  Both cases")
-    print("  4  Export HTML (browser preview)")
-    print("  5  Export PNG slides (PowerPoint)")
+    print("  4  Export walkthrough .txt (for your own figures)")
+    print("  5  Export HTML (browser preview)")
     print("  q  Quit")
     choice = input("\nChoice: ").strip().lower()
     if choice == "1":
@@ -560,11 +590,11 @@ def _interactive_menu() -> None:
     elif choice == "3":
         run_demo(both=True)
     elif choice == "4":
+        for path in export_demo_txt():
+            print(f"Wrote {path}")
+    elif choice == "5":
         path = export_demo_html()
         print(f"Wrote {path}")
-    elif choice == "5":
-        for path in export_demo_png():
-            print(f"Wrote {path}")
     else:
         print("Bye.")
 
@@ -595,11 +625,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--negative", action="store_true", help="Show negative (TN) case")
     parser.add_argument("--both", action="store_true", help="Show both cases")
     parser.add_argument("--no-pause", action="store_true", help="Do not wait for ENTER between steps")
+    parser.add_argument(
+        "--txt",
+        action="store_true",
+        help="Export hemorrhage-style walkthrough .txt files to outputs/demo/",
+    )
     parser.add_argument("--html", action="store_true", help="Export HTML preview to outputs/demo/")
     parser.add_argument(
         "--png",
         action="store_true",
-        help="Export PNG slides (recommended for PowerPoint) to outputs/demo/",
+        help="(Optional) Export PNG slides — prefer --txt for custom figures",
     )
     parser.add_argument(
         "--snapshot-positive",
@@ -612,9 +647,43 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Regenerate negative_case.json from validation data (or curated fallback)",
     )
     parser.add_argument("--validation-report-id", help="Force a specific validation_report_id")
+    parser.add_argument(
+        "--exclude-validation-report-id",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="Skip report(s) when auto-picking (repeatable)",
+    )
+    parser.add_argument(
+        "--list-positive-candidates",
+        action="store_true",
+        help="Print top auto-pick candidates for the positive case and exit",
+    )
     parser.add_argument("--positive-snapshot", type=Path, default=DEMO_POSITIVE_SNAPSHOT_PATH)
     parser.add_argument("--negative-snapshot", type=Path, default=DEMO_NEGATIVE_SNAPSHOT_PATH)
     args = parser.parse_args(argv)
+    exclude_ids = [x for x in args.exclude_validation_report_id if str(x).strip()]
+
+    if args.list_positive_candidates:
+        if not VALIDATION_COHORT_PREDICTIONS_PATH.exists():
+            print(f"Missing predictions: {VALIDATION_COHORT_PREDICTIONS_PATH}")
+            return 1
+        preds = pd.read_csv(VALIDATION_COHORT_PREDICTIONS_PATH)
+        labels = (
+            pd.read_csv(FROZEN_MANUAL_REPORT_LABELS_PATH)
+            if FROZEN_MANUAL_REPORT_LABELS_PATH.exists()
+            else None
+        )
+        print("Top positive-case candidates (higher score = clearer slide):\n")
+        for r in rank_validation_candidates(
+            preds, labels, polarity="positive", exclude_ids=exclude_ids
+        ):
+            print(
+                f"  {r['score']:3d}  {r['validation_report_id']}  "
+                f"{r['bertyp']}  rule={r['decision_rule_applied']}  "
+                f"snippets={r['snippet_count']}  len={r['report_length']}"
+            )
+        return 0
 
     if args.snapshot_positive or args.snapshot_negative:
         if args.snapshot_positive:
@@ -622,6 +691,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 polarity="positive",
                 out_path=args.positive_snapshot,
                 validation_report_id=args.validation_report_id if args.snapshot_positive else None,
+                exclude_validation_report_ids=exclude_ids or None,
             )
             print(f"Wrote positive snapshot → {args.positive_snapshot} ({presentation_case_title(snap)})")
         if args.snapshot_negative:
@@ -629,8 +699,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                 polarity="negative",
                 out_path=args.negative_snapshot,
                 validation_report_id=args.validation_report_id if args.snapshot_negative else None,
+                exclude_validation_report_ids=exclude_ids or None,
             )
             print(f"Wrote negative snapshot → {args.negative_snapshot} ({presentation_case_title(snap)})")
+        return 0
+
+    if args.txt:
+        paths = export_demo_txt(args.positive_snapshot, args.negative_snapshot)
+        for path in paths:
+            print(f"Wrote {path}")
         return 0
 
     if args.html:
